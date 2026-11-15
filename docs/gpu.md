@@ -186,23 +186,39 @@ Core Animation's work-interval deadlines; nothing of that reached KGSL here.
   (clock ticks, a still screen's redraws, typing, light animations) leave the clock to KGSL's governor; heavy ones (a
   120 Hz scroll of 3 ms frames) keep the top for as long as they come. Nothing new is written anywhere: KGSL's own
   `KGSL_PROP_PWR_CONSTRAINT` as before, on our own KGSL contexts, inside KGSL's thermal limit.
-- **Background contexts at the lowest level at a still screen.** Their queues are made with `KGSL_CONTEXT_PWR_CONSTRAINT`
-  and carry `KGSL_CONSTRAINT_PWR_MIN` from their next submission once no counted frame came for 500 ms, `NONE` again when
-  frames come (an ioctl only at a change). KGSL takes a constraint only if it is faster than the one in force, so this
-  never slows the render server's top level; the first render-server frame within 200 ms of a background lowest level gets
-  the top (KGSL keeps the lowest until it expires otherwise). Background contexts never start or extend the hold.
+- **Background contexts at the lowest level at a still screen, and only when nobody waits for it** (`og_lowest_for`,
+  fix-gpu-widgets). Their queues are made with `KGSL_CONTEXT_PWR_CONSTRAINT` and carry `KGSL_CONSTRAINT_PWR_MIN` from
+  their next submission once no counted frame came for 500 ms, `NONE` again otherwise (an ioctl only at a change). KGSL's
+  lowest level is the whole GPU's, so it is not asked while any non-background context has a fence not yet retired (that
+  work would run at the lowest clock too: a widget renderer drawing at a still screen counts no frame), while another
+  process reads the context's surfaces, or once the context's own oldest fence has waited 50 ms (`bg_bound_us`; aging:
+  that work runs at the governor's clock and is done well inside Metal's 100 ms wait slice). A submission of any
+  non-background context within 200 ms of a background lowest level gets the top level once (the render server's first
+  frame did already): KGSL keeps a constraint until it expires and lets only a faster one end it sooner. KGSL takes a
+  constraint only if it is faster than the one in force, so this never slows the render server's top level. Background
+  contexts never start or extend the hold. `gpu-priority=0` turns the lowest level off.
 - **Each context's KGSL priority is its owner's class**, given when its queue is made (DRAWCTXT_CREATE's priority bits;
   KGSL cannot change it later): the render server and the front app 4 (the second ringbuffer, which preempts the third),
-  the default 8, background processes 12 (the fourth). None takes the first ringbuffer (0-3, Android's compositor's). A
-  priority this KGSL refuses: the queue is made without one, and said once.
-- **The class** (`og_class_of`), in order: the name `xnu:backboardd` (the render server); **STOPGAP, process names**: the
-  owner's list (`WidgetRenderer*`, `*Widget*`, `*Poster*`, `iconservices*`, `photoanalysisd`, `mediaanalysisd`, `assetsd`,
-  `searchd`, `analyticsd`, `suggestd`, `*Thumbnail*`: background; `SpringBoard`: front), replaceable with
-  `ONEIOS_GPU_BACKGROUND=` / `ONEIOS_GPU_FRONT=` in xnuhost's environment; then **the guest's hint**: the submitting task's
-  effective role (`TASK_POLICY_ROLE`, which RunningBoard sets: foreground, control, graphics server, user-init -> front;
-  background, throttle, non-UI, DarwinBG -> background), the thread's DarwinBG and its QoS (maintenance, background,
-  utility -> background). The hint comes with every fenced submission, so an app sent to the background stops counting for
-  the level at once (its existing queues keep their priority). An older guest sends none: the name decides.
+  everything else 8, background included. From #42 to fix-gpu-widgets background was 12 (the fourth ringbuffer): KGSL runs
+  a lower ringbuffer only while every higher one is empty, so those fences had no bound, and a queue keeps the class its
+  context had when the queue was made (by name, or by the role at the context's creation) for good. Within one
+  ringbuffer KGSL takes its contexts in turn: that is a background context's minimum share now. None takes the first
+  ringbuffer (0-3, Android's compositor's). A priority this KGSL refuses: the queue is made without one, and said once.
+- **The class** (`og_class_of`), in order: the name `xnu:backboardd` (the render server); the name `SpringBoard` (front);
+  **whether the render server reads the context's surfaces**: xnuhost notes the first guest page of every blob a context
+  makes over guest pages (`og_pages`, a cache of 8192 entries); when the render server's context makes a blob over the
+  same first page as another process's (an IOSurface it imports, as the guest's `oneios-gpu-pixels` "pages of another
+  process's surfaces" matches them), that context is `shown` and never background again, whatever its name or role says
+  (`gpu: context N xnu:NAME: the render server reads its surfaces: default now, not background`); then **process names**
+  that never draw what the user sees: `photoanalysisd`, `mediaanalysisd`, `assetsd`, `searchd`, `analyticsd`, `suggestd`
+  (background; each one's reason is in `oneios_gpu_policy.h`), replaceable with `ONEIOS_GPU_BACKGROUND=` /
+  `ONEIOS_GPU_FRONT=` in xnuhost's environment; then **the guest's hint**: the submitting task's effective role
+  (`TASK_POLICY_ROLE`, which RunningBoard sets: foreground, control, graphics server, user-init -> front; background,
+  throttle, non-UI, DarwinBG -> background), the thread's DarwinBG and its QoS (maintenance, background, utility ->
+  background). The hint comes with every fenced submission, so an app sent to the background stops counting for the level
+  at once. An older guest sends none: the name decides. Until fix-gpu-widgets the name list also held `WidgetRenderer*`,
+  `*Widget*`, `*Poster*`, `iconservices*` and `*Thumbnail*`: home-screen, lock-screen, Today and StandBy widgets, the lock
+  screen's poster and the icons, all of which the user sees, ran at priority 12 and at the lowest level.
 - **The hint's channel** (guest: `gpu/OneiOSAdreno.cpp` `oneios_gpu_hint`, called from the staged
   `DroidVMVirtioGpu3D.cpp` on the client's own thread, `tools/oneios-tool/crates/oneios-kernel/src/staged/gpu.rs`): CTX_CREATE's
   `context_init` bits 8-23 (beside the capset id) and the SUBMIT_3D header's three padding bytes: [0] `0x80` | `0x40`
@@ -214,28 +230,58 @@ Core Animation's work-interval deadlines; nothing of that reached KGSL here.
   that work replaces them; nothing else changes (docs/agents.md).
 - **Switches** (xnuhost.conf or `--set`): `gpu-level=deadline` (default), `=hold` (0005/0006's rule: every render-server
   frame at the top, to 150 ms after it), `=governor` (never asked); `gpu-priority=0` (the queues' priority as the guest asks,
-  upstream's rule). drm2kgsl's own `DRM2KGSL_PWR_HOLD_MS` (150) still sets the hold's length. Before xnuhost sets a level
+  upstream's rule, and no queue made able to carry the lowest level, so neither applies). drm2kgsl's own `DRM2KGSL_PWR_HOLD_MS` (150) still sets the hold's length. Before xnuhost sets a level
   (gpuctl) drm2kgsl keeps 0002-0006's rules.
 
 Log lines (xnuhost's log):
 
 ```
-gpu: level: by deadline (the top only for a frame that would miss 8.3 ms at 120 Hz, or its work interval's deadline, at the governor's clock); KGSL's clocks 231-903 MHz (top/lowest x3.87); priority by the owner's class on (render server and front 4, default 8, background 12); background by name (STOPGAP): WidgetRenderer*,...
+gpu: level: by deadline (the top only for a frame that would miss 8.3 ms at 120 Hz, or its work interval's deadline, at the governor's clock); KGSL's clocks 231-903 MHz (top/lowest x3.87); priority by the owner's class on (render server and front 4, default and background 8; background at the lowest level at a still screen); background by name (never on screen): photoanalysisd,mediaanalysisd,assetsd,searchd,analyticsd,suggestd
 drm2kgsl: clock hold: the top level only for frames that need it (xnuhost's deadline policy), to 150 ms after them
 drm2kgsl: context 5: a deadline queue: at the top level only for frames that would miss their deadline (xnuhost's policy)
-drm2kgsl: queue 7 of xnu:iconservicesagent: background, KGSL priority 12
-gpu: context 12 xnu:iconservicesagent: background (by name (STOPGAP list); role 0, QoS 4), KGSL priority 12
-gpu: 10 s level: frames 610, at the top 40; up +2 down +2; missed at the governor's +0, over budget +1; GPU time at the top 900 us, the governor's 2100 us, after a pause 2600 us; frame interval 8400 us; background submissions at the lowest +35
+drm2kgsl: queue 7 of xnu:photoanalysisd: background, KGSL priority 8
+gpu: context 12 xnu:photoanalysisd: background (by name; role 0, QoS 4), KGSL priority 8
+gpu: context 24 xnu:WidgetRenderer_Default: background (by the guest's role; role 6, QoS 5), KGSL priority 8
+gpu: context 24 xnu:WidgetRenderer_Default: the render server reads its surfaces: default now, not background
+gpu: 10 s level: frames 610, at the top 40; up +2 down +2; missed at the governor's +0, over budget +1; GPU time at the top 900 us, the governor's 2100 us, after a pause 2600 us; frame interval 8400 us; background submissions at the lowest +35 (kept off it: others' work queued, surfaces read, or waited 50 ms +12; ended by others' work +3)
+gpu: 10 s fences over 100 ms (each one of the guest's fence timeouts): xnu:photoanalysisd 2 (max 130 ms; background), xnu:Foo 0 (max 0 ms, one waiting now 240 ms; default)
 drm2kgsl: context 9: power constraint at the lowest level
 ```
 
 (examples, not from a run.) `gpu: context` comes once per context (two per process) and when its class changes: a
 process whose contexts keep coming back is making Metal devices again and again. The 10 s line says how much of the
 render server's work needed the top; `over budget` is frames that took longer than their budget at any level (jank).
+**`gpu: 10 s fences over 100 ms`** (fix-gpu-widgets, a lasting line, only when there are any) names the processes whose
+fences took 100 ms or more from submission to retirement on the host in those 10 s (count, longest, class), and any
+whose oldest fence has been waiting that long now. Metal's runtime waits for a fence in slices of 100 ms and waits again
+after each (`metal2vulkan` `command_buffer/completion.rs` `WAIT_SLICE`; a wait never fails on time, it only counts); the
+tunnel counts each slice that runs out as one of `oneios-gpu-report`'s `fence timeouts`. So that guest figure is "fences
+over 100 ms", and this line says whose.
 
-**Tested on the PC** (no KGSL): `tests/test_gpu_policy.c` (`make -C runtime/xnuhost test`; 116 checks: classes from
-names and hints, priorities, the level for each kind of stream, deadlines, background, the follow window, the three modes)
-runs here. Its last part runs the same frame streams under `gpu-level=hold` and `=deadline` (frames at the governor's
+**The widgets' GPU starvation (fix-gpu-widgets, 2026-11-15).** On the phone (main 8644ae9 with the v0.1.9 runtime,
+`ram=10G pen=auto`): `gpu: context 24 xnu:WidgetRenderer_Default: background (by name (STOPGAP list); role 1, QoS 6),
+KGSL priority 12` and `drm2kgsl: queue 9 of xnu:WidgetRenderer_Default: background, KGSL priority 12`; `gpu: 10 s host:
+backboardd fences 84, submit->retired mean 6654 us max 49783 us; ... other fences 85, mean 181112 us`; the guest's
+`oneios-gpu-report: ... fence timeouts +5`; no KGSL fault, reset or crash. The guest's role was foreground (1) at QoS
+user-interactive (6), so the name list alone made it background. From the code: priority 12 is the fourth ringbuffer,
+run only while the other three are empty; and the screen was still, so every submission of WidgetRenderer_Default (and of
+the other listed processes) put the whole GPU at KGSL's lowest level for KGSL's expiry after it, while its own six
+surfaces' work queued behind itself. Proven from the counts: the fences of every process but the render server took
+181 ms on average and five of Metal's 100 ms wait slices ran out. Not proven: how much of the 181 ms each rule caused
+(the host's line gave no per-process figure then; the new `fences over 100 ms` line does). The white widgets themselves
+have another cause (chronod cannot save widget snapshots without an HEVC encoder: `fix-widget-snapshots`); this fix is
+the starvation and the fence timeouts. The fix: the name list keeps only daemons that never draw what the user sees, a
+context whose surfaces the render server reads is never background, no class is put under the default's ringbuffer, and
+the lowest level is not asked while anyone else's work is queued, while someone reads the context's surfaces, or after its
+own fence has waited 50 ms (above). The phone lines that will prove it: `gpu: context N xnu:WidgetRenderer_Default:
+default` or `... the render server reads its surfaces: default now, not background`, `drm2kgsl: queue N of
+xnu:WidgetRenderer_Default: default, KGSL priority 8`; `gpu: 10 s host: ... other fences N, mean` in single-digit ms
+(below 10000 us); the guest's `oneios-gpu-report: ... fence timeouts +0`; no `gpu: 10 s fences over 100 ms` line naming
+WidgetRenderer_Default.
+
+**Tested on the PC** (no KGSL): `tests/test_gpu_policy.c` (`make -C runtime/xnuhost test`; 166 checks: classes from
+names, hints and `shown`, priorities, the surface table, the level for each kind of stream, deadlines, background, the
+lowest level's rules, the follow window, the three modes, and the starvation model below) runs here. Its last part runs the same frame streams under `gpu-level=hold` and `=deadline` (frames at the governor's
 lowest clock taken as 4 times their top-level time, the hold 150 ms), the share of time the clock is held at the top:
 
 | Stream (10 s) | hold (before) | deadline (now) | frames over budget, both |
@@ -246,10 +292,36 @@ lowest clock taken as 4 times their top-level time, the hold 150 ms), the share 
 | scrolling, 120 frames/s of 3 ms | 100 % | 100 % | 0 |
 | a light animation, 60 frames/s of 0.8 ms | 100 % | 2.7 % | 0 |
 
-These are the model's numbers, not the phone's. `test_xnuhost`: CTX_CREATE's hint bits and SUBMIT_3D's padding reach the
-renderer. `test_drm2kgsl`'s fourth scenario (queue priorities by class: the render server 4 with its constraint flag,
-`xnu:iconservicesagent` 12 with the flag, an app 4 in front and 12 sent to the background) is built here and skipped
-(`/dev/udmabuf` is root:kvm on this PC); the Mac's container runs it. The guest side: `HOSTED_OUT=fixgpu` built
+These are the model's numbers, not the phone's. **The starvation model** (fix-gpu-widgets, `starvation()` in the same
+test): a GPU in 50 us ticks with KGSL's rules as the model takes them (ringbuffers by strict priority, a higher one
+preempting; in a ringbuffer a job runs to its end and the contexts take turns, up to 5 jobs each; the top clock while a
+`PWR_MAX` holds, 4 times slower while a `PWR_MIN` holds (80 ms after the submission that set it), 2 times slower at the
+governor's: assumptions, not measurements). A still home screen, 10 s: once a second WidgetRenderer_Default (a non-UI
+process at utility QoS to the guest, the worst its hint can say) redraws 6 surfaces, one fence each, and 2 ms after the
+last the render server composites 3 frames of it; photoanalysisd computes all the time (8 ms jobs). Under #42's rules
+(widget background by name, priority 12, the lowest level whenever the screen is still) and now:
+
+| Case | WidgetRenderer fences: mean / max, #42 -> now | over 50 ms | over 100 ms | photoanalysisd max | time at the lowest |
+|---|---|---|---|---|---|
+| small widgets (1 ms a surface) | 34.6 / 83.5 ms -> 8.7 / 19.4 ms | 10 -> 0 | 0 -> 0 | 51.0 -> 32.0 ms | 45.9 % -> 44.2 % |
+| heavy widgets (5 ms a surface) | 88.1 / 154.2 ms -> 19.5 / 38.9 ms | 50 -> 0 | 22 -> 0 | 105.5 -> 32.0 ms | 43.2 % -> 42.1 % |
+| heavy, SpringBoard draws a frame too | 26.5 / 44.9 ms -> 22.2 / 41.9 ms | 0 -> 0 | 0 -> 0 | 36.1 -> 34.0 ms | 41.9 % -> 41.8 % |
+
+(In the third case SpringBoard's frame, a counted one, ended the lowest level under #42's rules too.) The heavy case
+under #42's rules is the phone's pattern (a mean near 90 ms, fences over Metal's 100 ms slice); the time the GPU spends
+at its lowest level hardly changes, so the power it saves stays. `test_xnuhost`: CTX_CREATE's hint bits and SUBMIT_3D's
+padding reach the renderer. `test_drm2kgsl`'s policy scenarios run on this PC with a stand-in for `/dev/udmabuf` (a
+memfd per UDMABUF_CREATE_LIST: `/dev/udmabuf` is root:kvm here) and on the Mac's container with the real one: queue
+priorities by class (the render server 4 with its constraint flag, iconservicesagent 8 without it, an app 4 in front,
+8 with the flag sent to the background, photoanalysisd 8 with the flag; 13 checks), and a context whose surfaces the
+render server reads (WidgetRenderer_Default non-UI: background, a queue with the flag; after the render server's blob
+over its surface's first page: `default now, not background`, its next queues without the flag, also after a new hint;
+two contexts of one process over the same pages change nothing; 17 checks). The memory scenarios still need the real
+`/dev/udmabuf`. fix-gpu-widgets on this PC: `test_gpu_policy` 166 checks, `test_drm2kgsl` 13 + 17, `test_xnuhost` 14032 (on main 03591b6),
+`test_imageset` 37, `test_display_mode`, `check-arm64` (the Android xnuhost booting the test kernel under qemu-aarch64)
+all pass; `test_gpu_leaks` is skipped (no `/dev/udmabuf`). No PC boot for it: qemu has no KGSL, so no GPU context, class,
+fence or level of this code runs there. **Not run on the phone.** The guest side (from fix-gpu-perf; fix-gpu-widgets
+changes no guest code, so `kernel.kc` stays as it is): `HOSTED_OUT=fixgpu` built
 (`xnu.macho` 55ea1a18..., `_oneios_gpu_hint` and the two weak CLPC functions in it), prelinked (audit 0 failures, 2711
 paired; `stubs-check` 666 good; `kernel.kc` 49f718cb...), and booted on the PC (qemu-aarch64, `--ram 4G`,
 `oneios-gpu-metal=1 oneios-adreno-selftest=1`, `--set gpu-level=deadline --set gpu-priority=1`): the accelerator at stage 5,

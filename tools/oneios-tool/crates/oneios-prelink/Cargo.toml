@@ -7,6 +7,8 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 oneios-common.workspace = true
+# `prelink build`: kernel.kc's chunk hash list, build.sh's last step (`oneios-tool image hashes`)
+oneios-image.workspace = true
 clap.workspace = true
 # The kernelcache's __PRELINK_INFO (an XML property list) and the kernel profile (TOML), as roots.py reads them
 # with plistlib and tomllib.

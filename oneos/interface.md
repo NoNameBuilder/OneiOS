@@ -151,7 +151,13 @@ What is running around it: One UI's kernel, init, vendor HALs, **surfaceflinger 
 radio. The switch holds the kernel wakelock `oneios_session` for the whole session (One UI's power manager is
 gone), and feeds Samsung's software watchdog. It saves One UI's clock caps (each cpufreq policy's
 `scaling_min_freq`/`scaling_max_freq`, `/sys/kernel/gpu/gpu_max_clock`, KGSL's `max_gpuclk`) and, once system_server
-is gone, writes the hardware's range; the return writes One UI's values back before zygote (`docs/hardware.md` 7d). Gone: zygote, zygote_secondary, system_server and every app. So no InputDispatcher: read
+is gone, writes the hardware's range; the return writes One UI's values back before zygote (`docs/hardware.md` 7d).
+**Asked of the fork, not done yet (fix-ram-hugepages, 2026-11-15):** the same for
+`/sys/kernel/mm/transparent_hugepage/shmem_enabled`: save it, write `advise` (Linux's default is `never`; GKI 6.1 has
+`CONFIG_TRANSPARENT_HUGEPAGE=y` and `..._MADVISE=y`), and write the saved value back at the return before zygote.
+With `advise` only mappings that ask (`MADV_HUGEPAGE`: xnuhost's window of the RAM memfd) get 2 MiB shmem pages, so
+One UI's own shmem is not changed. xnuhost writes nothing there: it reads the file at start and logs `memory: 2 MiB
+host pages: yes, ...` or `no (shmem_enabled never: ...)` (`docs/booter.md` 2.2, "2 MiB pages"). Gone: zygote, zygote_secondary, system_server and every app. So no InputDispatcher: read
 `/dev/input/event*` yourself. Do not `EVIOCGRAB` the volume-key device (see 6), or handle the chord yourself.
 
 **The display helper and the boot screen (rule, 2026-11-14).** The switch starts `bin/oneios-display` with a fresh
@@ -351,4 +357,6 @@ the phone": why there and not in the APK). The fork runs it for one flow at a ti
   Rust side is its step list (`download` of the released `xnu.macho`, `fetch` of the profile's IPSW members from
   Apple's URL, `im4p`, `apfs-copy`, `tweaks`, `prelink` with the audit and `stubs-check`, the `receive`-style lists),
   one `space` event before it writes, and those four result fields. Until then the tool answers `refused`
-  `unknown` and the screen says so.
+  `unknown`; the app then also sends `tweaks` (refused `not-ported`: the root tweaks are still Python) and shows both
+  answers in the tool's words, and stages nothing. Not in the tool either: `scripts/image/build.sh`'s order and checks,
+  the AEA decryption.

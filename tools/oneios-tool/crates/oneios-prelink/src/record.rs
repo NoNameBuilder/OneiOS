@@ -37,6 +37,16 @@ pub struct Args {
     /// The OneiOS checkout (default: the git checkout the current folder is in)
     #[arg(long)]
     repo: Option<String>,
+    /// Never start `git` (`prelink build --no-git`, `serve`: the phone has none, and `serve` starts no process):
+    /// the record's "oneios" and "xnuprelink" commits are the two options below, or null. Needs --repo
+    #[arg(long)]
+    no_git: bool,
+    /// The OneiOS commit for the record, instead of asking git
+    #[arg(long)]
+    oneios_commit: Option<String>,
+    /// XnuPrelink's commit for the record, instead of asking git
+    #[arg(long)]
+    xnuprelink_commit: Option<String>,
 }
 
 fn sha(path: &str) -> Result<String> {
@@ -82,7 +92,14 @@ pub fn run(args: Args) -> Result<()> {
     }
     let root = match &args.repo {
         Some(repo) => resolve(repo)?,
+        None if args.no_git => anyhow::bail!("--no-git needs --repo"),
         None => PathBuf::from(git(Path::new("."), &["rev-parse", "--show-toplevel"]).ok_or_else(|| anyhow!("not inside a git checkout: give --repo"))?),
+    };
+    // A commit: the one given, else git's answer (never asked with --no-git).
+    let commit = |given: &Option<String>, checkout: &Path| match given {
+        Some(commit) => Some(commit.clone()),
+        None if args.no_git => None,
+        None => git(checkout, &["rev-parse", "HEAD"]),
     };
     let (stubbed, missing) = (inner_keys(key(&prelink, "stubbed")?), inner_keys(key(&prelink, "missing")?));
     let file = |path: &str, what: Option<&str>| -> Result<Value> {
@@ -113,8 +130,8 @@ pub fn run(args: Args) -> Result<()> {
     inputs.set("reviewed", row);
     record.set("inputs", inputs);
     let mut tools = Value::dict();
-    tools.set("oneios", git(&root, &["rev-parse", "HEAD"]));
-    tools.set("xnuprelink", git(Path::new(&args.xnuprelink), &["rev-parse", "HEAD"]));
+    tools.set("oneios", commit(&args.oneios_commit, &root));
+    tools.set("xnuprelink", commit(&args.xnuprelink_commit, Path::new(&args.xnuprelink)));
     tools.set("matcher_version", pairing.get("matcher_version").cloned().unwrap_or(Value::Null));
     tools.set("matcher_signature", pairing.get("matcher_signature").cloned().unwrap_or(Value::Null));
     record.set("tools", tools);

@@ -329,6 +329,11 @@ __attribute__((weak)) void oneios_audio_start(void) {}
 // OneiOSWifi.cpp: the Wi-Fi controller and interface under the collection's IOEthernetController and
 // IOEthernetInterface, UniXNU-droidvm's virtio-net transport). Weak: a kernel without it has no network interface.
 __attribute__((weak)) void oneios_net_start(void) {}
+// The video encoder and decoder: the hosted kernel's codec archive (kernel/patches/oneios-hosted/codec, OneiOSCodec.c:
+// UniXNU-droidvm's virtio-media transport, VideoToolbox's paravirtualized codec host and user client). It drives
+// xnuhost's "droidvm,virtio-media" device (runtime/bridges/encoder) so iOS's VideoToolbox encodes HEVC/H.264 and
+// CMPhoto writes HEIC. Weak: a kernel without the archive publishes no codec (VideoToolbox keeps its software codecs).
+__attribute__((weak)) void oneios_codec_start(void) {}
 // The graceful shutdown the return asks for (OB_CTL_SHUTDOWN above). The real power-off is a guest userspace helper
 // the Mac builds (userland/helpers/oneios-shutdown, docs/booter.md "The return"), which runs iOS's clean power-off so
 // SpringBoard tears down and persists its boot overlay for the next boot. Weak default: nothing, so a kernel or image
@@ -348,4 +353,5 @@ void oneios_drivers_start(void) {
     oneios_hid_input_start();   // after the backlight: the light sensor's device listens to its readings
     oneios_net_start();
     oneios_audio_start();
+    oneios_codec_start();
 }

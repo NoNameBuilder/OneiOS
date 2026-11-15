@@ -343,6 +343,7 @@ xl_adt_node *xl_machine_tree(const xl_machine *m, const char **error)
     case XL_DEV_SND:        snprintf(name, sizeof name, "virtio-snd"); compat = "droidvm,virtio-snd"; break;
     case XL_DEV_BRIDGE:     snprintf(name, sizeof name, "bridge"); compat = "oneios,bridge"; break;
     case XL_DEV_CAMERA:     snprintf(name, sizeof name, "camera"); compat = "oneios,camera"; break;
+    case XL_DEV_MEDIA:      snprintf(name, sizeof name, "virtio-media-0"); compat = "droidvm,virtio-media"; break;
     default: FAIL("unknown device kind");
     }
     if (xl_adt_child(io, name)) FAIL("two devices of a kind that has one node");
@@ -357,6 +358,10 @@ xl_adt_node *xl_machine_tree(const xl_machine *m, const char **error)
     if (d->kind == XL_DEV_GPU && m->gpu_pool_size) {
       uint64_t pool[2] = { m->gpu_pool_base, m->gpu_pool_size };
       xl_adt_set(n, "drm-host-pool", pool, sizeof pool);
+    }
+    if (d->kind == XL_DEV_MEDIA && m->media_pool_size) {
+      uint64_t pool[2] = { m->media_pool_base, m->media_pool_size };
+      xl_adt_set(n, "media-host-pool", pool, sizeof pool);
     }
   }
   if (m->cpufreq_size) {

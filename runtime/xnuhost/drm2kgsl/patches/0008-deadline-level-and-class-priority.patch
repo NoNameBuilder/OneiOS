@@ -162,12 +162,13 @@
     const bool want = kgsl_constraint_now(kctx);
     if (want != kctx->constraint_on && kgsl_set_pwr_constraint(kctx->base.fd, drawctxt_id, want)) {
        kctx->constraint_on = want;
-@@ -1944,21 +2030,48 @@
+@@ -1944,21 +2030,49 @@
      * PER_CONTEXT_TS made DRAWCTXT_CREATE return EINVAL; a priority (bits 12-15)
      * is taken with these flags.
      */
 +   /* ONEIOS (0008): the priority is the owner's class (oneios_gpu_policy.h og_kgsl_priority: the render server and the front app 4,
-+    * the default 8, background processes 12; ONEIOS_GPU_PRIORITY=off: the guest's queue priority as upstream), and a background
++    * the default and background processes 8: never 12, a lower ringbuffer has no bound on its fences, fix-gpu-widgets;
++    * ONEIOS_GPU_PRIORITY=off: the guest's queue priority as upstream), and a background
 +    * context's queues can carry KGSL's lowest level. A priority this KGSL refuses: the queue is made without one, once said. */
 +   static int by_class = -1;
 +   if (by_class < 0) {
@@ -214,7 +215,7 @@
     return 0;
  }
  
-@@ -2024,9 +2137,12 @@
+@@ -2024,9 +2138,12 @@
        if (!rsp->ret) {
           q->id = id;
           if (constrained)
@@ -229,7 +230,7 @@
           _mesa_hash_table_insert(kctx->sq_to_ring_idx_table,
                                   (void *)(uintptr_t)id,
                                   (void *)(uintptr_t)ring_idx);
-@@ -2600,10 +2716,12 @@
+@@ -2600,10 +2717,12 @@
        free(kcmds);
        return -EINVAL;
     }
@@ -244,7 +245,7 @@
        oneios_hold_follow();
     if (kctx->report_resets && kctx->shmem)
        kgsl_note_reset(kctx, req->queue_id);
-@@ -3510,6 +3628,8 @@
+@@ -3510,6 +3629,8 @@
  
     kctx->use_wait_timestamp = kgsl_use_wait_timestamp();
     kctx->pending_guest_fd = -1;   /* calloc gives 0, which is a valid fd */

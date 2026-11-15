@@ -140,7 +140,7 @@ ok "a symbol that no stub has: elf-check.sh fails and says so"
 
 # 6. A stage of runtime/build.sh: it runs elf-check.sh itself; then the same stage with the faulty library in it.
 "$ROOT/runtime/build.sh" "$T/stage" > "$T/build.log" 2>&1 || { cat "$T/build.log"; fail "runtime/build.sh"; }
-for elf in liboneios-display.so oneios-audio oneios-camera camctl; do
+for elf in liboneios-display.so oneios-audio oneios-camera camctl oneios-encoder encctl; do
   grep -q "^elf-check: bin/$elf: NEEDED " "$T/build.log" || { cat "$T/build.log"; fail "runtime/build.sh did not check bin/$elf"; }
 done
 grep -q '^elf-check: bin/liboneios-display.so: NEEDED .*libnativewindow.so' "$T/build.log" || fail "bin/liboneios-display.so does not need libnativewindow.so"

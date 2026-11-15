@@ -25,5 +25,6 @@ fn command_line() {
     assert!(parse(&["save", "data.img", "x.logarchive", "--volume", "Data"]).is_ok());
     assert!(parse(&["boots", "data.img", "--block0"]).is_ok());
     assert!(parse(&["checks", "data.img", "--boot", "all", "--examples", "5"]).is_ok());
+    assert!(parse(&["health", "data.img", "--boot", "all", "--top", "3", "--detail", "-o", "h.txt", "--checkpoint", "198"]).is_ok() && parse(&["health"]).is_ok());
     assert!(parse(&["show"]).is_err() && parse(&["show", "a", "-f", "xml"]).is_err() && parse(&[]).is_err());
 }

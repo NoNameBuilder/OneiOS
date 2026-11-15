@@ -46,6 +46,11 @@ make -s -C "$ROOT/runtime/bridges/camera" NDK="$NDK" build/android/oneios-camera
 "$STRIP" -o "$STAGE/bin/oneios-camera" "$ROOT/runtime/bridges/camera/build/android/oneios-camera"
 "$STRIP" -o "$STAGE/bin/camctl" "$ROOT/runtime/bridges/camera/build/android/camctl"
 chmod 0755 "$STAGE/bin/oneios-camera" "$STAGE/bin/camctl"
+# The video encoder helper, and encctl: the encoder alone, for a check on the phone (runtime/bridges/encoder/README.md)
+make -s -C "$ROOT/runtime/bridges/encoder" NDK="$NDK" build/android/oneios-encoder build/android/encctl
+"$STRIP" -o "$STAGE/bin/oneios-encoder" "$ROOT/runtime/bridges/encoder/build/android/oneios-encoder"
+"$STRIP" -o "$STAGE/bin/encctl" "$ROOT/runtime/bridges/encoder/build/android/encctl"
+chmod 0755 "$STAGE/bin/oneios-encoder" "$STAGE/bin/encctl"
 # gpuctl: the GPU path alone, for a check on the phone (runtime/xnuhost/tools/gpuctl.c, docs/gpu.md)
 make -s -C "$ROOT/runtime/xnuhost" NDK="$NDK" build/android/gpuctl
 "$STRIP" -o "$STAGE/bin/gpuctl" "$ROOT/runtime/xnuhost/build/android/gpuctl"

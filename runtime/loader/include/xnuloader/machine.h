@@ -25,6 +25,7 @@ typedef enum {
   XL_DEV_SND,         // "droidvm,virtio-snd"
   XL_DEV_BRIDGE,      // "oneios,bridge": the message channel of runtime/bridges (haptics, Bluetooth HCI)
   XL_DEV_CAMERA,      // "oneios,camera": camera frames from runtime/bridges/camera (drivers/camera)
+  XL_DEV_MEDIA,       // "droidvm,virtio-media": the video encoder (runtime/bridges/encoder), with a media-host-pool
 } xl_device_kind;
 
 typedef struct { xl_device_kind kind; uint64_t base, size; } xl_device;
@@ -45,6 +46,10 @@ typedef struct {
   // /arm-io/virtio-gpu drm-host-pool: physical base and size of the memory, outside the kernel's window, in which
   // the host's 3D renderer keeps what the guest maps (UniXNU-droidvm DroidVMVirtioGpu3D.cpp); size 0 for no 3D.
   uint64_t    gpu_pool_base, gpu_pool_size;
+  // /arm-io/virtio-media media-host-pool: physical base and size of the memory, outside the kernel's window, in
+  // which the video encoder's MMAP'd V4L2 buffers live (runtime/bridges/encoder); the guest maps it as the codec's
+  // OUTPUT/CAPTURE buffers (UniXNU-droidvm DroidVMVirtioMedia.c). Size 0 for no encoder.
+  uint64_t    media_pool_base, media_pool_size;
   // /bluetooth: transport-encoding 10 (the virtual transport, no controller) when bt_transport is 0;
   // else that encoding (xnuhost: 1, H4, the phone's controller behind the bridge) with bt_speed and bt_mac.
   uint32_t    bt_transport, bt_speed;

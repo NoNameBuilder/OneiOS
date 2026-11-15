@@ -56,4 +56,7 @@ int  br_wifi_sim_send(br_net *n, const uint8_t *frame, size_t length);
 // (48 kHz S16 mono), 240-frame periods, as DroidVMVirtioSnd.c asks.
 xh_virtio *br_virtio_snd_create(uint64_t base, unsigned spi, const br_audio_backend *backend, void *backend_ctx);
 
+// "droidvm,virtio-media": the video encoder (runtime/bridges/encoder/encoder.h; docs/hardware.md, "Video encoder").
+// The create and backend live in encoder.h so this header keeps no MediaCodec dependency.
+
 #endif

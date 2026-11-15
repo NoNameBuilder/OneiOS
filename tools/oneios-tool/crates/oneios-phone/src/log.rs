@@ -22,12 +22,17 @@ pub const FILES: [(&str, &str, &str); 7] = [
 
 /// The file on the phone for `--file NAME`: one of FILES, or `logs/xnuhost-<epoch>.log` (an earlier session).
 pub fn path_of(name: &str) -> Result<String> {
+    Ok(format!("{STAGE}/{}", rel_path_of(name)?))
+}
+
+/// The same, as the path below the stage (the local form reads it under the stage it was given: `local.rs`).
+pub fn rel_path_of(name: &str) -> Result<String> {
     if let Some((_, path, _)) = FILES.iter().find(|(n, _, _)| *n == name) {
-        return Ok(format!("{STAGE}/{path}"));
+        return Ok(path.to_string());
     }
     let earlier = name.strip_prefix("logs/xnuhost-").and_then(|r| r.strip_suffix(".log")).is_some_and(|e| !e.is_empty() && e.bytes().all(|b| b.is_ascii_digit()));
     if earlier {
-        return Ok(format!("{STAGE}/{name}"));
+        return Ok(name.to_string());
     }
     bail!("--file {name}: one of {} or logs/xnuhost-<epoch>.log (phone log --list)", FILES.map(|f| f.0).join(", "))
 }

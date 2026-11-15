@@ -9,7 +9,7 @@
 #include <string.h>
 
 static const char *const bridge_names[BR_HW_NBRIDGE] = {
-  "backlight", "battery", "thermal", "haptics", "touch", "keys", "audio", "camera", "wifi", "bluetooth", "display",
+  "backlight", "battery", "thermal", "haptics", "touch", "keys", "audio", "camera", "wifi", "bluetooth", "display", "encoder",
 };
 
 void br_hw_settings_init(br_hw_settings *s)

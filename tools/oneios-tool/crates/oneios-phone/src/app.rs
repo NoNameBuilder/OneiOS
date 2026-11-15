@@ -13,7 +13,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const MARK: &str = "app-android/settings.gradle.kts";
+/// What a folder must hold to be the fork's checkout, whatever its name: the app's build file (the version is
+/// read from it) and the fork's own switch script (upstream OneOS has no `oneios_switch.sh`).
+const MARKS: [&str; 2] = ["app-android/app/build.gradle.kts", "switcher/assets/oneios_switch.sh"];
+/// What fills an `app/` that a clone without `--recurse-submodules`, or a new worktree, left empty.
+pub const SUBMODULE: &str = "git submodule update --init --remote app";
 const APK: &str = "app-android/app/build/outputs/apk/full/debug/app-full-debug.apk";
 /// The fork's three scripts and where each goes in the stage.
 const SCRIPTS: [(&str, &str); 3] = [
@@ -27,40 +31,140 @@ pub struct Fork {
     pub how: &'static str,
 }
 
-/// The OneOS checkout: `--oneos DIR`, `ONEOS_DIR`, the current folder if it is one, then `OneOS` beside the
-/// OneiOS main checkout (found through git's common folder, so it works from a worktree).
-pub fn find_fork(option: Option<&str>) -> Result<Fork> {
-    let is = |dir: &Path| dir.join(MARK).is_file();
+/// What a folder is to the lookup.
+#[derive(Debug, PartialEq)]
+enum Folder {
+    Checkout,
+    NotThere,
+    /// a folder with nothing in it: what a submodule that is not initialised looks like
+    Empty,
+    /// the first of MARKS it does not have
+    Lacks(&'static str),
+}
+
+fn folder(dir: &Path) -> Folder {
+    if !dir.is_dir() {
+        return Folder::NotThere;
+    }
+    match MARKS.iter().find(|m| !dir.join(m).is_file()) {
+        None => Folder::Checkout,
+        Some(_) if fs::read_dir(dir).map(|mut d| d.next().is_none()).unwrap_or(false) => Folder::Empty,
+        Some(m) => Folder::Lacks(m),
+    }
+}
+
+/// Where the lookup looks: everything it reads from the command line, the environment and git, so that the
+/// order itself (`look`) can be tested on made-up folders.
+pub struct Places {
+    /// `--oneos DIR`
+    pub option: Option<String>,
+    /// `ONEOS_DIR`
+    pub env: Option<String>,
+    /// the current folder
+    pub here: PathBuf,
+    /// the OneiOS checkout the command runs in (`cycle::repo_root`), if any
+    pub root: Option<PathBuf>,
+    /// the main checkout of the git checkout at `root` (else at `here`): `root` itself unless it is a worktree
+    pub main: Option<PathBuf>,
+}
+
+impl Places {
+    pub fn now(option: Option<&str>) -> Result<Places> {
+        let here = std::env::current_dir().context("the current folder")?;
+        let root = crate::cycle::repo_root().ok();
+        // <main checkout>/.git -> <main checkout>, found through git's common folder, so it works from a worktree
+        let main = Command::new("git")
+            .arg("-C")
+            .arg(root.as_deref().unwrap_or(&here))
+            .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .and_then(|o| Path::new(String::from_utf8_lossy(&o.stdout).trim()).parent().map(Path::to_path_buf))
+            .filter(|p| p.is_dir());
+        Ok(Places { option: option.map(str::to_string), env: std::env::var("ONEOS_DIR").ok().filter(|d| !d.is_empty()), here, root, main })
+    }
+}
+
+/// The OneOS checkout and what to tell the user about the places passed over. The order:
+///
+/// 1. `--oneos DIR`, 2. `ONEOS_DIR`: a checkout named by hand. If it is not one, that is an error: the lookup
+///    never goes on to another place behind the user's back.
+/// 3. the current folder, when it is a checkout (the user stands in it);
+/// 4. `app/` of the OneiOS checkout: the submodule, the default;
+/// 5. `app/` of the OneiOS main checkout, when the command runs in a worktree (a new worktree's `app/` is empty);
+/// 6. `OneOS` beside the OneiOS main checkout: the clone from before the submodule.
+///
+/// An `app/` that is there but is no checkout (empty: the submodule is not initialised) is passed over with a
+/// note that names `SUBMODULE`; when nothing is found the error lists every place and why it was not taken.
+pub fn look(p: &Places) -> Result<(Fork, Vec<String>)> {
+    let same = |a: &Path, b: &Path| matches!((fs::canonicalize(a), fs::canonicalize(b)), (Ok(a), Ok(b)) if a == b);
+    let app = p.root.as_ref().map(|r| r.join("app"));
     let named = |dir: &str, how: &'static str| -> Result<Fork> {
         let dir = fs::canonicalize(dir).with_context(|| format!("{how}: {dir}"))?;
-        if !is(&dir) {
-            bail!("{how}: {} is not a OneOS checkout (no {MARK})", dir.display());
+        match folder(&dir) {
+            Folder::Checkout => Ok(Fork { dir, how }),
+            Folder::Empty => bail!("{how}: {} is an empty folder, not a OneOS checkout (if it is OneiOS's app/, the submodule is not initialised: {SUBMODULE})", dir.display()),
+            Folder::Lacks(mark) => bail!("{how}: {} is not a OneOS checkout (no {mark})", dir.display()),
+            Folder::NotThere => bail!("{how}: {} is not a folder", dir.display()),
         }
-        Ok(Fork { dir, how })
     };
-    if let Some(dir) = option {
-        return named(dir, "--oneos");
+    if let Some(dir) = &p.option {
+        return Ok((named(dir, "--oneos")?, Vec::new()));
     }
-    if let Some(dir) = std::env::var("ONEOS_DIR").ok().filter(|d| !d.is_empty()) {
-        return named(&dir, "ONEOS_DIR");
+    if let Some(dir) = &p.env {
+        let fork = named(dir, "ONEOS_DIR")?;
+        // the environment is easy to forget: say so when it takes the place of the submodule
+        let notes = app.iter().filter(|a| folder(a) == Folder::Checkout && !same(a, &fork.dir)).map(|a| format!("ONEOS_DIR is set, so {} is not used", a.display())).collect();
+        return Ok((fork, notes));
     }
-    let here = std::env::current_dir().context("the current folder")?;
-    if is(&here) {
-        return Ok(Fork { dir: here, how: "the current folder" });
+    if folder(&p.here) == Folder::Checkout {
+        return Ok((Fork { dir: p.here.clone(), how: "the current folder" }, Vec::new()));
     }
-    let common = Command::new("git").args(["rev-parse", "--path-format=absolute", "--git-common-dir"]).output();
-    if let Ok(out) = common {
-        let common = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if out.status.success() && !common.is_empty() {
-            // <main checkout>/.git -> <main checkout>/../OneOS
-            if let Some(beside) = Path::new(&common).parent().and_then(Path::parent).map(|p| p.join("OneOS")) {
-                if is(&beside) {
-                    return Ok(Fork { dir: beside, how: "beside the OneiOS checkout" });
-                }
-            }
+    let mut places: Vec<(PathBuf, &'static str)> = Vec::new();
+    if let Some(app) = app {
+        places.push((app, "app/ of the OneiOS checkout"));
+    }
+    if let Some(main) = &p.main {
+        if !p.root.as_ref().is_some_and(|r| same(r, main)) {
+            places.push((main.join("app"), "app/ of the OneiOS main checkout"));
+        }
+        if let Some(beside) = main.parent() {
+            places.push((beside.join("OneOS"), "beside the OneiOS checkout"));
         }
     }
-    bail!("no OneOS checkout: name it with --oneos DIR or ONEOS_DIR (it has {MARK}), or clone akshaynexus/OneOS (branch oneios) beside the OneiOS checkout")
+    // (why a place was not taken, whether that is worth a note when a later place is taken)
+    let mut passed: Vec<(String, bool)> = Vec::new();
+    for (dir, how) in places {
+        let submodule = dir.file_name().is_some_and(|n| n == "app");
+        let at = dir.parent().unwrap_or(Path::new(".")).display().to_string();
+        match folder(&dir) {
+            Folder::Checkout => return Ok((Fork { dir, how }, passed.into_iter().filter(|p| p.1).map(|p| p.0).collect())),
+            Folder::NotThere => passed.push((format!("{} is not there", dir.display()), false)),
+            Folder::Empty if submodule => passed.push((format!("{} is empty: the app submodule is not initialised (in {at}: {SUBMODULE})", dir.display()), true)),
+            Folder::Empty => passed.push((format!("{} is empty", dir.display()), true)),
+            Folder::Lacks(mark) if submodule => passed.push((format!("{} is not the fork's checkout (no {mark}; in {at}: {SUBMODULE})", dir.display()), true)),
+            Folder::Lacks(mark) => passed.push((format!("{} is not the fork's checkout (no {mark})", dir.display()), true)),
+        }
+    }
+    if passed.is_empty() {
+        passed.push(("the current folder is not inside a OneiOS checkout (or ONEIOS_ROOT=), so there is no app/ to look in".to_string(), false));
+    }
+    bail!(
+        "no OneOS checkout (a folder with {} and {}): {}. Name one with --oneos DIR or ONEOS_DIR, or get the submodule (in the OneiOS checkout: {SUBMODULE})",
+        MARKS[0],
+        MARKS[1],
+        passed.into_iter().map(|p| p.0).collect::<Vec<_>>().join("; ")
+    )
+}
+
+/// The OneOS checkout (`look` has the order); the notes about the places passed over go to stderr.
+pub fn find_fork(option: Option<&str>) -> Result<Fork> {
+    let (fork, notes) = look(&Places::now(option)?)?;
+    for note in notes {
+        eprintln!("note: {note}");
+    }
+    Ok(fork)
 }
 
 fn say_fork(fork: &Fork) {
@@ -457,4 +561,177 @@ pub fn stage_scripts(fork: &Fork, serial: Option<&str>) -> Result<()> {
         bail!("{wrong} staged scripts are not the fork's files");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A scratch folder of this test's own; removed when the test ends.
+    struct Scratch(PathBuf);
+    impl Scratch {
+        fn new(name: &str) -> Scratch {
+            let dir = std::env::temp_dir().join(format!("oneios-app-lookup-{}-{name}", std::process::id()));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            Scratch(fs::canonicalize(&dir).unwrap())
+        }
+        fn dir(&self, rel: &str) -> PathBuf {
+            let dir = self.0.join(rel);
+            fs::create_dir_all(&dir).unwrap();
+            dir
+        }
+        /// A folder that holds what a fork checkout holds.
+        fn checkout(&self, rel: &str) -> PathBuf {
+            let dir = self.dir(rel);
+            for mark in MARKS {
+                fs::create_dir_all(dir.join(mark).parent().unwrap()).unwrap();
+                fs::write(dir.join(mark), "stand-in\n").unwrap();
+            }
+            dir
+        }
+        /// A OneiOS checkout at `oneios` that is its own main checkout, the user standing in it.
+        fn places(&self) -> Places {
+            let root = self.dir("oneios");
+            Places { option: None, env: None, here: root.clone(), root: Some(root.clone()), main: Some(root) }
+        }
+    }
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+    fn text(p: &Path) -> String {
+        p.display().to_string()
+    }
+
+    #[test]
+    fn app_of_the_checkout_is_the_default_and_wins_over_the_clone_beside() {
+        let s = Scratch::new("app");
+        let (app, _beside) = (s.checkout("oneios/app"), s.checkout("OneOS"));
+        let (fork, notes) = look(&s.places()).unwrap();
+        assert_eq!((fork.dir, fork.how), (app, "app/ of the OneiOS checkout"));
+        assert!(notes.is_empty(), "{notes:?}");
+    }
+
+    #[test]
+    fn an_empty_app_is_no_checkout_and_the_error_names_the_command() {
+        let s = Scratch::new("empty");
+        let app = s.dir("oneios/app");
+        let e = format!("{:#}", look(&s.places()).err().expect("an empty app/ was taken for a checkout"));
+        assert!(e.starts_with("no OneOS checkout"), "{e}");
+        assert!(e.contains(&format!("{} is empty: the app submodule is not initialised (in {}: git submodule update --init --remote app)", text(&app), text(&s.0.join("oneios")))), "{e}");
+        assert!(e.contains(&format!("{} is not there", text(&s.0.join("OneOS")))), "{e}");
+    }
+
+    #[test]
+    fn an_empty_app_is_passed_over_with_a_note_when_a_later_place_is_a_checkout() {
+        let s = Scratch::new("empty-beside");
+        let (app, beside) = (s.dir("oneios/app"), s.checkout("OneOS"));
+        let (fork, notes) = look(&s.places()).unwrap();
+        assert_eq!((fork.dir, fork.how), (beside, "beside the OneiOS checkout"));
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(notes[0].starts_with(&format!("{} is empty: the app submodule is not initialised", text(&app))) && notes[0].contains(SUBMODULE), "{notes:?}");
+    }
+
+    #[test]
+    fn a_checkout_is_told_by_what_it_holds_not_by_its_name() {
+        let s = Scratch::new("holds");
+        // app/ with files, but not the fork's: only the build file (upstream's branch has no oneios_switch.sh)
+        let app = s.dir("oneios/app/app-android/app");
+        fs::write(app.join("build.gradle.kts"), "x").unwrap();
+        assert_eq!(folder(&s.0.join("oneios/app")), Folder::Lacks("switcher/assets/oneios_switch.sh"));
+        fs::write(s.dir("oneios/other").join("README.md"), "x").unwrap();
+        assert_eq!(folder(&s.0.join("oneios/other")), Folder::Lacks("app-android/app/build.gradle.kts"));
+        assert_eq!(folder(&s.dir("oneios/nothing")), Folder::Empty);
+        assert_eq!(folder(&s.0.join("oneios/absent")), Folder::NotThere);
+        // a folder of any name that holds both is one
+        assert_eq!(folder(&s.checkout("somewhere/else")), Folder::Checkout);
+        let e = format!("{:#}", look(&s.places()).err().unwrap());
+        assert!(e.contains("oneios/app is not the fork's checkout (no switcher/assets/oneios_switch.sh; in "), "{e}");
+        // and it is passed over, with a note, for the clone beside
+        let beside = s.checkout("OneOS");
+        let (fork, notes) = look(&s.places()).unwrap();
+        assert_eq!(fork.dir, beside);
+        assert!(notes.len() == 1 && notes[0].contains("is not the fork's checkout"), "{notes:?}");
+    }
+
+    #[test]
+    fn a_checkout_named_by_hand_wins_over_app() {
+        let s = Scratch::new("named");
+        let (app, mine, other) = (s.checkout("oneios/app"), s.checkout("mine"), s.checkout("other"));
+        let (fork, notes) = look(&Places { option: Some(text(&mine)), ..s.places() }).unwrap();
+        assert_eq!((fork.dir, fork.how), (mine.clone(), "--oneos"));
+        assert!(notes.is_empty(), "{notes:?}");
+        // ONEOS_DIR too, and it says that the submodule is not used
+        let (fork, notes) = look(&Places { env: Some(text(&other)), ..s.places() }).unwrap();
+        assert_eq!((fork.dir, fork.how), (other.clone(), "ONEOS_DIR"));
+        assert_eq!(notes, vec![format!("ONEOS_DIR is set, so {} is not used", text(&app))]);
+        // ONEOS_DIR that names app/ itself: nothing to say
+        let (fork, notes) = look(&Places { env: Some(text(&app)), ..s.places() }).unwrap();
+        assert_eq!((fork.dir, fork.how, notes.len()), (app, "ONEOS_DIR", 0));
+        // --oneos before ONEOS_DIR
+        let (fork, _) = look(&Places { option: Some(text(&mine)), env: Some(text(&other)), ..s.places() }).unwrap();
+        assert_eq!((fork.dir, fork.how), (mine, "--oneos"));
+    }
+
+    #[test]
+    fn a_named_folder_that_is_no_checkout_is_an_error_not_a_reason_to_look_further() {
+        let s = Scratch::new("named-wrong");
+        let (_app, empty) = (s.checkout("oneios/app"), s.dir("empty"));
+        fs::write(s.dir("files").join("x"), "x").unwrap();
+        let (files, absent) = (s.0.join("files"), s.0.join("absent"));
+        for (places, want) in [
+            (Places { option: Some(text(&empty)), ..s.places() }, format!("--oneos: {} is an empty folder, not a OneOS checkout (if it is OneiOS's app/, the submodule is not initialised: {SUBMODULE})", text(&empty))),
+            (Places { env: Some(text(&empty)), ..s.places() }, format!("ONEOS_DIR: {} is an empty folder", text(&empty))),
+            (Places { env: Some(text(&files)), ..s.places() }, format!("ONEOS_DIR: {} is not a OneOS checkout (no app-android/app/build.gradle.kts)", text(&files))),
+            (Places { option: Some(text(&absent)), ..s.places() }, format!("--oneos: {}", text(&absent))),
+        ] {
+            let e = format!("{:#}", look(&places).err().expect("a folder that is no checkout was taken, or the lookup went on"));
+            assert!(e.starts_with(&want), "{e}\n wanted: {want}");
+        }
+    }
+
+    #[test]
+    fn the_current_folder_when_it_is_a_checkout_comes_before_app() {
+        let s = Scratch::new("here");
+        let (_app, here) = (s.checkout("oneios/app"), s.checkout("standing"));
+        let (fork, _) = look(&Places { here: here.clone(), ..s.places() }).unwrap();
+        assert_eq!((fork.dir, fork.how), (here, "the current folder"));
+    }
+
+    #[test]
+    fn from_a_worktree_the_main_checkout_app_and_then_the_clone_beside_it() {
+        let s = Scratch::new("worktree");
+        let (main, tree) = (s.dir("oneios"), s.dir("oneios/.claude/worktrees/agent-x"));
+        let places = || Places { option: None, env: None, here: tree.clone(), root: Some(tree.clone()), main: Some(main.clone()) };
+        // the worktree has no app/ (the submodule is not on its branch yet): the clone beside the main checkout
+        let beside = s.checkout("OneOS");
+        let (fork, notes) = look(&places()).unwrap();
+        assert_eq!((fork.dir, fork.how, notes.len()), (beside, "beside the OneiOS checkout", 0));
+        // a new worktree's app/ is empty; the main checkout's is initialised
+        let (empty, app) = (s.dir("oneios/.claude/worktrees/agent-x/app"), s.checkout("oneios/app"));
+        let (fork, notes) = look(&places()).unwrap();
+        assert_eq!((fork.dir, fork.how), (app, "app/ of the OneiOS main checkout"));
+        assert!(notes.len() == 1 && notes[0].starts_with(&format!("{} is empty", text(&empty))), "{notes:?}");
+        // the worktree's own app/, once initialised, is first
+        let own = s.checkout("oneios/.claude/worktrees/agent-x/app");
+        assert_eq!(look(&places()).unwrap().0.dir, own);
+    }
+
+    #[test]
+    fn none_found() {
+        let s = Scratch::new("none");
+        let e = format!("{:#}", look(&s.places()).err().unwrap());
+        for want in [
+            "no OneOS checkout (a folder with app-android/app/build.gradle.kts and switcher/assets/oneios_switch.sh): ".to_string(),
+            format!("{} is not there; {} is not there", text(&s.0.join("oneios/app")), text(&s.0.join("OneOS"))),
+            format!("Name one with --oneos DIR or ONEOS_DIR, or get the submodule (in the OneiOS checkout: {SUBMODULE})"),
+        ] {
+            assert!(e.contains(&want), "{e}\n wanted: {want}");
+        }
+        // outside every checkout
+        let e = format!("{:#}", look(&Places { option: None, env: None, here: s.dir("x"), root: None, main: None }).err().unwrap());
+        assert!(e.contains("the current folder is not inside a OneiOS checkout"), "{e}");
+    }
 }

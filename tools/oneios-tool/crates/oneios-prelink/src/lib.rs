@@ -9,6 +9,7 @@
 
 mod align;
 mod audit;
+pub mod build;
 pub mod classes;
 mod emit;
 mod hosted;
@@ -82,6 +83,9 @@ pub enum Command {
     LeadBetween(lead_between::Args),
     /// lead/imports.py: pair unknown kernel imports of the kexts by the order of each kext's import table
     LeadImports(lead_imports::Args),
+    /// The whole of kernel/prelink/build.sh in this process (the phone, `serve`): every step, then the audit, the
+    /// stub check, the record and kernel.kc with its hash list in OUT
+    Build(build::Args),
     /// Print the kernelcache SHA-256 a kernel profile pins ([kernel.prelink] kernelcache_sha256)
     Pin { profile: String },
     /// Print the matcher signature of an XnuPrelink checkout (what match writes into the map and emit checks)
@@ -121,6 +125,12 @@ pub fn run(args: &[String]) -> i32 {
     }
 }
 
+/// A step's command line (`STEP ARGS...`) as the parsed step: `build` runs the audit through it to learn whether
+/// the audit failed or could not run.
+pub(crate) fn parse(args: &[String]) -> anyhow::Result<Command> {
+    <Standalone as clap::Parser>::try_parse_from(std::iter::once("prelink".to_string()).chain(args.iter().cloned())).map(|parsed| parsed.command).map_err(|e| anyhow::anyhow!("{}", e.to_string().trim_end()))
+}
+
 /// Run a parsed step (oneios-tool's main parses it); the exit status.
 pub fn main(command: Command) -> i32 {
     let (step, result) = match command {
@@ -149,6 +159,7 @@ pub fn main(command: Command) -> i32 {
         Command::PortFixture(args) => return bare(port_fixture::run(args)),
         Command::LeadBetween(args) => return bare(lead_between::run(args)),
         Command::LeadImports(args) => return bare(lead_imports::run(args)),
+        Command::Build(args) => ("build", build::run(args)),
         Command::Pin { profile } => ("pin", pin(&profile)),
         Command::Signature { xnuprelink } => ("signature", matcher::matcher_signature(std::path::Path::new(&xnuprelink)).map(|s| println!("{s}"))),
     };

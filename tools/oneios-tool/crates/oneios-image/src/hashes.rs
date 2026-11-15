@@ -7,7 +7,7 @@
 //! which hashes the segment's chunks. So an image costs the time of one SHA-256 over it, not two.
 
 use crate::{crash, err, Fail};
-use oneios_common::hex;
+use oneios_common::{hex, job};
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 use std::fs::File;
@@ -43,6 +43,12 @@ fn io_fail(path: &str, e: std::io::Error) -> Fail {
     crash!("{path}: {e}")
 }
 
+/// The running request's check between blocks (`serve`: a cancel, the heat and battery limits). Nothing is asked
+/// of a command that runs alone.
+fn job_check(path: &str) -> Result<(), Fail> {
+    job::check().map_err(|stop| crash!("{path}: {stop}"))
+}
+
 /// Asked between blocks: true ends a pass early, when its result is no longer wanted (`verify` found an earlier
 /// file wrong).
 pub type Stop<'a> = &'a (dyn Fn() -> bool + Sync);
@@ -61,10 +67,12 @@ pub fn sha256_file_until(path: &str, stop: Stop) -> Result<Option<String>, Fail>
         if stop() {
             return Ok(None);
         }
+        job_check(path)?;
         let n = f.read(&mut buf).map_err(|e| io_fail(path, e))?;
         if n == 0 {
             break;
         }
+        job::count(n as u64);
         h.update(&buf[..n]);
     }
     Ok(Some(hex(&h.finalize())))
@@ -122,8 +130,10 @@ pub fn digests_until(path: &str, size: u64, chunk: u64, stop: Stop) -> Result<Op
                 if stop() {
                     return Ok(None);
                 }
+                job_check(path)?;
                 let want = (left as usize).min(buf.len());
                 let n = read_full(&mut f, &mut buf[..want]).map_err(|e| io_fail(path, e))?;
+                job::count(n as u64);
                 whole.update(&buf[..n]);
                 one.update(&buf[..n]);
                 done += n as u64;
@@ -160,6 +170,11 @@ pub fn digests_until(path: &str, size: u64, chunk: u64, stop: Stop) -> Result<Op
                 stopped = true;
                 break;
             }
+            // a cancel, or the heat limit (`serve`): the pass ends as a failed read does
+            if let Err(stop) = job::check() {
+                failed = Some(std::io::Error::other(stop.to_string()));
+                break;
+            }
             let mut data = pool_rx.try_recv().unwrap_or_default();
             data.resize(segment, 0);
             let want = ((size - done) as usize).min(segment);
@@ -171,6 +186,7 @@ pub fn digests_until(path: &str, size: u64, chunk: u64, stop: Stop) -> Result<Op
                 }
             };
             done += n as u64;
+            job::count(n as u64);
             let seg = Arc::new(Segment { data, len: n, pool: pool_tx.clone() });
             let slot = slots.next().expect("a slot per segment");
             let for_chunks = seg.clone();

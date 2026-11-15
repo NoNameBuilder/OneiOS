@@ -131,6 +131,12 @@ pub fn render(out: &str) -> String {
             text += &format!("cpuset {name:<18} cpus {}\n", if cpus.is_empty() { "?" } else { cpus });
         } else if let Some(v) = line.strip_prefix("xnuhost ") {
             text += &if v == "none" { "xnuhost: no session\n".to_string() } else { format!("xnuhost {v}\n") };
+        } else if let Some(v) = line.strip_prefix("process ") {
+            // the local form (local.rs): xnuhost's own line of /proc/PID/stat, where the adb form lists the threads
+            let w: Vec<&str> = v.split_whitespace().collect();
+            if w.len() == 3 {
+                text += &format!("  xnuhost itself: {} threads, last on cpu{}, nice {} (thread by thread: `oneios-tool phone cpu` over adb)\n", w[0], w[1], w[2]);
+            }
         } else if let Some(v) = line.strip_prefix("thread ") {
             let w: Vec<&str> = v.split_whitespace().collect();
             if w.len() >= 4 {

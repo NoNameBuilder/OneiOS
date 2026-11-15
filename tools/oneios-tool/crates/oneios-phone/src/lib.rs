@@ -9,6 +9,7 @@ pub mod adb;
 pub mod app;
 pub mod cpu;
 pub mod cycle;
+pub mod local;
 pub mod log;
 pub mod phone;
 pub mod pull;
@@ -134,7 +135,7 @@ pub enum Command {
         /// Throw away OUT.part and its progress and begin again
         #[arg(long)]
         restart: bool,
-        /// Then `ioslog boots` and `ioslog checks` on the copy
+        /// Then `ioslog boots`, `ioslog checks` and `ioslog health` on the copy (the health report: ioslog-health.txt beside OUT)
         #[arg(long)]
         ioslog: bool,
     },
@@ -283,7 +284,7 @@ pub fn main(cli: Cli) -> i32 {
 
 #[derive(clap::Args)]
 pub struct AppCli {
-    /// The OneOS checkout (else ONEOS_DIR, the current folder, OneOS beside the OneiOS checkout)
+    /// The OneOS checkout (else ONEOS_DIR, the current folder, app/ of the OneiOS checkout, OneOS beside it)
     #[arg(long, global = true)]
     oneos: Option<String>,
     /// The phone's adb serial (or ANDROID_SERIAL)
@@ -325,6 +326,8 @@ pub enum AppCommand {
     },
     /// The fork's oneios_switch.sh, oneios_return.sh and oneios_root.sh into the stage, with their sha256
     StageScripts,
+    /// The checkout's path alone, as every app command and the cycle find it (for scripts)
+    Dir,
 }
 
 /// Run a parsed `app` command; the exit status.
@@ -341,6 +344,7 @@ pub fn app_main(cli: AppCli) -> i32 {
             f.and_then(|f| app::install(f.as_ref(), serial, apk.as_deref(), release.as_deref(), &repo, std::path::Path::new(&dir)))
         }
         AppCommand::StageScripts => fork().and_then(|f| app::stage_scripts(&f, serial)),
+        AppCommand::Dir => fork().map(|f| println!("{}", f.dir.display())),
     };
     match result {
         Ok(()) => 0,

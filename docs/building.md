@@ -536,7 +536,8 @@ $T phone backlight status          # the panel's level, max_brightness, and One 
 $T phone backlight set 5350        # 1..12750; the return writes One UI's own value back
 $T phone cpu                       # each CPU's core, domain, clocks and governor; the cpusets; xnuhost's and iOS's threads (read only)
 $T phone cpu --trace 30 --out cpu.pftrace   # also a 30 s Perfetto trace (sched, freq, idle), copied here
-$T phone pull-data OUT --ioslog    # the Data store's copy (no session open), then ioslog boots and checks. In chunks
+$T phone pull-data OUT --ioslog    # the Data store's copy (no session open), then ioslog boots, checks and health
+                                   #   (the health report: ioslog-health.txt beside OUT, its lines printed). In chunks
                                    #   (--chunk 256 MiB), each checked against the phone's sha256 and tried again when its
                                    #   stream breaks (--retries 5); after a stop, the same command again goes on (OUT.part,
                                    #   OUT.part.progress; --restart begins again; --verify end: the sums after the last chunk)
@@ -554,14 +555,14 @@ $T cycle --only return,collect --name NAME                 # end a session that 
 
 | Step | What it does |
 |---|---|
-| `build` | Only what changed. The hosted kernel (`scripts/bg.sh cycle-kernel env HOSTED_OUT=NAME XNU_FILESET_REFERENCE=1 kernel/build-hosted.sh`) when `--kernel-out NAME` is given and `xnu.macho` is older than the newest file of `kernel/patches/oneios-hosted` (or missing). The collection (`kernel/prelink/build.sh` with `KERNEL=` and `REFERENCE=` of that tree) when the kernel is newer than `out/kernel/24A446/kernel.kc`; **the cycle stops unless the build ends with status 0 (the audit: 0 failures) and `oneios-tool prelink stubs-check` says `0 bad`**. The runtime (`runtime/package.sh V`, unpacked into `out/cycle/runtime-V`) with `--runtime-version V`; `--runtime DIR` takes one that is built. The image parts (`kernel.kc`, `kernel.kc.hashes`; not `manifest.json` or `xnuhost.conf`: `out/image/24A446` is the Mac's own set, not the phone's) are gathered in `out/cycle/image`; `--image DIR` takes a folder instead, which is also where iOS plug-ins built elsewhere go. The iOS plug-ins build on macOS only (`--force plugins`). The app: its source's version is said; `--force app` runs `app build` and `app install`. `--force kernel,prelink,...` builds a part whatever its state. Long builds run in tmux and the cycle waits for their exit code |
+| `build` | Only what changed. The hosted kernel (`scripts/bg.sh cycle-kernel env HOSTED_OUT=NAME XNU_FILESET_REFERENCE=1 kernel/build-hosted.sh`) when `--kernel-out NAME` is given and `xnu.macho` is older than the newest file of `kernel/patches/oneios-hosted` (or missing). The collection (`kernel/prelink/build.sh` with `KERNEL=` and `REFERENCE=` of that tree) when the kernel is newer than `out/kernel/24A446/kernel.kc`; **the cycle stops unless the build ends with status 0 (the audit: 0 failures) and `oneios-tool prelink stubs-check` says `0 bad`**. The runtime (`runtime/package.sh V`, unpacked into `out/cycle/runtime-V`) with `--runtime-version V`; `--runtime DIR` takes one that is built. The image parts (`kernel.kc`, `kernel.kc.hashes`; not `manifest.json` or `xnuhost.conf`: `out/image/24A446` is the Mac's own set, not the phone's) are gathered in `out/cycle/image`; `--image DIR` takes a folder instead, which is also where iOS plug-ins built elsewhere go. The iOS plug-ins build on macOS only (`--force plugins`). The app: its source's version and its checkout are said (the checkout `oneios-tool app` finds: section 7; `app/` of this checkout unless one is named with `--oneos DIR` or `ONEOS_DIR`); `--force app` runs `app build` and `app install` on it, and ends the cycle when there is no checkout (an empty `app/`: `git submodule update --init --remote app`). `--force kernel,prelink,...` builds a part whatever its state. Long builds run in tmux and the cycle waits for their exit code |
 | `tests` | `--tests`: `runtime/host-tests.sh`; a failure stops the cycle before the phone is touched |
 | `stage` | `phone sums`, then `stage image` with only the files whose SHA-256 differs from the phone's and `stage runtime` when a file of it differs, then `phone sums` again, which must equal the local hashes (`sums.txt`). Files staged with no `manifest.json` of their own get one made from the phone's (`phone manifest`); then `phone image-check`. `data.seed` is never staged |
 | `switch` | First the way back: root, no session, `oneios_return.sh`, `oneios_switch.sh` and `bin/oneios_root.sh` staged, no import in progress (`runtime.new`, `image.new`), and the root script's preflight says `ready 1`. Then `phone switch` |
 | `watch` | Reads `session/xnuhost.log`'s new lines every 2 s, and after a switch only once the file changed at or after the phone's second of the switch (until the switch replaces it, about 40 s in, it is the last session's: its first-frame line made the watch say "ready after 0 s", 2026-11-12) and prints each marker once with its time: xnuhost, kernel, darwin, bsd-root, init, launchd, backboardd, SpringBoard, ready (the first frame), PANIC, end. On a panic, when the session ends by itself, or after `--ready-timeout` (300 s) without the first frame: straight to the return, and the cycle's status is 1 |
 | `hold` | `--hold S` seconds, else until Ctrl-C. Ctrl-C returns, unless `--stay`, which leaves the session open (end it with `phone return` or `cycle --only return,collect`). A panic or the session's own end during the hold returns |
 | `return` | `session/return.request`, then waits (180 s) for `One UI restored` in what `return.log` gained |
-| `collect` | `out/session-logs/DATE/NAME/`: `xnuhost.log`, the last 2000 lines of `switch.log` and `return.log`, `return.outcome`, `sums.txt`, and `summary.md` (versions, hashes, each step's time and result, the markers with their times, the panics, the way back). `--pull-data` adds the Data store's copy and `ioslog`. The summary's result line names every step its Steps table has as failed (`every step that ran ended well` only when none did), and a failed `collect` ends the cycle with status 1. A run that did not watch (`--only return,collect` after `--only stage,switch,watch` with the same `--name`) reads the markers from the saved `xnuhost.log` (this folder's copy, else the phone's `session/xnuhost.log`) and says so |
+| `collect` | `out/session-logs/DATE/NAME/`: `xnuhost.log`, the last 2000 lines of `switch.log` and `return.log`, `return.outcome`, `sums.txt`, and `summary.md` (versions, hashes, each step's time and result, the markers with their times, the panics, the way back). `--pull-data` adds the Data store's copy and `ioslog` (boots, checks, health). **`ioslog-health.txt`** (iOS's own counts of the last boot: hangs, watchdog kills, XPC timeouts, jetsam kills, crashes, stuck idle demotions, encode failures; `oneios-tool ioslog health`, section 10) is written from the folder's `data.img` (this run's `--pull-data`, or an earlier run's of the same `--name`), else from an `ioslog.txt` in the folder (iOS's log as text, `ioslog show ... -o`); its head and one line per kind are printed and go into `summary.md`; a folder with neither gets a line that says so. The summary's result line names every step its Steps table has as failed (`every step that ran ended well` only when none did), and a failed `collect` ends the cycle with status 1. A run that did not watch (`--only return,collect` after `--only stage,switch,watch` with the same `--name`) reads the markers from the saved `xnuhost.log` (this folder's copy, else the phone's `session/xnuhost.log`) and says so |
 
 A cycle takes one phone lock (`out/phone.lock` of the main checkout, also from a worktree) and refuses when
 another cycle holds it. That lock is this tool's own: **the coordinator's `phone-lock.sh` is still the lock between
@@ -724,8 +725,15 @@ $T app install --release 0.4.86      # the CI prerelease oneios-0.4.86 instead, 
 $T app stage-scripts     # the fork's oneios_switch.sh, oneios_return.sh, oneios_root.sh into the stage, sha256 before and after
 ```
 
-The checkout is `--oneos DIR`, `ONEOS_DIR`, the current folder, or `OneOS` beside the OneiOS main checkout; each
-command says which. By hand, and what the tool runs:
+The checkout is the first of: `--oneos DIR`; `ONEOS_DIR`; the current folder when it is a checkout; `app/` of the
+OneiOS checkout (the submodule: the default); `app/` of the OneiOS main checkout when the command runs in a worktree;
+`OneOS` beside the OneiOS main checkout (the clone from before the submodule). A checkout named by hand comes before
+`app/`, and a named folder that is no checkout is an error, not a reason to take `app/`. A checkout is a folder with
+`app-android/app/build.gradle.kts` and `switcher/assets/oneios_switch.sh`, whatever its name. An empty `app/` (the
+submodule is not initialised) is not one: the tool says so with the command, `git submodule update --init --remote app`,
+and looks further; with nothing found it ends with status 1 and lists the places. Each command's first line says
+which checkout and how it was found; `$T app dir` prints the path alone. `cycle` (section 6) uses the same lookup.
+By hand, and what the tool runs:
 
 Repo `akshaynexus/OneOS`, branch `oneios`. Every OneiOS pull request, push to `main` and release builds the APK
 from the head of that branch (`./gradlew test assembleFullDebug`, and `./gradlew test` on macOS; the job `apk` of
@@ -945,9 +953,23 @@ iOS's own log of a session, from a copy of the Data store (replaces the mount-an
 oneios-tool ioslog boots data.img                                   # which boots the log holds
 oneios-tool ioslog show data.img --boot last --proc backboardd      # text; -f csv|jsonl -o FILE for a file
 oneios-tool ioslog checks data.img                                  # counts of the known problems' lines, last boot
+oneios-tool ioslog health data.img [--detail] [-o FILE]             # the last boot's hangs, watchdog kills, XPC timeouts, jetsam
+                                                                    #   kills, crashes, stuck idle demotions, encode failures:
+                                                                    #   one line per kind (count, total, longest, top processes)
+oneios-tool ioslog health                                           # on the phone itself, as root: the staged data/data.img
 oneios-tool ioslog save data.img out/session.logarchive             # the .logarchive the manual steps made
 oneios-tool image apfs-checkpoints data.img                         # the store's checkpoints: which pass the checks, and why the others do not
 ```
+
+`ioslog health` gives the numbers that tell lag and heat apart, the same way for every session (the owner's request,
+2026-11-15): HangTracer's `Hang detected: N s` per process (count, total seconds, the longest, how many over 1 s),
+watchdog kills, XPC timeouts per client and service, the kernel's jetsam kills, crashes (the kernel's corpse lines),
+memorystatus' `timed out stuck process`, and `CMPhotoCompressionSessionAddImage ... err =`. A count is a number of
+log lines. `cycle`'s `collect` and `phone pull-data --ioslog` write the report with its details to
+`ioslog-health.txt` and print its lines (section 6). The kinds are one table in
+`tools/oneios-tool/crates/oneios-ioslog/src/health.rs` (`KINDS`): a new kind is a new row. The command, its output,
+the kinds' texts, what was tested and what was not: [tools/oneios-tool/README.md](../tools/oneios-tool/README.md)
+"health".
 
 Every `ioslog` command says on stderr which checkpoint of the store it read (`... is read at checkpoint xid N ...`)
 and which newer ones it skipped and why: a store copied from the phone ends with a killed kernel, so its block 0
@@ -974,3 +996,32 @@ together. File:line needs the kernel's DWARF: the object files of the build tree
 (as `kernel/build-hosted.sh` left them when `xnu.macho` was linked), or a dSYM (`--dsym`). Compared with
 `llvm-symbolizer` on three Linux-built kernels; **not yet run on a panic log from the phone** (README "sym
 kernel": the address rules, the comparison, what was not run).
+
+**On the phone itself: `oneios-tool serve` (2026-11-15).** The OneOS app runs the iOS steps on the phone through one
+process it starts as root once per flow: a request per line on standard input, JSON lines back (progress with
+bytes, percent and ETA, the room needed, a refusal's reason in plain words). One request runs at a time, the others
+wait; a request is stopped by a `cancel` request, by the end of the app's pipe, by SIGTERM or by the idle timeout,
+and a stop removes what the request wrote. The work runs in a bounded number of threads at nice 10 to 19, never in
+a realtime class, and pauses or stops at the case's and the battery's limits (the thermal bridge's named files).
+The protocol, every command and what is not in it yet (the root tweaks, the image build's own script, the AEA
+decryption): [tools/oneios-tool/README.md](../tools/oneios-tool/README.md) "serve". The same requests run from a
+command line (a PC, a test, a measurement on the phone):
+
+```sh
+oneios-tool serve --stage DIR --request '{"id":"1","cmd":"sums","dir":"DIR/image"}'     # the stage's SHA-256 check
+oneios-tool serve --stage DIR --request '{"id":"1","cmd":"apfs-copy","image":"DIR/image/os.img","src":"/usr","dst":"DIR/work/usr"}'
+oneios-tool serve --stage DIR --request '{"id":"1","cmd":"cpu"}' --request '{"id":"2","cmd":"log","markers":true}'   # phone cpu, phone log: the local forms
+oneios-tool --jobs 4 --nice 15 image apfs-copy IMAGE SRC DST      # every command that runs alone: its threads and its nice value
+oneios-tool prelink build --kernel K --kernelcache C --profile P --reviewed F --pairs F --stubs F --xnuprelink DIR --out DIR
+                                                                  # kernel/prelink/build.sh's steps in one process (the phone has no bash)
+tools/oneios-tool/tests/prelink/compare-build.sh                  # KERNEL=...: `prelink build` and serve's `prelink` against build.sh
+adb shell su -c 'sh /data/local/tmp/serve-on-phone.sh'            # the measurement on the phone (tests/phone/serve-on-phone.sh; not run yet)
+```
+
+For Android arm64 it builds with the NDK (README "For the phone itself": 14.6 MB stripped). **Nothing of it has run
+on the phone**: tested on stand-in inputs (21 tests that start the process, 12 checks on the stand-in phone) and,
+on the Linux PC, on the real image set and kernel. There, with 4 CPUs: the APFS copy of 486 MB onto tmpfs 1.39 s
+with one thread and 0.59 s with four (the same tree); the stage's SHA-256 check of eight 150 MB files 5.39 s and
+1.53 s (the sums are `sha256sum`'s); `prelink build` 11.65 s where `build.sh` takes 13.71 s (the same `kernel.kc`,
+`ffbe95f7...`, and the same 24 files). The disk and one large file's SHA-256 bound the rest (README "Measured on
+the Linux PC").

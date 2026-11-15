@@ -16,8 +16,9 @@ script before it may replace it; the commands and the results are below. What is
 | `package` | `runtime/package/pack.py` (the runtime package's Apple-file check, its manifest and archive) | ported, and the script **retired 2026-11-13**; `runtime/package.sh` and CI run the command | yes: 91 of 91 frozen cases (every refusal rule), `runtime/package/test.sh` 19 of 19 with the same output |
 | `debug` | the Python helpers of the tests (`tests/ksym/{compare,kcmap,make-log}.py`, `tests/kernelgen/{kernel-diff,drivers-command}.py`, `tests/phone/mkstream.py`) | done; the helpers deleted | yes: 24 of 24 comparisons, and each test before and after: the same output ("debug", below) |
 | `phone` | `scripts/phone/stage.sh`, the adb lines of `docs/building.md` section 6, the Mac's `sparsewrite.py` | written; **not run on the phone** (none on the box) | `stage` and `sums`: the same output and the same stage as `stage.sh` on a stand-in phone; 106 checks pass (`tests/phone/run.sh`, 30 of them the fork scripts' USB steps, `usb.sh`, with a fork checkout that has them); `sparse-write`: the bytes and length of `sparsewrite.py` on 7 streams and a 32 GiB one, not more blocks, a quarter of the CPU (`tests/phone/sparse-compare.sh`) |
-| `app` | the app lines of `docs/building.md` section 7 (new) | written; **the app was not built or installed with it** (the owner's decision for this box) | not applicable; 65 checks pass with a stand-in checkout, gradlew, gh and phone (`tests/app/run.sh`); `app version` runs on the real clone |
-| `cycle`, `phone log` | the test cycle of `docs/building.md` section 6 by hand (new) | written; **not run on the phone or with real builds** | not applicable; 90 checks pass with a stand-in checkout and phone (`tests/cycle/run.sh`) |
+| `app` | the app lines of `docs/building.md` section 7 (new) | written; **the app was not built or installed with it** (the owner's decision for this box) | not applicable; 103 checks pass with a stand-in checkout (also as the submodule `app/` of a stand-in OneiOS checkout), gradlew, gh and phone (`tests/app/run.sh`); `app version` runs on the real clone |
+| `serve` | nothing (new, 2026-11-15): the one process the OneOS app starts as root for every iOS step on the phone (requests in, JSON lines out; "serve", below) | written; **not run on the phone** (the Android arm64 binary builds, 14.6 MB, and was not run). Not in it yet: the root tweaks (Python), the image build's own script, the AEA decryption | not applicable (new). 21 tests of the process on stand-in inputs, 12 checks on the stand-in phone; on the real set and kernel on the Linux PC: `prelink` gives build.sh's `kernel.kc` and work files (24 of 24), `apfs-copy` the tree the copy before gave and apfs-fuse gives, `hashes` the set's list, `sums` `sha256sum`'s sums |
+| `cycle`, `phone log` | the test cycle of `docs/building.md` section 6 by hand (new) | written; **not run on the phone or with real builds** | not applicable; 117 checks pass with a stand-in checkout and phone (`tests/cycle/run.sh`) |
 
 **The image scripts, the kernel builds, the prelink and the runtime package run no Python tool of this repository any more** (2026-11-13; still Python: `scripts/ios/`, the root tweaks). The image scripts call `oneios-tool image`
 (`IMAGETOOL_IMPL` is gone; `scripts/image/imagetool.py` is left in the tree, unused), as do the retired tools' callers (`kernel/prelink/build.sh`
@@ -40,6 +41,13 @@ with two jobs, 51 unit tests pass (`oneios-common` 3, `oneios-image` 29 + 1, `on
 `parity.py`: 138 cases, all the same. macOS arm64: the three first tools were built and compared there on 2026-11-12
 (the numbers in [todo_rust.md](todo_rust.md)); `ioslog`, `prelink`, `image im4p` and the APFS file reader were not
 built on a Mac yet.
+
+2026-11-15, Linux x86_64, with `serve` (branch `tool-app-progress`): `cargo test --release`, **175 tests pass, none
+fail** (`oneios-common` 15, of them `job` 8; `oneios-image` 34 and its `tests/` 5 + 1 + 1, the new one
+`apfs_copy.rs`; `oneios-ioslog` 4; `oneios-kernel` 5 + 12; `oneios-ksym` 4 + 9; `oneios-log` 8; `oneios-package` 6;
+`oneios-phone` 29, of them the local forms 3; `oneios-prelink` 3; `oneios-serve` 8; `oneios-sym` 7;
+`oneios-testkit` 2; `oneios-tool` 1 + `tests/serve.rs` 21). The box ran other agents' builds: a build took 10 to
+22 minutes.
 
 **For the phone itself (Android arm64, 2026-11-15; the first step of `docs/TODO.md`, "Make the iOS image on the
 phone").** With the NDK's clang as the linker (API 30), from the Mac:
@@ -64,6 +72,27 @@ for Android. Run as root on the S24 Ultra, on the staged files of `/data/local/t
 the phone"); the OneOS app runs that file as root, one `serve` per flow (`oneos/interface.md` section 9). On the
 4-CPU Linux PC the first Android build took 23 min with `-j 2`.
 
+With `serve` (2026-11-15, "serve" below) the same lines build on the Linux PC (NDK r28c, `linux-x86_64`, API 30;
+`rustup target add aarch64-linux-android`): **14,556,592 bytes stripped** (13.9 MB before), a PIE for
+`/system/bin/linker64`; 12 to 22 min on that PC while other agents' builds ran (270 to 480 s of CPU). One change was needed:
+bionic calls the time-sharing class `SCHED_NORMAL` (the libc crate for Android has no `SCHED_OTHER`). **This build
+was not run**: no phone on that box. On Android the tool puts itself at nice 10 (every command; `--nice` 10 to 19).
+The measurement to run on the phone, as root with One UI up and no session:
+
+```sh
+adb push oneios-tool-android /data/local/tmp/oneios-tool && adb shell chmod 755 /data/local/tmp/oneios-tool
+adb push tools/oneios-tool/tests/phone/serve-on-phone.sh /data/local/tmp/serve-on-phone.sh
+adb shell su -c 'sh /data/local/tmp/serve-on-phone.sh' 2>&1 | tee serve-on-phone.txt     # the readings, sums, hashes, verify, apfs-copy, ioslog, a SIGTERM
+adb shell su -c 'sh /data/local/tmp/serve-on-phone.sh prelink' 2>&1 | tee serve-on-phone-prelink.txt   # after its inputs were pushed (the script's header)
+adb shell su -c "sh /data/local/tmp/serve-on-phone.sh fetch 'https://updates.cdn-apple.com/.../iPhone18,2_27.0.1_24A446_Restore.ipsw'"   # the profile's url
+```
+
+Each request runs with one thread, with all, and with one again (the first run also reads the files into the page
+cache), under the shell's `time`; the script prints each request's last event and its `bye` line (`threads` 1,
+`children` 0), compares the hash list with the staged one and the two copies with each other, and removes
+`/data/local/tmp/oneios/work` at the end. A dry run of it on the PC, on a stand-in stage of the real set, is where
+the PC's numbers in "serve" come from.
+
 No Apple file is in the repository: the tests make their own stand-in caches, images and logs, and the comparison
 scripts read Apple's files in place (`inputs/`, `out/`, both git-ignored).
 
@@ -82,6 +111,285 @@ for no subcommand (`prelink` also for an unknown one) and 1 for wrong arguments,
   clap then hands an option that follows a word over as a word, and `sym` reads it as the option it is.
 - `log`: every subcommand takes every option (one it has no use for is ignored).
 The help text is clap's now (`--help`); `image`'s old usage text is still what a wrong `image` command prints.
+
+**`--jobs N` and `--nice N` (2026-11-15), before the tool's name:** `oneios-tool --jobs 4 --nice 15 image apfs-copy ...`.
+- `--jobs N` (1 to 8) is the number of threads of the work that splits: the hash lists and the set's `verify`, the
+  APFS copy, the prelink (the kexts' scans, and the steps of `prelink build` that run at the same time), and the
+  range requests of `image fetch` and `remotezip get` when they name no `-j`. Without it a command that runs alone
+  keeps the threads it always had (rayon's default: every CPU; 8 range requests), so the builds on a PC do not
+  change. `oneios-tool serve` has its own `--jobs`, whose default is the online CPUs, at most 8.
+- `--nice N` (10 to 19) puts the process at that nice value before its first thread starts (on Linux a nice value is
+  a thread's, and a new thread takes its maker's) and out of a realtime class if it was started in one. **On
+  Android the tool does this without the option, at nice 10;** `serve` does it everywhere. It never raises its
+  priority and never asks for a realtime class.
+- A wrong value is said on standard error, with exit status 2 (`--jobs 0`, `--jobs 9`, `--nice 5`).
+
+The code is `oneios-common/src/job.rs`: the thread count, the nice value, and what a request of `serve` adds (its
+stop, its progress, its temporary files, the heat and battery limits). A command that runs alone sees none of the
+latter: every check is one atomic load.
+
+## serve: one process for the app (the protocol)
+
+The OneOS app runs the iOS steps on the phone itself (the owner's design, 2026-11-15): **one executable, started once
+per flow as root, no JNI library.** `oneios-tool serve` is that process. The app writes one request per line to its
+standard input and reads progress and result lines from its standard output. Kotlin only starts it, sends requests
+and shows what comes back: every check and every decision is in the tool.
+
+```sh
+su -c 'oneios-tool serve'                      # the app: one su and one process start per flow
+oneios-tool serve --stage DIR --request '{"id":"1","cmd":"sums","dir":"DIR/image"}'    # a PC, a test: one-shot
+```
+
+**State (2026-11-15): written and tested on a Linux PC; not run on a phone** (none on that box). The process, the
+protocol, every way it ends and every command have tests on stand-in inputs
+(`crates/oneios-tool/tests/serve.rs`: 21 tests start the process and read its lines; `crates/oneios-serve`: 8 unit
+tests; `oneios-common`'s `job`: 8; `oneios-phone`'s local forms: 3; `tests/phone/serve.sh`: 12 checks on the
+stand-in phone's stage, in both of its /proc modes), and the heavy commands ran on the real image set and kernel
+there ("Measured on the Linux PC", below). The Android arm64 binary builds (14.6 MB stripped) and **was not run**.
+The measurement for the phone: `tests/phone/serve-on-phone.sh` ("Build and tests", above).
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--stage DIR` | `/data/local/tmp/oneios` | the stage. Requests write only under it (and under each `--allow DIR`): a path outside is refused (`outside`). Its `control/` and `session/` files say whether an iOS session is open, and `log`, `log-list` and `cpu` read its files |
+| `--allow DIR` | none | one more folder requests may write under (repeatable) |
+| `--idle SECONDS` | 300 | the process ends when no request ran or waited and no line came for this long (0: never). The time counts from the last request's end or the last line |
+| `--jobs N` | the online CPUs, at most 8 | worker threads of a request (1 to 8). A request's own `"jobs"` may lower it |
+| `--nice N` | 10 | the process's nice value, 10 to 19. Set before any thread starts, so every thread has it. Never a realtime class: a process started in one (SCHED_FIFO, SCHED_RR) puts itself back to SCHED_OTHER |
+| `--thermal A,B,C,D` | `44,46,45,50` | degrees C: the case pauses the work at A and stops it at B, the battery pauses at C and stops at D (the thermal bridge's HEAVY and TRAPPING levels, `runtime/bridges/thermal`). A pause ends 2 C below its limit. `--thermal off`: no check |
+| `--battery-min PERCENT` | 10 | below this, and not charging, heavy requests are refused and a running one stops (0: no check) |
+| `--request JSON` | none | run this request (repeatable, in order) instead of reading standard input; then exit with the last one's status (below). For a PC and for measuring |
+| `--sys-root DIR` | none | read the phone's files (`/sys`, `/proc`, `/dev/cpuset`) below DIR: for tests |
+
+A wrong option, or a `--request` that is not a request of a known command, is said on standard error before any
+line, with exit status 3.
+
+### Why JSON lines, not `@@` lines
+
+The fork's root script answers with `@@RESULT`, `@@OK`, `@@REFUSED` and `@@FAILED` lines of plain words
+(`RootReply.kt`). `serve` uses **one JSON object per line** instead, in both directions, because:
+- a request has a name and several values, some of them lists (the members of an archive, the reviewed records of a
+  prelink) and paths, which may hold spaces. `@@` lines have no quoting;
+- several requests live in one process, so every answer line must carry its request's id;
+- progress has numbers of several kinds on one line (bytes, percent, ETA, files);
+- refusal reasons and log lines are free text and must not break the line format;
+- the tool has `serde_json`, and the fork has its own strict reader (`JsonRead` in `core/model`): no new dependency.
+
+What is kept from the root script: the ways a request ends (`ok`, `refused`, `failed`, and `cancelled` in
+addition) and its exit statuses for the one-shot form (0 ok, 2 refused, 3 a wrong request, 4 failed, and 5
+cancelled).
+
+### The lines
+
+Every line is one JSON object in UTF-8, ended by `\n`, without a line break inside. The tool's lines all begin with
+`{"ev":`. A line on the tool's standard output that does not begin so is not the tool's (a banner of `su`): skip it.
+The tool's standard error stays empty: what a step prints, on standard output or on standard error, is sent as
+`line` events (the process keeps the app's pipe for itself and reads its own two outputs through pipes:
+`crates/oneios-serve/src/capture.rs`).
+
+**A request:** `{"id":"7","cmd":"NAME", ...}`. `id` is 1 to 64 characters of `A-Z a-z 0-9 . _ -` (a whole number is
+taken too, and comes back as text), chosen by the app, and not the id of a request that is still running or
+waiting; it is free again after the request's last event. Every other key is the command's own (the table below),
+or one of the two every command takes: `"jobs"` (1 to 8: fewer worker threads than `--jobs`) and `"lines"` (how
+many `line` events at most, default 5,000). An unknown key is refused (`usage`), so that a typing mistake is not
+silently ignored.
+
+**One request runs at a time.** A request that comes while another runs **waits in a queue** (first in, first out,
+at most 32 waiting; a 33rd is refused with `busy`). `ping`, `health` and `cancel` do not wait: they are answered at
+once, also while a request runs.
+
+**The events of a request,** in this order:
+
+| Event | When | Fields |
+|---|---|---|
+| `queued` | the request was read and must wait | `id`, `cmd`, `ahead` (how many are before it, the running one included) |
+| `start` | it begins | `id`, `cmd`, `jobs`, `steps`: the list of its steps, each `{"step":"copy","text":"Copying the files"}`, in the order they run. A step is **done** when the next one's `step` event comes, or the request's last event; the ones after it are **next** |
+| `step` | a step begins | `id`, `step`, `n`, `of`, `text` |
+| `space` | before a request writes much | `id`, `path` (the folder it writes to, or its nearest folder that exists), `need` and `free` in bytes, `reserve` (bytes that must stay free: 268,435,456). When `free < need + reserve` the request is refused with `space` |
+| `progress` | at most four times a second, and at the start and the end of a step | `id`, `step`, `done`, `total`, `unit` (`bytes`; `ms` for `wait`), and with a known total `percent` (one decimal). After a second of work also `rate` (units per second) and `eta` (whole seconds left in this step). `items_done` and `items_total` (files) where a step counts them. `total` 0: not known, and no `percent` |
+| `row` | one item of the result | `id`, `kind`, and the command's own fields |
+| `line` | a line the step printed | `id`, `stream` (`out` or `err`), `text` (cut at 4,000 characters, then `"cut":true`). At most `lines` of them per request; the rest are counted in the last event's `lines_dropped` |
+| `heat` | the work pauses or goes on | `id`, `state` (`paused`, `resumed`), `why` (`case`, `battery`), `text`, and the reading: `case`, `battery` (degrees C), `level` (percent), `charging` |
+| **one of the four last events** | it ends | below |
+
+**The last event of a request** is exactly one of these, and nothing with its id comes after it:
+
+| Event | Meaning | Fields | Status of the one-shot form |
+|---|---|---|---|
+| `ok` | done | `id`, `cmd`, `seconds`, `text` (one line for the screen), the command's own result fields | 0 |
+| `refused` | the tool decided not to do it, or to stop it | `id`, `cmd`, `code` (a fixed word, below), `text` (the reason in plain words, for the screen) | 2 (`usage` and `unknown`: 3) |
+| `failed` | something broke | `id`, `cmd`, `code` (`io`: a file could not be read or written; `internal`: the tool itself; `failed`: anything else), `text` | 4 |
+| `cancelled` | it was stopped from outside | `id`, `cmd`, `by` (`request`, `eof`, `sigterm`), `removed` (how many temporary files and folders were removed), `text` | 5 |
+
+A request that is refused, fails or is cancelled **removes what it wrote**: its temporary files, and an output that
+was not complete (outputs are written under another name, `NAME.part`, and get their name last). A download
+keeps its part for a later run only when the request says `"resume":true`. A cancel that comes when the work is
+already done changes nothing: the request ends with `ok`.
+
+**Refusal codes** (`code` of `refused`; the text says the same in plain words):
+
+| Code | Meaning |
+|---|---|
+| `usage` | the request is wrong: a key is missing, unknown or has a wrong value |
+| `unknown` | no such `cmd` |
+| `busy` | 32 requests are waiting already |
+| `outside` | a path to write is not under the stage or an `--allow` folder, is not absolute, has `..`, or is a link |
+| `not-found` | a file or a folder the request names is not there |
+| `exists` | the output is there already |
+| `space` | not enough free space (the `space` event has the numbers) |
+| `session` | an iOS session is open: return to One UI first (heavy requests only) |
+| `heat` | the case or the battery is at its stop limit |
+| `battery` | the battery is below `--battery-min` and not charging |
+| `mismatch` | a size, a CRC-32 or a SHA-256 is not the one expected (the text names the file) |
+| `apple-file` | the runtime folder holds a file of Apple's |
+| `audit` | the kernel collection's audit or stub check found a wrong binding |
+| `not-ported` | the step is not in the tool yet (the root tweaks: below) |
+
+**Lines without a request:**
+
+| Line | When |
+|---|---|
+| `{"ev":"hello","proto":1,"tool":"0.1.0","pid":4711,"jobs":8,"nice":10,"realtime":false,"idle":300,"stage":"/data/local/tmp/oneios","thermal":[44.0,46.0,45.0,50.0],"battery_min":10,"cmds":[...],"note":"nice 10"}` | the first line, before any request is read. `cmds`: every command this build knows. `thermal` is `null` with `--thermal off`. `note`: what was done about the nice value and the class |
+| `{"ev":"error","text":"..."}` | a line that is not a request: not JSON, not an object, no usable `id`. With `"id"` and `"code"`: a `cancel` of an id that is neither running nor waiting (`no-such-request`), or a request whose id is one that is still running or waiting (`duplicate`: the line was not taken, the first request goes on) |
+| `{"ev":"bye","why":"eof","requests":3,"cancelled":0,"threads":1,"children":0}` | the last line. `why`: `eof` (the app closed the pipe), `idle`, `sigterm`, `requests` (the one-shot form is done), `stdout` (never read: the reader is gone). `requests`: how many had their last event; `cancelled`: how many of them were cancelled. `threads` and `children` are what the process still has at that moment: 1 and 0 (`/proc/self/status` on Linux and Android, where there is one; `waitpid` says whether a child exists) |
+
+### How it ends
+
+- **`{"cmd":"cancel","id":"7"}`** stops request 7. A waiting one is taken out of the queue; the running one stops at
+  its next check (between chunks, files, kexts and steps), removes what it wrote and ends with `cancelled`, `by`
+  `request`. The queue goes on with the next request.
+- **The app closes the pipe (EOF on standard input):** the running request is cancelled (`by` `eof`), the waiting
+  ones are dropped (each gets `cancelled`), then `bye` and the process exits. EOF with nothing running: `bye` at
+  once.
+- **SIGTERM, SIGINT, SIGHUP:** the same as EOF, `by` `sigterm`.
+- **Idle:** `bye` with `why` `idle` after `--idle` seconds without a request or a line.
+- **The reader went away** (a write to standard output fails): the same as EOF, without lines.
+- **How long a stop takes:** the work asks between chunks (1 to 8 MiB), files, kexts and steps. Two things can take
+  longer: a network connection that gives no byte is given up after 5 seconds (a `serve` request never waits longer
+  than that on a silent connection), and one step of the prelink runs to its end (the longest, `match`, took 4.2 s
+  of CPU on a 4-CPU PC; **not measured on the phone**). A request that has not stopped 10 seconds after the end
+  began is not waited for: the process removes the registered temporary files itself, says the request's
+  `cancelled` (with an empty `cmd`) and exits (`bye` then has `"forced":true`). An exit ends every thread. **This
+  path has no test** (no command of the tool refuses to stop). A process that is killed with SIGKILL removes
+  nothing: its `NAME.part` files stay, and the next request for the same output removes or replaces them.
+- A line of standard input that has no line end when the pipe closes is not taken.
+- **Nothing is left behind:** the tool starts no other process in `serve` (no `adb`, no shell, no `git`, no
+  `apfs-fuse`, no `llvm-mc`: the commands that need one are not in `serve`), a request's worker threads are made
+  for it and joined before its last event, and `bye` reports the threads and children left (1 and 0).
+- The exit status of `serve` on standard input: 0 when it ended in order, 5 when the end cut a request short, 3 for
+  a wrong command line of `serve` itself.
+
+### Threads, nice, heat
+
+- A request's work runs in `jobs` threads: a rayon pool made for the request (`--jobs`, default the online CPUs, at
+  most 8), and for downloads that many scoped threads. The threads exist only while the request runs.
+- The process runs at nice 10 (`--nice` 10 to 19) and never in a realtime class.
+- **Heat and battery, from named files only** (never a folder list or a walk of `/sys` or `/proc`: a root tree walk
+  panicked the phone's kernel on 2026-11-12). The files are the thermal bridge's: the case
+  `/sys/class/power_supply/battery/lrp` (or `/sys/class/sec/sec-ap-thermistor/temperature` when there is no `lrp`),
+  the cell `/sys/class/power_supply/battery/temp` (tenths of a degree), and `/sys/class/power_supply/battery/capacity`
+  and `status`. Read when a heavy request begins and then at most every 2 seconds, by the worker threads' own
+  checks (no thread of its own). At a pause limit every worker waits (`heat` `paused`, then `resumed`); at a stop
+  limit the request ends with `refused`, `heat` (or `battery`). A phone without these files (a PC) has no check.
+  The SoC's own zones are not read (the bridge finds them by listing `/sys/class/thermal`; the kernel's own trips
+  act on them).
+- **A session:** heavy requests are refused (`session`) while an iOS session is open: the stage's `control/boot`
+  equals `/proc/sys/kernel/random/boot_id` and `control/state` is `starting`, `running` or `returning`, or
+  `session/xnuhost.pid` names a live xnuhost. `ping`, `health`, `cpu`, `log` and `log-list` only read and run beside
+  a session.
+
+### The commands
+
+Heavy (H): checked for heat, battery and an open session. Paths are absolute. A path to write must be under the
+stage.
+
+| `cmd` | H | Keys | Steps | Result (`ok`'s fields, `row`s) |
+|---|---|---|---|---|
+| `ping` | | | | `ok` at once |
+| `health` | | | | `ok` at once: `case`, `battery`, `level`, `charging` (each only when its file is there), `state` (`ok`, `pause`, `stop`; `unknown`: no file), `session` (true: one is open) |
+| `cancel` | | `id` of the request to stop | | that request's `cancelled` |
+| `wait` | | `seconds` (default 1), `heavy` (default false: true makes it a heavy request), `file` (a temporary file it writes and removes) | `wait` | counts to `seconds` in `jobs` threads with `progress` (unit `ms`): for the app's own tests of progress, cancel, the queue and the limits. `ok`: `threads` (how many ran), `nice`, `realtime` |
+| `download` | H | `url` (https, or a file's path; `http://127.0.0.1` and `http://localhost` too, for tests), `out`, `sha256`, `bytes` (optional: the size expected), `resume` | `download`, `check`, `place` | a file in parallel range requests of 8 MiB into `out.part`; the SHA-256 is checked before it gets its name. An `out` that is there with this SHA-256 is not fetched again. `ok`: `out`, `bytes`, `sha256` |
+| `zip-ls` | | `source` (an https URL or a file), `match` (a regular expression, optional) | | `row` `member`: `name`, `bytes`, `packed`, `method`, `crc32`. `ok`: `members` |
+| `zip-get` | H | `source`, `outdir`, `members`: a list of `{"member":"...","name":"..."}` (`name`: the file's name in `outdir`, optional), `resume` | `directory`, `download` | members of a ZIP (an IPSW) without downloading it, in parallel range requests; each member's CRC-32 is checked before it gets its name. `row` `member`: `name`, `out`, `bytes`, `crc32`. `ok`: `members`, `bytes` |
+| `fetch` | H | `profile`, `indir`, `only` (a list of roles, optional), `source` (optional), `resume` | `directory`, `download` | `image fetch`: the members a profile names, checked against its pins (size, CRC-32, SHA-256, SHA-384), and `inputs.json`. `ok`: `indir`, `bytes` |
+| `im4p` | H | `in`, `out` | `decode` | `image im4p`: the payload of an IM4P (the kernelcache). `ok`: `out`, `kind`, `bytes`, `sha256` |
+| `receive` | H | `from` (a file or a FIFO), `to`, `bytes`, `sha256`, `mode` (`"0644"` or `"0755"`), and optionally `name`, `sums_list`, `ids_list` | `copy`, `check`, `place` | the import's receive check: exactly `bytes` bytes of `from` into `to.part`, hashed as they are written (one pass; `oneios_root.sh receive` reads the file a second time); the size and the SHA-256 must be the ones given before the file gets its name and mode. `to` must not exist. With `sums_list`: the line `SHA256  NAME` is added to it, and to `ids_list` the line `DEV:INODE:SIZE:MTIME NAME`, as `oneios_root.sh receive` writes them. A FIFO that no writer opens is waited for 30 s. `ok`: `to`, `bytes`, `sha256` |
+| `sums` | H | `dir`, `list` (default `DIR.sha256`), `strict` (with it a file of `dir` that the list does not name is a mismatch) | `scan`, `hash` | the stage's SHA-256 check: every file of `list` (`SHA256  PATH` lines, as `image.sha256` and `runtime.sha256`) hashed, the files in parallel. `row` `file`: `path`, `bytes`, `sha256`, `ok` (or `missing`). A difference: `refused`, `mismatch`. `ok`: `files`, `bytes` |
+| `hashes` | H | `image`, `out`, `chunk` (default 1,048,576) | `hash` | `image hashes`: the chunk hash list of a file and its whole SHA-256 in one pass. `ok`: `out`, `bytes`, `sha256`, `chunks` |
+| `verify` | H | `set`, `quick` | `verify` | `image verify` of a set folder against its `manifest.json`; a file that is not the listed one: `refused`, `mismatch` |
+| `apfs-ls` | | `image`, `path`, `volume`, `newest`, `checkpoint` | | `row` `entry`: `name`, `mode`, `uid`, `gid`, `bytes`. `ok`: `entries` |
+| `apfs-copy` | H | `image`, `src`, `dst`, `volume`, `newest`, `checkpoint` | `scan`, `copy`, `place` | a file or a folder out of a raw APFS image, without a mount, the files in parallel, into `dst.part`, then renamed. `dst` must not exist. `ok`: `dst`, `files`, `bytes`, `compressed`, `skipped` |
+| `tweaks` | H | | | **refused, `not-ported`:** the root tweaks are Python (`userland/roottweak`) and are not in the tool yet (todo_rust.md section 7, group 4) |
+| `prelink` | H | `kernel` (xnu.macho), `kernelcache`, `profile`, `reviewed`, `more_reviewed` (a list, optional), `pairs`, `stubs`, `xnuprelink` (the folder with XnuPrelink's files), `reference` (optional), `out` (a folder), `keep_work`, `oneios_commit`, `xnuprelink_commit` (for the record, optional) | `check`, `native-input`, `merge-reviewed`, `roots`, `hosted`, `match`, `align`, `kclasses`, `structors`, `vtables`, `emit`, `audit`, `stubs-check`, `record`, `hashes`, `place` | `prelink build`: the steps of `kernel/prelink/build.sh` in this process, in `OUT/work` (removed at the end unless `keep_work`); `kernel.kc`, its hash list and its three records are put into `OUT` only when the audit and the stub check pass (else `refused`, `audit`). A kernelcache that is not the profile's: `refused`, `mismatch`. `ok`: `kc`, `bytes`, `sha256` |
+| `stubs-check` | H | `kc` | `check` | `prelink stubs-check` alone; a bad stub: `refused`, `audit` |
+| `package-check` | H | `dir` | `check` | `package check`: no Apple file in a runtime folder (else `refused`, `apple-file`) |
+| `ioslog-boots` | H | `source` (the Data store's image, a `.logarchive`, a folder), `volume` | `read` | `ioslog boots`: `row` `boot`: `uuid`, `start`, `first`, `last`, `entries`; and the table as `line`s |
+| `ioslog-show` | H | `source`, `out` (a file; without it the entries come as `line`s), `format` (`text`, `csv`, `jsonl`), `boot`, `since`, `until`, `proc` (a list), `pid`, `subsystem`, `category`, `type`, `grep`, `sort`, `volume` | `read` | `ioslog show`. `row` `shown`: `entries` (written), `of` (read). `ok`: `entries`, and with a file `out`, `bytes` |
+| `log-list` | | | | the stage's logs by name (`phone log --list` on the phone itself): `row` `log`: `name`, `path`, `bytes`, `changed`; a log that is not there: `"missing":true`. `ok`: `logs` |
+| `log` | | `file` (`xnuhost` (default), `switch`, `return`, `outcome`, `display`, `watchdog`, `usb`, or `logs/xnuhost-EPOCH.log`), `tail`, `grep` (a list), `filters` (a list of `panic`, `display`, `gpu`, `wifi`, `hid`, `mem`), `markers`, `since`, `out` (a file, optional) | | `phone log` on the phone itself: the named file of the stage, read once (no follow), filtered; the lines as `line`s or into `out`. `ok`: `lines`, `matched`, `bytes` |
+| `cpu` | | | | `phone cpu` on the phone itself, from named files only (the CPUs 0 to 7 by name, Android's four cpusets, in a session xnuhost's own `cmdline`, `status`, `cpuset` and `stat`; the per-thread list stays with the adb form, which asks `ps`). `row` `cpu`: `n`, `core`, `capacity`, `related`, `governor`, `max_khz`, `scaling_max_khz`, `cur_khz`, `capped`; the report as `line`s. `ok`: `cpus` |
+
+Not in `serve`: `phone` (the adb forms), `app`, `cycle` (they start `adb` or gradle), `--apfs fuse` (it starts
+`apfs-fuse`: `serve` reads images with our reader only), `prelink hosted --x18` (it starts `llvm-mc`), and the
+prelink record's `git` (its two commits are the request's `oneios_commit` and `xnuprelink_commit`, or null).
+
+**Not in the tool at all yet,** so a whole image cannot be made on the phone by `serve` alone: the root tweaks
+(above), the steps of `scripts/image/build.sh` around them (the Data seed: `image tree-copy`, `seed-pack`,
+`manifest` are commands, the script that calls them is bash), and the decryption of the IPSW's AEA images (an
+outside program on the PC).
+
+### An example
+
+```
+<- {"ev":"hello","proto":1,"tool":"0.1.0","pid":4711,"jobs":8,"nice":10,"realtime":false,"idle":300,"stage":"/data/local/tmp/oneios","thermal":[44.0,46.0,45.0,50.0],"battery_min":10,"cmds":["ping","health","cancel", ...],"note":"nice 10"}
+-> {"id":"1","cmd":"apfs-copy","image":"/data/local/tmp/oneios/image/os.img","src":"/System/Library/CoreServices","dst":"/data/local/tmp/oneios/work/CoreServices"}
+<- {"ev":"start","id":"1","cmd":"apfs-copy","jobs":8,"steps":[{"step":"scan","text":"Reading the volume"},{"step":"copy","text":"Copying the files"},{"step":"place","text":"Putting the folder in place"}]}
+<- {"ev":"step","id":"1","step":"scan","n":1,"of":3,"text":"Reading the volume"}
+<- {"ev":"space","id":"1","path":"/data/local/tmp/oneios/work","need":183500800,"free":52000000000,"reserve":268435456}
+<- {"ev":"step","id":"1","step":"copy","n":2,"of":3,"text":"Copying the files"}
+<- {"ev":"progress","id":"1","step":"copy","done":41943040,"total":183500800,"unit":"bytes","percent":22.9,"rate":167772160,"eta":1,"items_done":310,"items_total":2315}
+-> {"id":"2","cmd":"sums","dir":"/data/local/tmp/oneios/image"}
+<- {"ev":"queued","id":"2","cmd":"sums","ahead":1}
+-> {"cmd":"cancel","id":"1"}
+<- {"ev":"cancelled","id":"1","cmd":"apfs-copy","by":"request","removed":1,"text":"stopped; 1 unfinished file was removed"}
+<- {"ev":"start","id":"2","cmd":"sums","jobs":8,"steps":[{"step":"scan","text":"Reading the list"},{"step":"hash","text":"Checking the files"}]}
+   ...
+<- {"ev":"row","id":"2","kind":"file","path":"kernel.kc","bytes":93700096,"sha256":"ffbe95f7...","ok":true}
+<- {"ev":"ok","id":"2","cmd":"sums","seconds":9.4,"text":"12 files, 17.9 GB: all as listed","files":12,"bytes":17859571712}
+   (the app closes the pipe)
+<- {"ev":"bye","why":"eof","requests":2,"cancelled":1,"threads":1,"children":0}
+```
+
+### Measured on the Linux PC (2026-11-15), and what was compared
+
+4 CPUs (no SHA instructions: one thread hashes 235 MB/s), a SATA SSD with btrfs, 24A446's image set. Other agents'
+builds and a qemu boot ran on the box at a higher priority than the tool's nice 10 (load 25 to 30), so each
+measurement ran in a scope with a CPU weight of its own (`systemd-run --user --scope -p CPUWeight=10000`); without
+it the same requests took many times as long (the `receive` of a 94 MB file: 58.6 s), which is nice 10 doing what
+it is for. The disk was shared too.
+**None of this is the phone's speed.**
+
+| Request (the one-shot form) | One thread (`--jobs 1`) | All threads (4) | The output |
+|---|---|---|---|
+| `sums` of 8 stand-in files of 150 MB on tmpfs | 5.39 s, 98% CPU | **1.53 s, 343%** (2 threads: 2.69 s) | each row's SHA-256 is `sha256sum`'s |
+| `sums` of the real set against its `image.sha256` (22 files, 17.9 GB) | 104.7 s | 92.2 s | all as listed. One file is 10.4 GB: one SHA-256 stream, 44 s at this CPU's speed; the disk gave under 200 MB/s |
+| `hashes` of `os.img` (10.4 GB, 9,880 chunks) | 81.6 s | 52.5 s, 172% | the list is the set's `os.img.hashes`, byte for byte, both times |
+| `verify` of the set (21 files, every chunk) | | 81.9 s, 183% | `ok: ios-27.0.1-24A446-iPhone18-2 format 1, 21 files` |
+| `apfs-copy` of `os.img` `/usr/libexec` onto tmpfs (486 MB, 644 files) | 1.39 s | **0.59 s, 248%** | the same tree as before ("image") |
+| `apfs-copy` of `systemos.img`'s dyld cache onto the disk (82 files, 7,312,005,844 bytes) | 139.8 s | 116.3 s (before this change: 176.3 s) | the same tree; the disk decides (7 to 12% CPU) |
+| `download` of 1.2 GB from `rangeserve` on 127.0.0.1 onto tmpfs | 7.46 s | 6.39 s | the file, byte for byte; 5.2 s of it is the SHA-256 check (one stream) |
+| `receive` of 1.2 GB (a file to the disk, hashed as it is written) | | 9.8 s | placed with its mode; the two list lines as `oneios_root.sh` writes them |
+| `prelink` | 14.84 s (`prelink build --jobs 1`) | 11.23 s, 124% (build.sh: 13.71 s) | `kernel.kc` `ffbe95f7...`, as build.sh's ("prelink build") |
+| `ioslog-boots`, `ioslog-show` of the last boot into a file (a PC boot's Data store, 32 GiB sparse) | | 3.2 s, 0.4 s | 97,417 entries, 15,018,403 bytes |
+| `zip-ls`, `zip-get` of `BuildManifest.plist`, `fetch` of three small members, from Apple's server | | 4.4 s, 1.9 s, 40.7 s | the CRC-32s and the profile's pins hold (the box has no IPv6 route: each first try waits) |
+
+Where more threads do not help on that PC: the disk (a copy onto it, a set read from it), and one large file's
+SHA-256. `sums` hashes the files of a list in parallel; for the image set, whose files have chunk hash lists,
+`verify` checks every chunk in all threads.
+
+A request that ends leaves nothing: in every run above `bye` says `"threads":1,"children":0`, and a SIGTERM in the
+middle of an `apfs-copy` of `/System` ended with `cancelled`, `by` `sigterm`, status 5 and no file of the copy
+left.
 
 ## The rule for libraries
 
@@ -164,6 +472,9 @@ mount the Data volume, copy `db/diagnostics/{Persist,Special,Signpost,HighVolume
 oneios-tool ioslog show SOURCE [-f text|csv|jsonl] [-o OUT] [filters] [--sort]
 oneios-tool ioslog boots SOURCE                       # the boots: UUID, start, first and last entry, entries
 oneios-tool ioslog checks SOURCE [--boot last|all|UUID] [--examples N]
+oneios-tool ioslog health [SOURCE] [--boot last|all|UUID] [--top N] [--detail] [--examples N] [-o FILE] [--stage DIR]
+                                                      # hangs, watchdog kills, XPC timeouts, jetsam kills, crashes, stuck
+                                                      # idle demotions, encode failures: one line per kind ("health" below)
 oneios-tool ioslog save SOURCE NAME.logarchive        # the copy the manual steps made, for other tools
 # every subcommand: [--volume N|NAME] [--block0 | --checkpoint XID] [--apfs own|fuse|auto] [-v]
 ```
@@ -202,6 +513,144 @@ oneios-tool ioslog save SOURCE NAME.logarchive        # the copy the manual step
 - The guest's clock was about a day behind the host's in the 2026-11-12 sessions, so the log's dates are too.
 - Copying `data.img` from the phone is `oneios-tool phone pull-data OUT [--ioslog]` ("phone" below). Not there: an
   `Info.plist` in the saved archive (Apple's `log show --archive` wants one; Mandiant's tool does not).
+
+### health: the counts that tell lag and heat apart
+
+`ioslog health` (2026-11-15, the owner's request: every session shows the same lasting numbers) counts, for one
+boot, the lines of iOS's own log that say that a main thread hung, a process was killed or a call timed out. One
+line per kind: its count; for hangs the total seconds, the longest and how many were over 1 s; the top processes;
+and, where the lines name something, those names.
+
+```sh
+oneios-tool ioslog health data.img                         # the last boot of a copy of the Data store
+oneios-tool ioslog health data.img --detail                # under each kind: its texts, every process, examples
+oneios-tool ioslog health data.img -o ioslog-health.txt    # the lines on stdout, the report with details in the file
+oneios-tool ioslog health ioslog.txt                       # a text file that `ioslog show ... -o` wrote: every entry of it
+oneios-tool ioslog health                                  # on the phone itself, as root: the staged data/data.img
+```
+
+Its output for the tests' log (`tests/ioslog/health.txt`, **written by hand, not a session**):
+
+```
+tests/ioslog/health.txt: the entries of a text file (ioslog show's), 36 entries, from 2026-11-15 09:00:00.000000Z to 2026-11-15 09:10:00.000000Z (600 s)
+hangs              8  109.7 s in all, longest 61.27 s (Preferences), 5 over 1 s; Preferences 4 (64.9 s, longest 61.27 s, 2 over 1 s), SpringBoard 2 (40.1 s, longest 39.34 s, 1 over 1 s), MobileSafari 2 (4.8 s, longest 3.50 s, 2 over 1 s)
+watchdog           5  chronod 3, SpringBoard 1, backboardd 1; named: com.example.clock.widget 2, com.example.weather.widget 2
+xpc-timeouts       4  SpringBoard 3, Preferences 1; services: com.example.photos.service 2, com.example.settings.service 1
+jetsam             4  MobileSafari 2, Preferences 1, nfcd 1
+crashes            3  chronod 2, Preferences 1
+stuck-idle         3  profiled 2, coreauthd 1
+encode-fail        3  chronod 2, SpringBoard 1; errors: kCMBaseObjectError_UnsupportedOperation [-12782] 2, -16993 1
+```
+
+- **The head:** the source (for an image with its volume, as the other commands name it), the boot (`boot UUID`,
+  `all boots`, or the entries of a text file), the entries read, the first and the last entry's time and the seconds
+  between them.
+- **A kind's line:** `NAME COUNT`, then, separated by `; `: for a kind whose lines carry seconds `T s in all, longest
+  L s (PROCESS), N over 1 s`; the processes, the largest count first (`NAME COUNT`; for hangs `NAME COUNT (T s,
+  longest L s, N over 1 s)`; beyond `--top N`, default 5: `and N more with COUNT`); and for a kind filed by the
+  process that logged the line, when its lines name something: `named:`, `services:` or `errors:` and those names.
+  A kind with no line is `NAME 0`. The lines are not indented; everything else below the head is.
+- **`--detail`** adds, indented under each kind: `counts:` what the kind means; `first T, last T`; `texts:` each
+  text's count (for a kind of several texts filed by the logger also who logged it: `extension 3 (chronod 3)`);
+  `by process:` every process; the names; `logged by:` for the kernel's kinds; and `e.g.` example lines
+  (`--examples N`, default 3). **`-o FILE`** writes the report with the details to FILE, whatever stdout shows.
+- **A count is a number of log lines, not of events.** One event may be logged more than once: RunningBoard's exit
+  status of one process is logged by every process that watches it (in the PC boot's log SpringBoard has one exit
+  twice, as `Firing exit handlers for PID` and as `[osservice<NAME>:PID] Process exited`). So compare a count with
+  the same count of another session, and read `texts:` for each text apart. A count is what `ioslog show SOURCE
+  --boot last --proc NAME --grep TEXT | grep -c TEXT` gives for that process and text.
+- **`--boot`**: `last` (default), `all`, or the start of a UUID, as `checks`. A text file names no boots: all of
+  its entries are counted (`--boot UUID` is refused: choose the boot with `ioslog show --boot` when writing it).
+- **SOURCE** is what every `ioslog` command takes, or a text file of `ioslog show` (`-f text`; a file whose first
+  line is an entry). In the text form `[SUBSYSTEM:CATEGORY]` is taken off before the message is matched (a message
+  that itself starts with `[word:word] `, in an entry without a subsystem, loses that start: the text cannot tell
+  the two apart), and the times are the text's, cut to the microsecond. On the PC boot's Data store the report from
+  the image and the one from `ioslog show`'s text of it are the same below the head (97,417 entries each).
+- **Without SOURCE** (the form for the phone itself; the tool builds for Android arm64, "For the phone itself"
+  above): `STAGE/data/data.img`, with `--stage DIR` (default `/data/local/tmp/oneios`). It only reads. Beside an
+  open session (`STAGE/session/xnuhost.pid` names a running xnuhost) it says on stderr that the store is being
+  written: what is counted is the newest checkpoint that passes the reader's checks, and what iOS logged last may
+  not be in it yet. **Not run on the phone yet** (`ioslog boots` and `show` were, 3.1 s and 4.0 s; `health` is
+  one more pass of the same decoder). With `health` in it the tool builds for `aarch64-linux-android` on Linux
+  x86_64 (2026-11-15: NDK 28.2, API 30, the command above with `linux-x86_64`; a PIE for `/system/bin/linker64`,
+  13.9 MB stripped); this box has no Android to run it on.
+
+The kinds are one table, `KINDS` in `crates/oneios-ioslog/src/health.rs`:
+
+| Kind | Texts (regular expressions on the message; a line counts once per kind, under the first that matches) | Filed by | Also |
+|---|---|---|---|
+| `hangs` | `Hang detected: N s` (HangTracer, `[com.apple.hangtracer:]`; `0.52s` and `0.52 s`) | the process that logged the line: the one that hung | total seconds, the longest and who, how many over 1 s (1.00 s is not over) |
+| `watchdog` | `RBSProcessExitStatus\| domain:watchdog` (`exit status`), `Extension process termination watchdogged` (`extension`), `watchdog fired` in any case (`fired`) | the process that logged the line | `named:` RunningBoard's name of the process at the line's start (`[xpcservice<NAME(...)>:PID]`), else the first reverse-DNS name in the line |
+| `xpc-timeouts` | `Initial XPC call to server timed out` (`initial call`), `Default XPC timeout` (`default`), `XPC timeout` (`timeout`) | the process that logged the line: the client | `services:` the first reverse-DNS name in the line |
+| `jetsam` | `memorystatus: killing_idle_process` (`idle exit`: a clean daemon ended while idle), `memorystatus: killing` (`kill`: every other reason) | the process the line names (`pid N [NAME]`, `process N [NAME]`) | |
+| `crashes` | the kernel's `NAME[PID] Corpse allowed N of 5` (`corpse`), `NAME[PID] Corpse failure, too many` (`too many corpses`) | the process the line names | |
+| `stuck-idle` | `timed out stuck process` (`memorystatus_perform_idle_demotion() timed out stuck process PID [NAME], moving to idle band`) | the process the line names | |
+| `encode-fail` | `CMPhotoCompressionSessionAddImage ... err =` | the process that logged the line | `errors:` what follows `err =` |
+
+**To add a kind, add a row** (name, what it means, the texts, `By::Logger` or `By::Named`, what the names are, the
+expressions that find a name, the "over" limit) and its lines to `tests/ioslog/health.txt` with their numbers in
+`health_tests.rs`: the counter, the report, `cycle` and `summary.md` take the table as it is. A text may hold the
+named groups `s` (a number of seconds: the kind then gets a total, a longest and an "over" count) and `who` (the
+process, extension or service the line names).
+
+Where the texts are from, and what is a guess:
+- **Seen in a real log** (the Data store that iOS wrote on the PC, read on this Linux box): the `stuck-idle` line,
+  the kernel's `Corpse allowed` line, RunningBoard's `[osservice<com.apple.chronod>:87] Process exited:
+  <RBSProcessExitContext| specific, status:<RBSProcessExitStatus| domain:signal(2) code:SIGABRT(6)>>`. That log (one
+  boot, 192 s, 97,417 entries): hangs 0, watchdog 0, xpc-timeouts 0, jetsam 0, crashes 1 (chronod), stuck-idle 26
+  (24 processes), encode-fail 0; `grep -c` on `ioslog show`'s text gives the same 26 and 1.
+- **The owner's quotes from the phone's log** (2026-11-15; the log is on the Mac): the hang text, the three
+  watchdog texts, the three XPC texts, the CMPhoto text. `docs/hardware.md` 7g quotes the CMPhoto line whole
+  (session 8644ae9, chronod, 58 times): `writeImageAtIndex: *** CMPhotoCompressionSessionAddImage: err =
+  kCMBaseObjectError_UnsupportedOperation [-N] (codec: 'hvc1')`.
+- **Guesses**, written without those lines at hand: where a watchdog or an XPC timeout line names its extension or
+  service (`named:` and `services:` may be empty, or name something else in the line: the per-process counts do
+  not depend on it); the forms of the jetsam line (XNU's source: `killing_idle_process pid N [NAME]`,
+  `killing_specific_process`, `killing_top_process`, `killing process N [NAME]`; no jetsam kill is in the PC
+  log). Crashes are the kernel's corpse lines only, so that a crash counts once (ReportCrash's and launchd's
+  lines of the same crash are not counted; a crash without a corpse is not counted).
+
+Where it runs by itself: `cycle`'s `collect` step and `phone pull-data --ioslog` write the report with its details
+to **`ioslog-health.txt`** (the session's folder, or beside the copy) and print the head and the kinds' lines;
+`summary.md` has them too ("cycle" and "phone" below). For another caller (the app's `serve`, branch
+`tool-app-progress`): `health` is a plain subcommand, and `oneios_ioslog::health` is public (`read` gives a
+`Report` with each kind's `Count`: the tallies by logger and by name; `write` is what `cycle` calls; `summary_of`
+takes the kinds' lines out of a saved report). It has no progress or `serve` code of its own.
+
+Tested (Linux x86_64, 2026-11-15): `cargo test -p oneios-ioslog` 11 tests (7 new in `health_tests.rs`: the table,
+the hand-written log's counts per kind, process, name and text, the lines byte for byte, a log with nothing in it,
+the text form's parsing, the sources and the stage form, the command line), `cargo test -p oneios-tool --test
+ioslog_health` 1 test (the binary: stdout, `--detail`, `-o`, `--top`, `--examples 0`, the form without SOURCE, the
+exit statuses 0, 1 and 2); `cargo test --release` for the whole workspace: 142 tests pass, 0 fail (these 8 are
+new). The stand-in suites, `tests/phone/modes.sh` (with origin/main at `fb4ec88` merged in):
+`host` and `stand-in` mode each **phone 232** checks (222 before), **app 103**, **cycle 122** (117 before), all
+ok, no stand-in session left. The ten new phone checks: `pull-data --ioslog` on the stand-in's `data.img`, which
+is no APFS store (it ends at `ioslog boots`, the copy stays, no `ioslog-health.txt`); `ioslog health` without
+SOURCE (the stage's own `data.img` is the one read; a stage without a store is refused by name; on a stage whose
+`data.img` is the hand-written log: the head and seven lines, the counts per kind and process, nothing on stderr;
+`--top 1 -o FILE`); beside a stand-in session (it reads, and says on stderr that the store is being written; a pid
+file of a process that is gone is no session). The five new cycle checks: `cycle --only collect` in a folder that
+holds the hand-written log as `ioslog.txt` (the head and seven lines printed; `ioslog-health.txt` with the
+details; `summary.md`'s section with the seven lines and without the details), in a folder with neither a store
+nor a log (one line that says so, status 0), and in the folder of the failed `--pull-data` case, whose `data.img`
+is no APFS store (`collect: ioslog health: ...`, status 1, no report). **The stand-in phone's `data.img` cannot
+be read as a store, so `pull-data --ioslog`'s and `--pull-data`'s health of a real copy are not run by the
+suites**. Run by hand instead (2026-11-15): a stand-in phone (`tests/phone/lib.sh`'s `make_phone`) whose
+`data.img` is a copy of the Data store iOS wrote on the PC, then `oneios-tool phone pull-data OUT --ioslog`:
+status 0, the copy is the store byte for byte (32 GiB, 1.5 GB written), `ioslog boots` and `checks` ran, then
+`--- ioslog health OUT`, the head (`boot FB412AD9..., 97417 entries, ... (192 s)`), the seven lines (crashes 1
+chronod, stuck-idle 26, the rest 0) and `ioslog-health.txt` beside the copy (27 lines).
+**Not tested: the phone's own store** (it is on the Mac). The check to run there, with the owner's numbers from
+that log:
+
+```sh
+oneios-tool ioslog health out/session-logs/2026-11-15/main-8644ae9-b/data.img --detail -o out/session-logs/2026-11-15/main-8644ae9-b/ioslog-health.txt
+# expected: hangs: Preferences 38 (251.1 s, longest 61.27 s, ...), SpringBoard 25 (70.8 s, longest 39.34 s, ...)
+#           watchdog: chronod 84        xpc-timeouts: SpringBoard 114, Preferences 18
+#           (docs/hardware.md 7g has chronod's CMPhoto line 58 times in session 8644ae9: encode-fail, if -b is that boot)
+# a number that differs: `texts:` under the kind has each text's count and who logged it; the same count by hand is
+#   oneios-tool ioslog show .../data.img --boot last --proc chronod --grep 'watchdog' | grep -c watchdog
+```
 
 ### The comparison
 
@@ -435,6 +884,26 @@ oneios-tool image apfs-copy IMAGE SRC DST [--volume N|NAME] [--newest] [--apfs o
 # both: --newest reads the newest checkpoint that passes the checks, --checkpoint XID that one (a used store; said on stderr)
 oneios-tool image apfs-checkpoints IMAGE     # a used store's checkpoints: at each, does the container pass, does each volume ("The APFS reader")
 ```
+
+**`apfs-copy` in threads (2026-11-15).** Our reader's copy lists the folders and reads the files' sizes in every
+thread of the pool, makes the folders in order, then reads, decodes and writes the files in every thread (one
+file is one thread's; at most 1 GiB of file contents is held in memory over all threads, and a larger file is
+copied alone), then makes the links. Before, one entry was copied after the other. The result is the same: the
+same files, bytes, links, counts and messages (a message about a compressed file that could not be decoded comes
+at the end, in the old order). `ONEIOS_APFS_COPY=serial` runs the old path, as does a volume that names one path
+twice. `ONEIOS_IMAGE_TIMING=1` prints the scan's and the files' time. Measured on the Linux PC (4 CPUs, other
+agents' builds running: each run had a CPU weight of its own, best of 2 or 3 runs), 24A446's `os.img`:
+
+| Copy | Before (one by one) | `--jobs 1` | `--jobs 2` | `--jobs 4` | The same output |
+|---|---|---|---|---|---|
+| `/usr/libexec` onto tmpfs (644 files, 486,030,196 bytes, 637 kept compressed) | 1.45 s, 98% CPU | 1.39 s | 0.75 s, 184% | **0.59 s, 248%** (2.5 times) | yes: `diff -r` of each tree against the one the binary before gives; the SHA-256 over every file's SHA-256 `c6450f46...` both |
+| `/usr` onto the disk (2,658 files, 1,208,652,431 bytes, 2,505 kept compressed; SATA SSD, btrfs) | 3.15 s, 76% CPU | 2.83 s | 2.23 s | 2.65 s | yes: the same check, `20142944...` both |
+
+On that PC's disk the copy waits for the disk to take the bytes (its kernel lets 256 MiB wait to be written), so
+more threads gain little there; on tmpfs the threads are what counts. **Not measured on the phone.**
+`tests/image/apfs-read.sh` (the copy against apfs-fuse, an independent reader) and
+`crates/oneios-image/tests/apfs_copy.rs` (the threads' copy against the one-by-one copy on a made image, with 1, 2
+and 8 threads, parts of a volume, and a stop) check it.
 
 `im4p IN OUT` decodes the LZFSE payload with `lzfse_rust` (imagetool.py starts the `lzfse` program). On
 `kernelcache.release.v54` of 24A446: 78,135,296 bytes, sha256 `349c4692...0c57e3`, which is the hash the kernel
@@ -807,6 +1276,22 @@ oneios-tool phone pull-data OUT [--ioslog]    # data/data.img in chunks, each ch
 oneios-tool phone sparse-write OUT [--gunzip] [--expect-size N]   # stdin to OUT, zero runs as holes (no phone)
 ```
 
+**The local forms (2026-11-15): the same readings on the phone itself, without adb.** The OneOS app runs the tool
+on the phone (`oneios-tool serve`, "serve" above), where there is no adb and `serve` starts no shell. Four of the
+commands above have a request there that does the same reading from the stage's and the phone's own files
+(`crates/oneios-phone/src/local.rs`, and `sums` in `crates/oneios-serve/src/cmds.rs`):
+
+| adb form | `serve` request | The same? |
+|---|---|---|
+| `phone sums` (`sha256sum` on the phone of six named files) | `sums` of a folder against its list (`image` and `image.sha256`, `runtime` and `runtime.sha256`): every file of the list, the files in parallel | every row's SHA-256 is `sha256sum`'s, and `kernel.kc`'s is `phone sums`'s, on the stand-in phone (`tests/phone/serve.sh`) |
+| `phone log --list` | `log-list` | the seven named logs with their sizes, and the earlier sessions' (`logs/xnuhost-EPOCH.log`: the stage's own folder is listed) |
+| `phone log [--file] [--tail] [filters] [--since]` (once, no `--follow`) | `log` | the filtered lines are `phone log`'s, as `line` events (`tests/phone/serve.sh`); `--follow`, `--save` and `--analyze` stay with the adb form |
+| `phone cpu` | `cpu` | the same `cpuN`, `cpufreq boost`, `cpuset` and `xnuhost` lines from the same named files (the CPUs 0 to 7 by name, the four cpusets, xnuhost's `cmdline`, `status`, `cpuset`). Where the adb form lists xnuhost's threads (it asks `ps -T`), the local form gives xnuhost's own line from `/proc/PID/stat` (thread count, last CPU, nice): it starts no program and lists no folder of `/proc`. No `--trace` (perfetto is a program) |
+
+They read **named files only** (a unit test reads the module's source for a folder listing: only the stage's `logs/`
+is listed), write nothing unless an `out` file under the stage is asked for, and run beside a session. Tested on
+stand-in files and on the stand-in phone; **not run on the phone**.
+
 The rules of `docs/building.md` section 6 are in the tool (`crates/oneios-phone/src/adb.rs`):
 - **One phone only.** `--serial`, `ANDROID_SERIAL`, or the only phone attached; several attached is refused, and
   so is a phone adb lists as anything but `device`.
@@ -853,8 +1338,11 @@ What each does:
   A stream that breaks is tried again (`--retries`), and a run that stopped, was killed or gave up goes on at
   the first chunk that is not done when the same command is run again. `OUT.part` becomes `OUT` only when every
   chunk is verified and the store's size and modification time are what they were at the start. `--ioslog` then
-  runs `ioslog boots OUT` and `ioslog checks OUT`. "The copy that goes on" below has the design, the options
-  and the test.
+  runs `ioslog boots OUT`, `ioslog checks OUT` and `ioslog health OUT`: the health report with its details goes
+  to `ioslog-health.txt` in OUT's folder, and its head and one line per kind are printed ("health" above). A step
+  that fails ends the command with status 1 (`ioslog boots ended with status 1`; `ioslog health: REASON`), and the
+  copy stays. `phone log` itself reads the stage's log files only, never the Data store: `pull-data --ioslog` is
+  the `phone` command that reads it. "The copy that goes on" below has the design, the options and the test.
 - `sparse-write OUT` is the copy without the phone, and the first port's `pull-data` by hand (one stream, no
   resume, no sums): `adb exec-out "su -c
   '/data/adb/ksu/bin/busybox gzip -1 -c /data/local/tmp/oneios/data/data.img'" | oneios-tool phone sparse-write
@@ -898,11 +1386,13 @@ What each does:
     in the main checkout, or `ONEIOS_DSC_INDEX`). It is not line by line: the analysis is of the log so far.
 
 ```sh
-tools/oneios-tool/tests/phone/run.sh          # 222 checks against the stand-in phone (94 of them session-cmds.sh: display-restart, touch, backlight;
-                                              #   30 of them usb.sh: ONEOS_DIR=a fork checkout with --usb-watch;
+tools/oneios-tool/tests/phone/run.sh          # 234 checks against the stand-in phone (94 of them session-cmds.sh: display-restart, touch, backlight;
+                                              #   30 of them usb.sh: with a fork checkout that has --usb-watch (found as `app dir` finds it);
                                               #   22 of them hw-backend.sh: the bridges' samsung and treble backends on stand-in
-                                              #   phones, their host-built tools; docs/hardware.md 7e); ALL OK
-tools/oneios-tool/tests/cycle/run.sh          # phone log, status --watch and cycle: 95 checks; ALL OK
+                                              #   phones, their host-built tools; docs/hardware.md 7e;
+                                              #   12 of them serve.sh, 2026-11-15: `oneios-tool serve` on the stand-in's stage,
+                                              #   its local forms against the adb forms, the refusals in a session); ALL OK
+tools/oneios-tool/tests/cycle/run.sh          # phone log, status --watch and cycle: 117 checks; ALL OK
 tools/oneios-tool/tests/phone/modes.sh        # phone, app and cycle in each /proc mode this host has (below); ALL OK
 FAKE_PROC=stand-in tools/oneios-tool/tests/phone/run.sh   # one suite with the stand-in's own /proc (macOS's way)
 tools/oneios-tool/tests/phone/sparse-compare.sh   # sparse-write against sparsewrite.py: 35 checks; ALL SAME ("The sparse copy" below)
@@ -1349,6 +1839,15 @@ oneios-tool cycle --only return,collect --name NAME
   `oneos/interface.md`. Long builds are `scripts/bg.sh cycle-NAME ...` (tmux); the cycle waits for
   `logs/cycle-NAME.exit` and stops on anything but 0, with the log's last lines. Ctrl-C while it waits ends the
   job's tmux session.
+- **The app's checkout** in the `build` step is the one `oneios-tool app` finds ("app" below: `--oneos DIR`,
+  `ONEOS_DIR`, the current folder, `app/` of the checkout, `app/` of the main checkout, `OneOS` beside it). The
+  step says the source's version and where it is
+  (`app: the source is 0.4.86 (versionCode 115) in DIR/app (app/ of the OneiOS checkout); ...`; `summary.md` has
+  the same after `app source:`). With no checkout it says `app: no source to compare (...)`, with the places
+  looked in (an empty `app/`: with `git submodule update --init --remote app`), and goes on. `--force app` builds
+  and installs that checkout (`app build`, `app install`); **with no checkout `--force app` ends the cycle**
+  (`--force app: no OneOS checkout ...`, status 1, before the phone is touched; until 2026-11-15 it said the
+  line above and went on to the phone without the build that was asked for).
 - **Safety.** One phone lock for the whole cycle (`out/phone.lock` of the main checkout, `flock`; a second cycle
   is refused and told who holds it). Before the switch: root, no open session, the three scripts staged, no
   import in progress, the root script's preflight `ready 1`. From the switch on, whatever happens (a panic, no
@@ -1358,6 +1857,19 @@ oneios-tool cycle --only return,collect --name NAME
 - The exit status is 0 only when every step that ran ended well and the boot reached its first frame (when
   `watch` ran). A `collect` that failed (a log that could not be copied, `--pull-data`'s copy or its `ioslog`)
   fails the cycle too: status 1, `oneios-tool cycle: collect: ...`.
+- **`ioslog-health.txt`** (2026-11-15): `collect` writes iOS's own counts of the last boot (hangs, watchdog
+  kills, XPC timeouts, jetsam kills, crashes, stuck idle demotions, encode failures: `ioslog health`, "health"
+  above) into the session's folder, prints `--- ioslog health SOURCE`, the report's head and one line per kind,
+  and `summary.md` gets them as its last section (`## iOS's log: hangs, kills and timeouts`); the file also has
+  each kind's texts, every process and example lines. The source is the folder's `data.img`: this run's
+  `--pull-data` copy (after `ioslog boots` and `checks`), or the copy an earlier run of the same `--name` left
+  there; without one, an `ioslog.txt` in the folder (iOS's log as text: `oneios-tool ioslog show SOURCE --boot
+  last -o FOLDER/ioslog.txt`). A folder with neither gets one line that says so, and the step is ok; a `data.img`
+  that cannot be read fails the step (`collect: ioslog health: REASON`). A `summary.md` written again later keeps
+  the section as long as `ioslog-health.txt` is in the folder (the store's copy may be deleted). **So the numbers
+  need the Data store's copy (`--pull-data`) or the log as text**; `collect` does not run the tool on the phone
+  (the Android build is not staged with the runtime yet: on the phone itself the command is `oneios-tool ioslog
+  health`).
 - `summary.md` is written by `collect` also for a cycle that failed: the result, each step's time and result, the
   markers, the panics, the way back. **The result line is made from the same step results as the Steps table**:
   `every step that ran ended well` only when no step of the table failed; otherwise `**stopped**: REASON` (what
@@ -1407,6 +1919,16 @@ three it passes: the cycle's first half of the split run, the folder's files, th
 same counts, all ok, no stand-in session left. The reading of the phone's own `session/xnuhost.log` when the
 folder has no copy is not covered by a check (the stand-in's collect always copies one).
 
+The app's checkout (2026-11-15, the fork as the submodule `app/`): the suite has 117 checks now, fourteen for this,
+all dry runs but the last three: a checkout named with `ONEOS_DIR`; none found (said, the cycle goes on; with
+`--force app` refused); `app/` empty (said with the submodule command; with `--force app` refused with it);
+`app/` present (its version and `in DIR/app (app/ of the OneiOS checkout)`; `--force app` names it); `--oneos` and
+`ONEOS_DIR` before a present `app/`, with the note; no gradlew started by a dry run; and one real
+`cycle --only build --force app`, whose `app/app-android/gradlew` (a stand-in that fails) is what ran, with
+`test assembleFullDebug`, and whose failure ended the cycle before any adb call. Not covered: a `--force app` that
+builds and installs (the stand-in gradlew of this suite builds nothing; `tests/app` covers `build` and `install`
+by themselves).
+
 ## app
 
 `oneios-tool app [--oneos DIR] [--serial S] CMD`: the OneOS fork's app (`akshaynexus/OneOS`, branch `oneios`).
@@ -1421,12 +1943,37 @@ oneios-tool app build [--no-test]        # cd app-android && ./gradlew test asse
 oneios-tool app install [APK]            # adb install -r of the build output (or APK)
 oneios-tool app install --release 0.4.86 [--repo akshaynexus/OneOS] [--dir out/app]   # the CI prerelease oneios-<version>, through gh
 oneios-tool app stage-scripts            # the fork's oneios_switch.sh, oneios_return.sh and oneios_root.sh into the stage
+oneios-tool app dir                      # the checkout's path alone (for scripts; the suites' fork_dir)
 ```
 
-- **The checkout** is `--oneos DIR`, else `ONEOS_DIR`, else the current folder when it is one (it has
-  `app-android/settings.gradle.kts`), else `OneOS` beside the OneiOS main checkout, found through
-  `git rev-parse --git-common-dir`, so it works from a worktree. The first line of every command says which one
-  and how it was found.
+- **The checkout** (the fork becomes the submodule `app/` of OneiOS, 2026-11-15; in a checkout from before it
+  there is no `app/`, nothing is said about it and the lookup goes on) is the first of:
+  1. `--oneos DIR`;
+  2. `ONEOS_DIR`;
+  3. the current folder, when it is a checkout;
+  4. `app/` of the OneiOS checkout the command runs in (`ONEIOS_ROOT`, else the folder at or above the current
+     one with `scripts/bg.sh` and `oneos/interface.md`): the submodule, the default;
+  5. `app/` of the OneiOS main checkout, when the command runs in a worktree (found through
+     `git rev-parse --git-common-dir`): a new worktree's `app/` is empty;
+  6. `OneOS` beside the OneiOS main checkout: the clone from before the submodule.
+
+  Why this order: the owner's order is `app/` first, and among the places the tool finds by itself it is. A
+  checkout **named by hand** (1 and 2; 3 is the folder the user stands in) still comes before it, as before the
+  submodule, so that a named checkout is never silently replaced by the default. For the same reason a named folder that
+  is no checkout is an error and the lookup does not go on to `app/`; and when `ONEOS_DIR` (easy to forget in a
+  shell) takes the place of an `app/` that is a checkout, a `note:` line on stderr says so.
+  - **A checkout is told by what it holds**, not by its name: `app-android/app/build.gradle.kts` (the version is
+    read from it) and `switcher/assets/oneios_switch.sh` (the fork's own; upstream OneOS and a checkout on another
+    branch have none).
+  - **An `app/` that is an empty folder is not a checkout**: the submodule is not initialised (a clone without
+    `--recurse-submodules`, a new worktree). It is passed over, with
+    `note: DIR/app is empty: the app submodule is not initialised (in DIR: git submodule update --init --remote app)`
+    on stderr when a later place is a checkout; when none is, that line is in the error, which lists every place
+    looked in and why it was not taken (`is not there`, `is empty`, `is not the fork's checkout (no FILE)`) and
+    exits with status 1. An `app/` that holds other files is passed over the same way.
+  - The first line of every command says which checkout and how it was found, for example
+    `OneOS checkout: /x/OneiOS/app (app/ of the OneiOS checkout)`. `cycle` and the suites' `fork_dir`
+    (`tests/phone/lib.sh`, through `app dir`) use this same lookup.
 - `version` reads `app-android/app/build.gradle.kts` (`applicationId`, `versionName`, `versionCode`; the `full`
   flavour's `-<oneos.series>` suffix when `gradle.properties` sets one; the `probe` flavour's `.probe` and
   `-probe`), the commit, the branch and whether the tree is dirty. With a phone on adb it adds the installed
@@ -1456,7 +2003,7 @@ oneios-tool app stage-scripts            # the fork's oneios_switch.sh, oneios_r
   app's makes the app's own checks refuse them until it stages its own again.
 
 ```sh
-tools/oneios-tool/tests/app/run.sh            # 65 checks; ALL OK
+tools/oneios-tool/tests/app/run.sh            # 103 checks; ALL OK
 ```
 
 The stand-ins: a OneOS checkout whose `gradlew` is a script that records its arguments and "builds" an APK; APKs
@@ -1465,6 +2012,24 @@ signature is filler, the tool reads the certificate and does not verify the APK)
 two files; the stand-in phone of `tests/phone/`. Result, Linux x86_64, 2026-11-12: 65 checks, all ok. What they
 cannot show: a real Gradle build, real APKs signed by `apksigner` or Gradle (v2 and v3 blocks as Android writes
 them), `adb install` on Android, `gh` against GitHub.
+
+The lookup with the submodule (2026-11-15): 103 checks, 38 more, in stand-in OneiOS checkouts (their own git
+checkouts with `scripts/bg.sh` and `oneos/interface.md`): `app/` present (first, before `OneOS` beside; from a
+folder inside the checkout; with `ONEIOS_ROOT` from outside; `app dir`; `app build` runs gradlew in
+`app/app-android`); `app/` empty (alone: status 1 with the command; with `OneOS` beside: that one, the note on
+stderr only); `app/` with other files, and with the build file but without `oneios_switch.sh` (passed over, said);
+`--oneos` and `ONEOS_DIR` before a present and an empty `app/`; a named folder that is empty or no checkout (an
+error, `app/` is not taken instead); the current folder; `OneOS` beside the checkout from a worktree; a worktree
+with no `app/`, an empty one and its own; none found, in a checkout and outside every checkout. Seven of them use a
+**real git submodule** (`git submodule add -b oneios` of the stand-in fork into a stand-in OneiOS checkout, then
+`git clone` without `--recurse-submodules`): the clone's `app/` is an empty folder and the tool says so with the
+command; after `git submodule update --init --remote app` it is the checkout, with the submodule's version; a new
+worktree's `app/` is empty and the main checkout's is taken. The crate's own tests (`cargo test -p oneios-phone`,
+`app::tests`, nine) check the order on made-up folders. `modes.sh`, Linux x86_64, 2026-11-15: `host` and
+`stand-in` mode each phone 222, app 103, cycle 117 checks, all ok, no stand-in session left; `cargo test
+--release`: 134 passed, 0 failed. **Not tested:** OneiOS's own `app/` submodule (it is added on another branch;
+in this checkout there is no `app/`, and every suite here found the fork as `OneOS` beside the main checkout, the
+sixth place), CI, macOS, a real build or install from `app/`.
 
 ## prelink
 
@@ -1484,8 +2049,9 @@ builds the binary when it is missing or stale (`scripts/lib/oneios-tool.sh`).
 | `align`, `kclasses`, `structors`, `vtables` (the Python steps' options) | `align.py`, `kclasses.py`, `structors.py`, `vtables.py` | `align.rs` (+ `pyset.rs`), `kclasses.rs`, `structors.rs`, `vtables.rs` |
 | `emit` (emit.py's options) | `emit.py` over XnuPrelink's `fileset_emit.py`, `fileset_layout.py`, `fileset_segmented.py` | `emit.rs`, `layout.rs`, `plistpy.rs` |
 | `audit` (audit.py's options, `--against` and `--draft` too; exit 1 on a failure) | `audit.py` | `audit.rs` |
-| `record --work DIR ... [--repo CHECKOUT]` | `record.py` | `record.rs` |
+| `record --work DIR ... [--repo CHECKOUT] [--no-git] [--oneios-commit C] [--xnuprelink-commit C]` | `record.py` | `record.rs` (the three last options, 2026-11-15: the record's two commits given, or null, without starting `git`: the phone has none) |
 | `pin PROFILE` | the `tomllib` one-liner of `build.sh` | prints `[kernel.prelink] kernelcache_sha256` |
+| `build --kernel K --kernelcache C --profile P --reviewed F [--more-reviewed F]... --pairs F --stubs F --xnuprelink DIR [--reference K] --out DIR [--repo DIR] [--no-git] [--remove-work]` | the whole of `kernel/prelink/build.sh` (new, 2026-11-15) | `build.rs`: every step in this process, for the phone and `serve` ("prelink build", below) |
 
 What the Rust steps still read from the XnuPrelink checkout (`--xnuprelink`, `external/XnuPrelink`): its reviewed
 fixtures (`fixtures/fileset-*-symbols.json`) and the files its matcher signature is the SHA-256 of
@@ -1553,6 +2119,76 @@ Not compared: `hosted --x18` (minutes in Python), `align --explain` (a debugging
 The rules now live in the Rust modules only (`roots.rs`: the hardware provider classes and the kexts left out by
 hand; `matcher.rs`, `emit.rs`, `layout.rs`: XnuPrelink's at pin `9b950f2`). A change of a rule changes the outputs
 and so the goldens: regenerate them with `UPDATE=1` in the same commit and say why.
+
+### prelink build, and the threads (2026-11-15)
+
+`oneios-tool prelink build` is `kernel/prelink/build.sh` in one process: the phone has no bash, and `oneios-tool
+serve` starts no program (its `prelink` request is this). The steps, their arguments and their files are
+build.sh's; `stubs-check` is added before `kernel.kc` is put in place, and `X18=1` is left out (it starts
+`llvm-mc`). `OUT/work` holds the steps' files as build.sh leaves them (`--remove-work` removes it at the end; `serve`
+does unless the request says `keep_work`), and `OUT` gets `kernel.kc`, `kernel.kc.hashes`, `kernel.kc.build.json`,
+`kernel.kc.prelink.json` and `kernel.kc.binds.json` only after the audit and the stub check passed. `build.sh` itself
+is unchanged and still runs one step after the other.
+
+```sh
+oneios-tool prelink build --kernel out/kernel/current-hosted/xnu.macho --kernelcache out/kernel-inputs/24A446/kernelcache.macho \
+  --profile kernel/unixnu/profiles/os/ios-27.0.1-24A446/profile.toml --reviewed kernel/prelink/reviewed-24A446-v54.json \
+  --more-reviewed kernel/prelink/lead/reviewed-lead-24A446-v54.json ... --pairs kernel/prelink/pairs-24A446.json \
+  --stubs kernel/prelink/stubs-24A446.json --xnuprelink external/XnuPrelink [--reference REFERENCE] --out out/kernel/24A446
+KERNEL=out/kernel/current-hosted-pc/xnu.macho REFERENCE=out/kernel/current-hosted-pc/reference.macho \
+  tools/oneios-tool/tests/prelink/compare-build.sh        # build.sh, `prelink build` (one thread and all) and serve's `prelink`: every file
+```
+
+What runs in threads:
+- **Steps that wait for nothing of each other run at the same time** (`prelink build` only): `native-input` and
+  `merge-reviewed` beside `roots` and `hosted`; the two `align` beside `kclasses` and `structors`; `audit`,
+  `stubs-check`, `record` and the hash list. `match`, `vtables` and `emit` run alone. Each step is still its own
+  command with its own files, so the files are build.sh's; the steps' one-line reports may come in another order.
+- **The per-kext work** of two steps (in `build.sh` too): `hosted` reads each kext's code for its rewrites and
+  privileged instructions in every thread, then writes the rewrites in the kexts' order (the loop that did both
+  one kext after the other is still there: it runs for `--x18`, and when two kexts share code or a rewrite falls
+  on a load command, which is checked); `emit` searches each kext's code for its inline data pools and scans it
+  for its branches and address pairs in every thread, then rebinds kext by kext in the kernelcache's order, as
+  before (the rebinding allocates stubs and counts as it goes: its order is the output's).
+- Between steps, and between the kexts of `hosted` and `emit`, a request of `serve` can be stopped.
+
+Measured on the Linux PC (4 CPUs; other agents' builds were running, so each run had a CPU weight of its own),
+kernelcache `349c4692...`, the Linux-built kernel `13ed0b70...` with its reference:
+
+| Way | Wall | CPU | `kernel.kc` |
+|---|---|---|---|
+| the fifteen steps and `stubs-check` one after the other, the binary before this change | 13.17 s | | `ffbe95f7...` |
+| the same, this binary (the kexts' scans of `hosted` and `emit` in threads) | 12.77 s | | the same; `hosted` 0.98 s before, 0.83 s after |
+| `kernel/prelink/build.sh`, this binary (with the hash list; best of 3) | 13.71 s | 102% | the same |
+| `prelink build --jobs 1` (best of 3) | 14.84 s | 96% | the same |
+| **`prelink build`** (4 threads; best of 3) | **11.65 s** | 122% | the same |
+| `serve`'s `prelink` request (4 threads; best of 3) | 11.23 s | 124% | the same |
+
+`prelink build` with one thread is a second slower than build.sh: it hashes its inputs for the pairing's key with
+the tool's own SHA-256 (this binary alone is 93 MB; build.sh uses `sha256sum`, which is nearly twice as fast on
+that CPU) and adds `stubs-check`. With its independent steps at the same time it is 1.2 times as fast as build.sh
+and 1.3 times as fast as itself with one thread.
+
+**The same output:** `kernel.kc` is `ffbe95f7...` every way (the binary before this change, build.sh with this
+one, `prelink build` with one thread and with all, and `serve`'s request); `compare-build.sh` compares
+24 files of each way with build.sh's (`kernel.kc`, its hash list, the three records, and the 19 work files), byte
+for byte: `ALL THE SAME` (in the four records that carry their folder's path the path is taken out first; the
+record's two commits are null in `serve`, which starts no `git`). The work folder of the binary before this change
+and of this one, step after step: 19 files the same (`kernelcache.hosted.macho` `6b1a938f...`, `hosted.json`,
+`kernel.kc.prelink.json` and `kernel.kc.binds.json` among them).
+`tests/prelink/compare-golden.sh` (every step against the frozen output of the Python steps) gives the same with
+the binary before this change and with this one: 37 of 40 hashes are the golden's, and three files of the same
+sizes are not (`match.map.json`, `kernel.kc.prelink.json`, `kernel.kc.build.json`: the three that carry the
+matcher signature). The box's XnuPrelink checkout is at commit `b74ed7c7`, not at the pin the golden was frozen
+with; **that this is the cause is a guess, not checked** (the checkout the golden was made with is gone from the
+box).
+
+**Where the time is.** The steps' CPU time, one after the other: `match` 3.9 s, `emit` 2.0 s, `align` 1.2 s and
+0.9 s, `audit` 1.2 s, `record` 0.9 s, `hosted` 0.7 s, `kclasses`, `structors` and `vtables` 0.4 to 0.5 s each
+(13.2 s wall for the fifteen runs). The kexts' scans are a small part of `hosted` and of `emit` (`hosted`: 0.98 s
+before, 0.83 s after; `emit`: no change), so the threads gain little there; most of each step is serial work on
+the whole kernelcache, which each step reads and parses again. What is left: [todo_rust.md](todo_rust.md) section 9.
+**Not run on the phone.**
 
 ## kernel
 

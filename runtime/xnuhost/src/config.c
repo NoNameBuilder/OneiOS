@@ -24,7 +24,7 @@ void xh_config_defaults(xh_config *c)
   c->usb_log = -1;
   c->ram_giveback = c->ram_prefault = c->ram_lock = -1;
   c->ram_session_reserve = c->ram_unlock_below = c->ram_gpu_reserve = -1;
-  c->ram_fit_on = c->ram_pagetable_percent = -1;
+  c->ram_fit_on = c->ram_pagetable_percent = c->ram_huge = -1;
   c->return_graceful_ms = -1;
   c->ready_content_wait = -1;
   strcpy(c->display, "shm");
@@ -43,6 +43,7 @@ void xh_config_defaults(xh_config *c)
   strcpy(c->haptics, "auto");
   strcpy(c->pen, "off");
   strcpy(c->pen_rotate, "auto");
+  strcpy(c->encoder, "off");
   strcpy(c->wifi, "auto");
   br_hw_settings_init(&c->hw);            // every bridge samsung unless hw-backend says otherwise
 }
@@ -125,6 +126,7 @@ int xh_config_set(xh_config *c, const char *key, const char *value)
   else if (!strcmp(key, "ram-lock")) { bool on; if (flag(value, &on)) return -1; c->ram_lock = on; }
   else if (!strcmp(key, "ram-session-reserve")) { uint64_t v = xh_parse_size(value, &ok); ok = ok && v < (1ull << 40); if (ok) c->ram_session_reserve = (int64_t)v; }
   else if (!strcmp(key, "ram-fit")) { bool on; if (flag(value, &on)) return -1; c->ram_fit_on = on; }
+  else if (!strcmp(key, "ram-huge")) { bool on; if (flag(value, &on)) return -1; c->ram_huge = on; }
   else if (!strcmp(key, "ram-gpu-reserve")) { uint64_t v = xh_parse_size(value, &ok); ok = ok && v < (1ull << 40); if (ok) c->ram_gpu_reserve = (int64_t)v; }
   else if (!strcmp(key, "ram-pagetable-percent")) { ok = number(value, 0, 50, &c->ram_pagetable_percent); }
   else if (!strcmp(key, "ram-unlock-below")) { uint64_t v = xh_parse_size(value, &ok); ok = ok && v < (1ull << 40); if (ok) c->ram_unlock_below = (int64_t)v; }
@@ -152,6 +154,7 @@ int xh_config_set(xh_config *c, const char *key, const char *value)
   else if (!strcmp(key, "pen")) { ok = !strcmp(value, "auto") || !strcmp(value, "off"); if (ok) strcpy(c->pen, value); }
   else if (!strcmp(key, "pen-rotate")) { ok = !strcmp(value, "auto") || !strcmp(value, "0") || !strcmp(value, "90") || !strcmp(value, "180") || !strcmp(value, "270"); if (ok) strcpy(c->pen_rotate, value); }
   else if (!strcmp(key, "pen-mirror")) return flag(value, &c->pen_mirror);
+  else if (!strcmp(key, "encoder")) { ok = !strcmp(value, "auto") || !strcmp(value, "off"); if (ok) strcpy(c->encoder, value); }
   else if (!strcmp(key, "bridges")) { bool on; if (flag(value, &on)) return -1; c->bridges = on; }
   else if (!strcmp(key, "clusters")) { ok = strlen(value) <= XH_MAX_CPUS && strspn(value, "EP") == strlen(value); if (ok) strcpy(c->clusters, value); }
   else if (!strcmp(key, "wifi")) { ok = !strcmp(value, "auto") || !strcmp(value, "off") || !strcmp(value, "tap") || !strcmp(value, "sim"); if (ok) strcpy(c->wifi, value); }
@@ -385,6 +388,7 @@ int xh_config_finish(xh_config *c)
   if (c->ram_lock && c->ram_session_reserve < c->ram_unlock_below + (int64_t)XH_RAM_VALVE_MARGIN)
     c->ram_session_reserve = c->ram_unlock_below + (int64_t)XH_RAM_VALVE_MARGIN;
   if (c->ram_fit_on < 0) c->ram_fit_on = from_image.ram_fit_on < 0 ? 1 : from_image.ram_fit_on;
+  if (c->ram_huge < 0) c->ram_huge = from_image.ram_huge < 0 ? 1 : from_image.ram_huge;
   if (c->ram_gpu_reserve < 0) c->ram_gpu_reserve = from_image.ram_gpu_reserve < 0 ? (int64_t)XH_RAM_GPU_RESERVE : from_image.ram_gpu_reserve;
   if (c->ram_pagetable_percent < 0) c->ram_pagetable_percent = from_image.ram_pagetable_percent < 0 ? XH_RAM_PAGETABLE_PERCENT : from_image.ram_pagetable_percent;
   // What the host can hold for the guest without swapping it (2026-11-14, fix-ram-fit): MemAvailable now, after the fork
@@ -396,6 +400,7 @@ int xh_config_finish(xh_config *c)
   bool known = xh_meminfo(c->ram_meminfo, &total, &available) == 0;
   c->ram_fit = known ? xh_ram_fit(available, (uint64_t)c->ram_session_reserve, (uint64_t)c->ram_gpu_reserve, (unsigned)c->ram_pagetable_percent) : 0;
   c->ram_fit_available = known ? available : 0;
+  c->ram_lock_fit = c->ram_lock_expected ? c->ram_fit & ~((256ull << 20) - 1) : 0;
   if (!c->ram_bytes) {
     if (!known) {
       // Not Linux, or no /proc: the size of the time before ram=auto.

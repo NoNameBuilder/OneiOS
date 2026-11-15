@@ -17,7 +17,7 @@
 //! - the usage text names `oneios-tool image`.
 
 pub mod apfs;
-mod apfs_tools;
+pub mod apfs_tools;
 #[cfg(test)]
 mod fixtures;
 mod hashes;
@@ -277,6 +277,27 @@ pub fn run(args: &[String]) -> i32 {
     }
 }
 
+/// `image hashes IMAGE OUT`: the chunk hash list of a file, for the other crates (`prelink build`, `serve`).
+/// Returns (the file's size, its SHA-256).
+pub fn hashes_file(image: &str, out: &str, chunk: u64) -> Result<(u64, String), Fail> {
+    hashes::write_hashes(image, out, chunk)
+}
+
+/// `image fetch PROFILE INDIR` for `serve`: `keep_parts` false removes the `.part` files of a fetch that ends early.
+pub fn fetch(profile: &str, indir: &str, jobs: usize, only: Option<&str>, source: Option<&str>, keep_parts: bool) -> Result<(), Fail> {
+    ipsw::fetch(profile, indir, jobs, only, source, keep_parts)
+}
+
+/// The SHA-256 of a file, read in blocks (`serve`'s `sums`: a stop of the request ends the pass).
+pub fn sha256_of(path: &str) -> Result<String, Fail> {
+    hashes::sha256_file(path)
+}
+
+/// `image verify SET` of a set folder, for `serve`: the line `image verify` prints.
+pub fn verify_set(set: &str, quick: bool) -> Result<String, Fail> {
+    Ok(manifest::ok_line(&manifest::verify_dir(set, quick)?))
+}
+
 /// Run a parsed command (oneios-tool's main parses it); the exit status.
 pub fn main(command: Command) -> i32 {
     match dispatch(command) {
@@ -406,6 +427,7 @@ fn dispatch(command: Command) -> Result<(), Fail> {
         Command::Fetch(Raw { args }) => {
             let jobs = match opt(&args, "-j")? {
                 Some(n) => py::int(n, 10).and_then(|n| usize::try_from(n).ok()).ok_or_else(|| crash!("invalid literal for int() with base 10: {}", py::repr_str(n)))?,
+                None if oneios_common::job::jobs_given() => oneios_common::job::jobs(),
                 None => 8,
             };
             ipsw::cmd_fetch(arg(&args, 0)?, arg(&args, 1)?, jobs, opt(&args, "--only")?, opt(&args, "--source")?)

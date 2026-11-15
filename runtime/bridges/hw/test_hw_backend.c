@@ -40,7 +40,7 @@ int main(void)
   CHECK(br_hw_setting(&s, "hw-backend-toaster", "treble") == -1);
   CHECK(br_hw_setting(&s, "hw-backend-battery", "") == -1 && s.one[BR_HW_BATTERY] == BR_HW_UNSET);
   CHECK(br_hw_setting(&s, "haptics", "sim") == 1 && br_hw_setting(&s, "hw-backendx", "treble") == 1);
-  const char *names[] = { "backlight", "battery", "thermal", "haptics", "touch", "keys", "audio", "camera", "wifi", "bluetooth", "display" };
+  const char *names[] = { "backlight", "battery", "thermal", "haptics", "touch", "keys", "audio", "camera", "wifi", "bluetooth", "display", "encoder" };
   for (unsigned i = 0; i < BR_HW_NBRIDGE; i++) {
     char key[40];
     snprintf(key, sizeof key, "hw-backend-%s", names[i]);

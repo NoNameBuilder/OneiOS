@@ -166,6 +166,8 @@ fn digest_file(path: &str) -> Result<(String, String), Fail> {
     let mut file = std::fs::File::open(path).map_err(|e| crash!("{}", py::os_error(&e, path)))?;
     let (mut a, mut b, mut block) = (Sha256::new(), Sha384::new(), vec![0u8; 1 << 22]);
     loop {
+        // (between blocks: the running request's stop, `serve`)
+        oneios_common::job::check().map_err(|stop| crash!("{path}: {stop}"))?;
         let n = file.read(&mut block).map_err(|e| crash!("{}", py::os_error(&e, path)))?;
         if n == 0 {
             return Ok((oneios_common::hex(&a.finalize()), oneios_common::hex(&b.finalize())));
@@ -200,6 +202,12 @@ fn load_record(path: &str, profile: &Profile) -> Result<Value, Fail> {
 
 /// `fetch PROFILE INDIR [-j N] [--only ROLE,...] [--source URL|FILE]`.
 pub fn cmd_fetch(profile_path: &str, indir: &str, jobs: usize, only: Option<&str>, given: Option<&str>) -> Result<(), Fail> {
+    fetch(profile_path, indir, jobs, only, given, true)
+}
+
+/// `cmd_fetch`; `keep_parts` false (`serve` without "resume"): a fetch that ends early removes its `.part` files.
+pub fn fetch(profile_path: &str, indir: &str, jobs: usize, only: Option<&str>, given: Option<&str>, keep_parts: bool) -> Result<(), Fail> {
+    use oneios_common::job;
     let profile = profile::load_profile(profile_path)?;
     let only: Option<Vec<&str>> = only.map(|list| list.split(',').collect());
     std::fs::create_dir_all(indir).map_err(|e| crash!("{}", py::os_error(&e, indir)))?;
@@ -212,6 +220,20 @@ pub fn cmd_fetch(profile_path: &str, indir: &str, jobs: usize, only: Option<&str
     if !bad.is_empty() {
         return Err(err!("the profile does not match the IPSW:\n  {}", bad.join("\n  ")));
     }
+    ipsw.zip.keep_parts = keep_parts;
+    // The bytes to fetch, for the running request's progress (`serve`; a command that runs alone has no listener,
+    // and prints each chunk's percent line as before: a listener gets the numbers instead of those lines).
+    let wanted = |m: &&Value| only.as_ref().is_none_or(|roles| roles.contains(&text(m, "role")));
+    let packed: HashMap<String, u64> = ipsw.infos().into_iter().map(|(name, info)| (name.to_string(), info.compress_size)).collect();
+    let total: u64 = profile.members().iter().filter(wanted).filter_map(|m| packed.get(text(m, "path"))).sum();
+    // (`serve`: the room INDIR needs, asked before the first byte: each member's size, and a deflated member's
+    // packed bytes beside it while it is inflated)
+    if let Some(space) = crate::apfs_tools::SPACE_CHECK.get() {
+        let need: u64 = ipsw.infos().iter().filter(|(name, _)| profile.members().iter().filter(wanted).any(|m| text(m, "path") == **name)).map(|(_, i)| i.file_size + if i.compress_type == 0 { 0 } else { i.compress_size }).sum();
+        space(std::path::Path::new(indir), need)?;
+    }
+    job::begin("download", "bytes", total);
+    let quiet = job::listening();
     for m in profile.members() {
         let (role, path) = (text(m, "role"), text(m, "path"));
         if only.as_ref().is_some_and(|roles| !roles.contains(&role)) {
@@ -221,9 +243,15 @@ pub fn cmd_fetch(profile_path: &str, indir: &str, jobs: usize, only: Option<&str
         let out = py::join(indir, name);
         if decrypted_is_there(m, &record, indir, &out) {
             println!("{path}: decrypted image present");
+            job::count(packed.get(path).copied().unwrap_or(0));
             continue;
         }
-        zip(ipsw.zip.get(path, &out, jobs, crate::remotezip::CHUNK, &|line| println!("{line}")))?;
+        zip(ipsw.zip.get(path, &out, jobs, crate::remotezip::CHUNK, &|line| {
+            if !(quiet && line.contains("% (")) {
+                println!("{line}")
+            }
+        }))?;
+        job::count_item();
         let (sha256, sha384) = digest_file(&out)?;
         for (key, got) in [("sha256", &sha256), ("sha384", &sha384)] {
             if let Some(pin) = m.get(key).filter(|pin| pin.as_str() != Some(got.as_str())) {
@@ -250,6 +278,7 @@ pub fn cmd_fetch(profile_path: &str, indir: &str, jobs: usize, only: Option<&str
         record.get_mut("members").expect("the record's members").set(role, entry);
         write_record(&record_path, &record)?;
     }
+    job::end();
     println!("fetched into {indir}; hashes in {record_path}");
     Ok(())
 }

@@ -1006,6 +1006,7 @@ name = "oneios-common"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "libc",
  "memmap2",
  "rayon",
  "serde",
@@ -1048,6 +1049,7 @@ dependencies = [
  "clap",
  "csv",
  "macos-unifiedlogs",
+ "oneios-common",
  "oneios-image",
  "regex",
  "serde_json",
@@ -1145,11 +1147,30 @@ dependencies = [
  "md-5 0.10.6",
  "memchr",
  "oneios-common",
+ "oneios-image",
  "plist",
  "rand_mt",
  "rayon",
  "sha2 0.10.9",
  "toml",
+]
+
+[[package]]
+name = "oneios-serve"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "libc",
+ "oneios-common",
+ "oneios-image",
+ "oneios-ioslog",
+ "oneios-package",
+ "oneios-phone",
+ "oneios-prelink",
+ "rayon",
+ "regex",
+ "serde_json",
+ "sha2 0.10.9",
 ]
 
 [[package]]
@@ -1181,6 +1202,8 @@ name = "oneios-tool"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "libc",
+ "oneios-common",
  "oneios-image",
  "oneios-ioslog",
  "oneios-kernel",
@@ -1189,8 +1212,12 @@ dependencies = [
  "oneios-package",
  "oneios-phone",
  "oneios-prelink",
+ "oneios-serve",
  "oneios-sym",
  "oneios-testkit",
+ "rayon",
+ "serde_json",
+ "sha2 0.10.9",
 ]
 
 [[package]]

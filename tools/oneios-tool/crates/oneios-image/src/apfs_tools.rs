@@ -4,6 +4,7 @@
 use crate::apfs::fuse::{self, Backend, Mount};
 use crate::apfs::{ApfsTree, Container, Pick, DT_DIR, DT_LNK, DT_REG};
 use crate::{crash, err, say, Fail};
+use oneios_common::job;
 use std::path::Path;
 
 /// `--newest` and `--checkpoint XID` as the state to read (neither: block 0's).
@@ -147,6 +148,183 @@ fn copy_one(tree: &ApfsTree, id: u64, kind: u16, dst: &Path, done: &mut Copied) 
     Ok(())
 }
 
+/// One entry of the tree that is copied, in the order `copy_one` meets them.
+struct Item {
+    id: u64,
+    kind: u16,
+    dst: std::path::PathBuf,
+    /// A file's size (a compressed file's: its plain size).
+    size: u64,
+}
+
+/// The entries below `id`, in `copy_one`'s order: a folder, then what it holds, entry by entry. The folders are
+/// listed and the files' sizes read in parallel; the order of the result does not depend on that.
+fn scan(tree: &ApfsTree, id: u64, kind: u16, dst: &Path) -> Result<Vec<Item>, Fail> {
+    use rayon::prelude::*;
+    job_check()?;
+    match kind {
+        DT_DIR => {
+            let entries = tree.list(id)?;
+            if let Some(e) = entries.iter().find(|e| e.name.contains('/') || e.name == "." || e.name == "..") {
+                return Err(err!("a name in the volume's records is not a file name: {:?}", e.name));
+            }
+            let below: Vec<Vec<Item>> = entries.par_iter().map(|e| scan(tree, e.id, e.kind, &dst.join(&e.name))).collect::<Result<_, Fail>>()?;
+            let mut out = vec![Item { id, kind, dst: dst.to_path_buf(), size: 0 }];
+            out.extend(below.into_iter().flatten());
+            Ok(out)
+        }
+        DT_REG => Ok(vec![Item { id, kind, dst: dst.to_path_buf(), size: tree.stat(id)?.size }]),
+        DT_LNK => Ok(vec![Item { id, kind, dst: dst.to_path_buf(), size: 0 }]),
+        _ => Ok(Vec::new()),
+    }
+}
+
+/// The running request's check (`serve`: a cancel, the heat and battery limits); nothing is asked of a command
+/// that runs alone.
+fn job_check() -> Result<(), Fail> {
+    job::check().map_err(|stop| crash!("{stop}"))
+}
+
+/// File contents held in memory at one time, over all threads: a file is read whole before it is written, and
+/// the cache files of an iOS volume are hundreds of megabytes each. A file larger than this is copied alone.
+const IN_MEMORY_MAX: u64 = 1 << 30;
+
+/// A count of bytes that threads take from and give back to.
+struct Budget {
+    left: std::sync::Mutex<u64>,
+    freed: std::sync::Condvar,
+}
+
+impl Budget {
+    fn take(&self, bytes: u64) -> u64 {
+        let want = bytes.min(IN_MEMORY_MAX);
+        let mut left = self.left.lock().unwrap();
+        while *left < want {
+            left = self.freed.wait(left).unwrap();
+        }
+        *left -= want;
+        want
+    }
+    fn give(&self, bytes: u64) {
+        *self.left.lock().unwrap() += bytes;
+        self.freed.notify_all();
+    }
+}
+
+/// `copy_one`'s work in every thread of the pool: the folders first, in order; then the files, each read and
+/// written by one thread; then the links. The same files, bytes, counts and messages as `copy_one` gives (a
+/// message about a file that was left out comes at the end, in `copy_one`'s order). `ONEIOS_APFS_COPY=serial`
+/// runs `copy_one` instead, as does a volume that names one path twice (there the last one wins, in order).
+fn copy_tree(tree: &ApfsTree, id: u64, kind: u16, dst: &Path, done: &mut Copied) -> Result<(), Fail> {
+    use rayon::prelude::*;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    if std::env::var("ONEIOS_APFS_COPY").is_ok_and(|v| v == "serial") {
+        return copy_one(tree, id, kind, dst, done);
+    }
+    // (ONEIOS_IMAGE_TIMING=1: each part's time on stderr)
+    let mut laps = crate::Laps::start();
+    job::step("scan");
+    let items = scan(tree, id, kind, dst)?;
+    laps.lap("apfs-copy scan");
+    {
+        let mut seen = std::collections::HashSet::new();
+        if items.iter().filter(|i| i.kind != DT_DIR).any(|i| !seen.insert(&i.dst)) {
+            return copy_one(tree, id, kind, dst, done);
+        }
+    }
+    let total: u64 = items.iter().map(|i| i.size).sum();
+    let files = items.iter().filter(|i| i.kind == DT_REG).count() as u64;
+    if let Some(space) = SPACE_CHECK.get() {
+        space(dst, total)?;
+    }
+    let bad = |dst: &Path, e: std::io::Error| crash!("{}: {e}", dst.display());
+    for item in items.iter().filter(|i| i.kind == DT_DIR) {
+        std::fs::create_dir_all(&item.dst).map_err(|e| bad(&item.dst, e))?;
+    }
+    let progress = job::begin("copy", "bytes", total).items(files);
+    let budget = Budget { left: std::sync::Mutex::new(IN_MEMORY_MAX), freed: std::sync::Condvar::new() };
+    let failed = AtomicBool::new(false);
+    let (bytes, compressed) = (AtomicU64::new(0), AtomicU64::new(0));
+    // (index in copy_one's order, the message) of each compressed file that could not be decoded
+    let skipped = std::sync::Mutex::new(Vec::<(usize, String)>::new());
+    let result: Result<(), (usize, Fail)> = items
+        .par_iter()
+        .enumerate()
+        .filter(|(_, item)| item.kind == DT_REG)
+        .try_for_each(|(at, item)| -> Result<(), (usize, Fail)> {
+            if failed.load(Ordering::Relaxed) {
+                return Ok(());
+            }
+            let one = || -> Result<(), Fail> {
+                job_check()?;
+                let st = tree.stat(item.id)?;
+                let held = budget.take(st.size);
+                let read = tree.read_file(item.id);
+                let written = match read {
+                    Ok(data) => {
+                        if ApfsTree::is_compressed(&st) {
+                            compressed.fetch_add(1, Ordering::Relaxed);
+                        }
+                        let n = data.len() as u64;
+                        std::fs::write(&item.dst, &data).map(|()| n).map_err(|e| bad(&item.dst, e))
+                    }
+                    // a compressed file this reader cannot decode is said, counted and left out
+                    Err(e) if ApfsTree::is_compressed(&st) => {
+                        skipped.lock().unwrap().push((at, format!("{}: {e}", item.dst.display())));
+                        budget.give(held);
+                        progress.add(item.size);
+                        progress.item();
+                        return Ok(());
+                    }
+                    Err(e) => Err(e),
+                };
+                budget.give(held);
+                bytes.fetch_add(written?, Ordering::Relaxed);
+                progress.add(item.size);
+                progress.item();
+                Ok(())
+            };
+            one().map_err(|e| {
+                failed.store(true, Ordering::Relaxed);
+                (at, e)
+            })
+        });
+    job::end();
+    laps.lap("apfs-copy files");
+    let mut skipped = skipped.into_inner().unwrap();
+    skipped.sort();
+    for (_, message) in &skipped {
+        eprintln!("{message}");
+    }
+    result.map_err(|(_, e)| e)?;
+    for item in items.iter().filter(|i| i.kind == DT_LNK) {
+        job_check()?;
+        if let Some(target) = tree.xattr(item.id, "com.apple.fs.symlink")? {
+            let target = String::from_utf8_lossy(&target[..target.iter().position(|b| *b == 0).unwrap_or(target.len())]).into_owned();
+            let _ = std::fs::remove_file(&item.dst);
+            std::os::unix::fs::symlink(target, &item.dst).map_err(|e| bad(&item.dst, e))?;
+        }
+    }
+    done.skipped += skipped.len() as u64;
+    done.files += files - skipped.len() as u64;
+    done.bytes += bytes.into_inner();
+    done.compressed += compressed.into_inner();
+    Ok(())
+}
+
+/// `serve`'s check that the folder a copy writes to has room for it, asked once the copy knows its size.
+pub type SpaceCheck = Box<dyn Fn(&Path, u64) -> Result<(), Fail> + Send + Sync>;
+pub static SPACE_CHECK: std::sync::OnceLock<SpaceCheck> = std::sync::OnceLock::new();
+
+/// What a copy did, for `serve`'s result.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct CopyResult {
+    pub files: u64,
+    pub bytes: u64,
+    pub compressed: u64,
+    pub skipped: u64,
+}
+
 /// A file, a link or a folder of a mounted volume to `dst`, as `copy_one` writes them.
 fn copy_mounted(src: &Path, dst: &Path, done: &mut Copied) -> Result<(), Fail> {
     let bad = |e: std::io::Error| crash!("{}: {e}", dst.display());
@@ -168,20 +346,44 @@ fn copy_mounted(src: &Path, dst: &Path, done: &mut Copied) -> Result<(), Fail> {
     Ok(())
 }
 
-pub fn copy(image: &str, src: &str, dst: &str, volume: Option<&str>, pick: Pick, backend: Backend) -> Result<(), Fail> {
-    let own = || -> Result<Copied, Fail> {
-        let tree = open(image, volume, pick)?;
-        let id = tree.find(src)?.ok_or_else(|| err!("{image}: no /{} in the volume", src.trim_matches('/')))?;
-        let kind = match tree.stat(id)?.mode & 0o170000 {
-            0o040000 => DT_DIR,
-            0o100000 => DT_REG,
-            0o120000 => DT_LNK,
-            other => return Err(err!("{image}: /{} is not a file, a folder or a link (mode {other:o})", src.trim_matches('/'))),
-        };
-        let mut done = Copied { files: 0, bytes: 0, compressed: 0, skipped: 0 };
-        copy_one(&tree, id, kind, Path::new(dst), &mut done)?;
-        Ok(done)
+/// Our reader's copy of `src` to `dst`: the folders, then the files in every thread of the pool, then the links.
+fn copy_own(image: &str, src: &str, dst: &str, volume: Option<&str>, pick: Pick) -> Result<Copied, Fail> {
+    let tree = open(image, volume, pick)?;
+    let id = tree.find(src)?.ok_or_else(|| err!("{image}: no /{} in the volume", src.trim_matches('/')))?;
+    let kind = match tree.stat(id)?.mode & 0o170000 {
+        0o040000 => DT_DIR,
+        0o100000 => DT_REG,
+        0o120000 => DT_LNK,
+        other => return Err(err!("{image}: /{} is not a file, a folder or a link (mode {other:o})", src.trim_matches('/'))),
     };
+    let mut done = Copied { files: 0, bytes: 0, compressed: 0, skipped: 0 };
+    copy_tree(&tree, id, kind, Path::new(dst), &mut done)?;
+    Ok(done)
+}
+
+/// `image apfs-copy` for `serve`: our reader only (it starts no apfs-fuse), and the counts instead of a line.
+pub fn copy_to(image: &str, src: &str, dst: &str, volume: Option<&str>, pick: Pick) -> Result<CopyResult, Fail> {
+    let done = copy_own(image, src, dst, volume, pick)?;
+    Ok(CopyResult { files: done.files, bytes: done.bytes, compressed: done.compressed, skipped: done.skipped })
+}
+
+/// `image apfs-ls` for `serve`: (mode, uid, gid, size, name) of each entry, by name.
+pub fn list(image: &str, path: &str, volume: Option<&str>, pick: Pick) -> Result<Vec<(u16, u32, u32, u64, String)>, Fail> {
+    let tree = open(image, volume, pick)?;
+    let dir = tree.find(path)?.ok_or_else(|| err!("{image}: no /{} in the volume", path.trim_matches('/')))?;
+    let mut entries = tree.list(dir)?;
+    entries.sort_by(|a, b| a.name.cmp(&b.name));
+    entries
+        .into_iter()
+        .map(|e| {
+            let st = tree.stat(e.id)?;
+            Ok((st.mode, st.uid, st.gid, st.size, e.name))
+        })
+        .collect()
+}
+
+pub fn copy(image: &str, src: &str, dst: &str, volume: Option<&str>, pick: Pick, backend: Backend) -> Result<(), Fail> {
+    let own = || copy_own(image, src, dst, volume, pick);
     let mounted = |root: &Path| -> Result<Copied, Fail> {
         let from = root.join(src.trim_matches('/'));
         if std::fs::symlink_metadata(&from).is_err() {

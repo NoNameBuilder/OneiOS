@@ -10,10 +10,11 @@
 # return (the restore line, no session, a return that hangs); the session's own commands (session-cmds.sh:
 # display-restart with --lib and --dex, touch status and wake, backlight status and set, each refused without a
 # session, and the return after them); the bridges' hardware backends, samsung and treble (hw-backend.sh); pull-data (the copy is the phone's file, sparse;
-# a size that does not match); sparse-write. The session check's command is the phone's, byte for byte, and a pid
+# a size that does not match; --ioslog, and `ioslog health` without SOURCE on a stage, as on the phone itself); sparse-write. The session check's command is the phone's, byte for byte, and a pid
 # that is not an xnuhost's is no session. Every case ends the stand-in session it left (end_case), and at the
 # end, a failure or Ctrl-C none is left running (lib.sh's traps).
-# With the OneOS fork's checkout at hand (ONEOS_DIR, or ../OneOS beside the main checkout), begin, receive, finish
+# With the OneOS fork's checkout at hand (lib.sh's fork_dir: the one `oneios-tool app dir` finds from this checkout:
+# ONEOS_DIR, app/ here, app/ of the main checkout, OneOS beside it), begin, receive, finish
 # and status are the fork's own root script under its test root; without it those checks are skipped, with a line.
 # With it, usb.sh also runs the fork's switch and return scripts' USB steps (the record, the session's USB watcher
 # across unplug and replug, the return's restore) against a stand-in gadget: oneos/interface.md, "USB and adb".
@@ -143,6 +144,9 @@ python3 -I -c 'import json,sys; m=json.load(open(sys.argv[1])); assert [f["path"
 check "manifest DIR --stage: the files and their manifest, then the check" 0 "image: manifest.json and the 4 files it lists agree" phone manifest "$I" --stage
 check "image-check: the set agrees again" 0 "image: manifest.json and the 4 files it lists agree" phone image-check
 
+# ---- the app's one process on this stage (tests/phone/serve.sh): its local forms against the adb forms
+. "$HERE/serve.sh"; serve_checks_closed
+
 # ---- switch, the refusals in a session, return
 echo $$ > "$S/session/xnuhost.pid"   # a pid used again: a live process that is not an xnuhost
 check "a pid that is not an xnuhost's is no session" 0 "kernel.kc" phone sums
@@ -156,6 +160,7 @@ check "switch" 0 "switch started \(versionCode 116\)" phone switch
 grep -q "versionCode 116 ===$" "$S/switch.log" && ok "switch: the versionCode is the installed app's (116, not a fixed 115)" || bad "switch: versionCode" "$(tail -n 1 "$S/switch.log")"
 wait_for 5 has_session "$P" && ok "switch: a session is open" || bad "switch: no session"
 check "status in a session" 0 "session: open" sh -c "'$TOOL' phone status 2>&1; true"
+serve_checks_open
 for c in "switch" "sums" "stage image $I" "stage runtime $R" "pull-data $W/x.img"; do
   check "in a session: $c is refused" 1 "a session is open: return to One UI first" phone $c
 done
@@ -195,6 +200,35 @@ printf '#!/bin/sh\n[ "$1" = gzip ] && { head -c 1000000 | gzip -1 -c; exit 0; }\
 check "pull-data: fewer bytes than the range" 1 "the stream gave 1000000 bytes, the range has 50331648" phone pull-data "$W/short.img" --retries 0
 [ ! -e "$W/short.img" ] && [ -e "$W/short.img.part" ] && ok "pull-data: the short copy stays as .part" || bad "pull-data: the short copy's name"
 printf '#!/bin/sh\nexec "$@"\n' > "$P/data/adb/ksu/bin/busybox"
+# ---- ioslog health: after pull-data --ioslog, and on the phone itself (no SOURCE: the stage's own data.img).
+# The stand-in's data.img is no APFS store; the log that is counted is tests/ioslog/health.txt, written by hand.
+HT=$HERE/../ioslog/health.txt; mkdir -p "$W/pd"
+check "pull-data --ioslog: a copy that is no APFS store ends at ioslog boots" 1 "ioslog boots ended with status 1" phone pull-data "$W/pd/data.img" --ioslog
+cmp -s "$W/pd/data.img" "$S/data/data.img" && [ ! -e "$W/pd/ioslog-health.txt" ] && ok "pull-data --ioslog: the copy is kept, and no ioslog-health.txt of a store that could not be read" || bad "pull-data --ioslog: what is left" "$(ls "$W/pd" | tr '\n' ' ')"
+check "ioslog health without SOURCE: the stage's own data.img is the one read" 1 "^ioslog: .*$S/data/data.img" "$TOOL" ioslog health --stage "$S"
+check "ioslog health without SOURCE, on a stage without a store" 1 "no SOURCE, and no staged Data store at $W/none/data/data.img" "$TOOL" ioslog health --stage "$W/none"
+mkdir -p "$W/stage2/data" "$W/stage2/session"; cp "$HT" "$W/stage2/data/data.img"
+out=$("$TOOL" ioslog health --stage "$W/stage2" 2> "$W/health.err"); st=$?
+[ $st = 0 ] && [ "$(printf '%s\n' "$out" | wc -l)" = 8 ] && printf '%s\n' "$out" | head -n 1 | grep -q "^$W/stage2/data/data.img: .*, 36 entries, from 2026-11-15 09:00:00.000000Z to 2026-11-15 09:10:00.000000Z (600 s)$" \
+  && ok "ioslog health without SOURCE: the head and one line per kind (7 kinds)" || bad "ioslog health without SOURCE" "status $st: $(printf '%s' "$out" | head -n 2 | tr '\n' '|') $(head -n 2 "$W/health.err")"
+miss=""; for want in "^hangs +8  109\.7 s in all, longest 61\.27 s \(Preferences\), 5 over 1 s; Preferences 4 \(64\.9 s, longest 61\.27 s, 2 over 1 s\), SpringBoard 2 \(40\.1 s, longest 39\.34 s, 1 over 1 s\), MobileSafari 2 " \
+  "^watchdog +5  chronod 3, SpringBoard 1, backboardd 1; named: com\.example\.clock\.widget 2, com\.example\.weather\.widget 2$" "^xpc-timeouts +4  SpringBoard 3, Preferences 1; services: com\.example\.photos\.service 2, com\.example\.settings\.service 1$" \
+  "^jetsam +4  MobileSafari 2, Preferences 1, nfcd 1$" "^crashes +3  chronod 2, Preferences 1$" "^stuck-idle +3  profiled 2, coreauthd 1$" "^encode-fail +3  chronod 2, SpringBoard 1; errors: kCMBaseObjectError_UnsupportedOperation \[-12782\] 2, -16993 1$"; do
+  printf '%s\n' "$out" | grep -Eq "$want" || miss="$miss /$want/"; done
+[ -z "$miss" ] && ok "ioslog health: the counts of the hand-written log, per kind and process" || bad "ioslog health: the counts" "missing:$miss"
+[ ! -s "$W/health.err" ] && ok "ioslog health: no session, nothing on stderr" || bad "ioslog health: stderr without a session" "$(head -n 2 "$W/health.err")"
+"$TOOL" ioslog health --stage "$W/stage2" --top 1 -o "$W/stage2/health.txt" > "$W/health.out" 2> "$W/health.err"; st=$?
+[ $st = 0 ] && grep -q "^hangs .*; Preferences 4 (64.9 s, longest 61.27 s, 2 over 1 s), and 2 more with 4$" "$W/health.out" && grep -q "^    texts: exit status 1 (SpringBoard 1), extension 3 (chronod 3), fired 1 (backboardd 1)$" "$W/stage2/health.txt" \
+  && ! grep -q "^    " "$W/health.out" && grep -q "^    by process: profiled 2, coreauthd 1$" "$W/stage2/health.txt" && grep -q "the report with its details is in $W/stage2/health.txt" "$W/health.err" \
+  && ok "ioslog health --top 1 -o FILE: the lines on stdout, the details (texts, every process, examples) in the file" || bad "ioslog health --top -o" "status $st: $(head -n 3 "$W/health.out" | tr '\n' '|')"
+if [ -r /proc/self/cmdline ]; then
+  (exec -a xnuhost-stand-in sleep 60) & hp=$!; echo $hp > "$W/stage2/session/xnuhost.pid"; sleep 0.2
+  "$TOOL" ioslog health --stage "$W/stage2" > "$W/health.out" 2> "$W/health.err"; st=$?; kill $hp 2>/dev/null; wait $hp 2>/dev/null
+  [ $st = 0 ] && grep -q "^ioslog: a session is open (xnuhost, pid $hp): the store is being written" "$W/health.err" && grep -q "^hangs  *8 " "$W/health.out" \
+    && ok "ioslog health beside a session: it reads, and says on stderr that the store is being written" || bad "ioslog health beside a session" "status $st: $(head -n 2 "$W/health.err")"
+  "$TOOL" ioslog health --stage "$W/stage2" > /dev/null 2> "$W/health.err"
+  [ ! -s "$W/health.err" ] && ok "ioslog health: a pid file of a process that is gone is no session" || bad "ioslog health: a stale pid file" "$(head -n 2 "$W/health.err")"
+else echo "(no /proc here: ioslog health's session line is not checked)"; fi
 if grep -Eqi 'find |ls -R|du |/sys/power|reboot' "$W/adb.log" "$W/root.log"; then bad "a tree walk, /sys/power or a restart was sent to the phone" "$(grep -Ehi 'find |ls -R|du |/sys/power|reboot' "$W/adb.log" "$W/root.log" | head -n 2)"
 else ok "nothing sent to the phone walks a tree, writes /sys/power or restarts ($(wc -l < "$W/adb.log") adb calls, their root scripts too)"; fi
 "$TOOL" phone sparse-write "$W/sw.img" < "$S/data/data.img" > "$W/sw.out" 2>&1 && cmp -s "$W/sw.img" "$S/data/data.img" && [ $(($(stat -c %b "$W/sw.img") * 512)) -lt $((2 << 20)) ] \

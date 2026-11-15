@@ -33,6 +33,7 @@ use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{self, BufReader, IsTerminal, Read, Write};
 use std::os::unix::io::AsRawFd;
+use std::path::Path;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -61,7 +62,7 @@ pub struct Options {
     pub stall: u64,
     pub verify: Verify,
     pub restart: bool,
-    /// Then `ioslog boots` and `ioslog checks` on the copy.
+    /// Then `ioslog boots`, `ioslog checks` and `ioslog health` on the copy (`ioslog-health.txt` beside it).
     pub ioslog: bool,
 }
 
@@ -773,7 +774,25 @@ pub fn pull_data(adb: &Adb, out: &str, o: &Options) -> Result<()> {
                 bail!("ioslog {step} ended with status {status}");
             }
         }
+        ioslog_health(out, Path::new(out).parent().filter(|dir| !dir.as_os_str().is_empty()).unwrap_or(Path::new(".")))?;
     }
+    Ok(())
+}
+
+/// The health report's file, beside a copy of the Data store and in a cycle's folder.
+pub const HEALTH_FILE: &str = "ioslog-health.txt";
+
+/// `ioslog health SOURCE` (the last boot's hangs, watchdog kills, XPC timeouts, jetsam kills, crashes, stuck idle
+/// demotions and encode failures): the report with its details into `DIR/ioslog-health.txt`, its head and one line
+/// per kind printed. `source`: a copy of the Data store, or iOS's log as text (`ioslog show -o`).
+pub fn ioslog_health(source: &str, dir: &Path) -> Result<()> {
+    let file = dir.join(HEALTH_FILE);
+    println!("--- ioslog health {source}");
+    let lines = oneios_ioslog::health::write(source, &file).map_err(|e| anyhow!("ioslog health: {e:#}"))?;
+    for line in &lines {
+        println!("{line}");
+    }
+    println!("{}: these lines, and under each kind its texts, every process and example lines", file.display());
     Ok(())
 }
 

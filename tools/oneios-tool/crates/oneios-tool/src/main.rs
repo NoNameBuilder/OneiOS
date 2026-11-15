@@ -66,6 +66,9 @@ enum Tool {
         #[command(subcommand)]
         command: oneios_package::Command,
     },
+    /// One process for the OneOS app, started as root once per flow: a request per line on standard input, JSON
+    /// lines back (README "serve": the protocol). --request JSON runs requests from the command line
+    Serve(oneios_serve::Cli),
     /// The helpers of the comparison scripts (tools/oneios-tool/tests): kcmap, ksym-make-log, ksym-compare,
     /// kernel-diff, mkstream
     Debug {
@@ -74,8 +77,46 @@ enum Tool {
     },
 }
 
+/// `oneios-tool [--jobs N] [--nice N] TOOL ...`: the two options every command that runs alone takes, before the
+/// tool's name (`serve` has its own `--jobs` and `--nice`: README "serve"). `--jobs N` (1 to 8) is the number of
+/// threads of the work that splits (the hash lists, the APFS copy, the prelink's kexts, the range requests of a
+/// fetch that names no `-j`); without it the commands keep the threads they always had (every CPU). `--nice N` (10
+/// to 19) puts the process there and out of any realtime class; on Android that is done without the option, at 10.
+/// The words are taken off the command line; the exit status of a wrong one is 2.
+fn own_options(args: &mut Vec<String>) -> Result<(), String> {
+    let mut nice: Option<i32> = cfg!(target_os = "android").then_some(10);
+    while let Some(option @ ("--jobs" | "--nice")) = args.get(1).map(String::as_str) {
+        let option = option.to_string();
+        let value = args.get(2).cloned().ok_or(format!("{option} needs a number"))?;
+        match option.as_str() {
+            "--jobs" => {
+                let n: usize = value.parse().ok().filter(|n| (1..=oneios_common::job::JOBS_MAX).contains(n)).ok_or(format!("--jobs {value}: 1 to {}", oneios_common::job::JOBS_MAX))?;
+                oneios_common::job::set_jobs(n);
+            }
+            _ => nice = Some(value.parse().map_err(|_| format!("--nice {value}: 10 to 19"))?),
+        }
+        args.drain(1..3);
+    }
+    // `serve` sets its own, with its own messages
+    if args.get(1).map(String::as_str) == Some("serve") {
+        return Ok(());
+    }
+    if let Some(n) = nice {
+        // (before the first thread starts: a nice value is a thread's, and a new thread takes its maker's)
+        oneios_common::job::set_nice(n).map_err(|e| format!("--nice {n}: {e}"))?;
+    }
+    if oneios_common::job::jobs_given() {
+        rayon::ThreadPoolBuilder::new().num_threads(oneios_common::job::jobs()).build_global().map_err(|e| format!("--jobs: {e}"))?;
+    }
+    Ok(())
+}
+
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
+    let mut args: Vec<String> = std::env::args().collect();
+    if let Err(text) = own_options(&mut args) {
+        eprintln!("oneios-tool: {text}");
+        std::process::exit(2);
+    }
     // `sym kernel` has its own command line (oneios-ksym): `sym`'s words may start with a hyphen (an address may be
     // negative, as in dsc.py), so clap would hand every option after `kernel` over as a word.
     if args.get(1).map(String::as_str) == Some("sym") && args.get(2).map(String::as_str) == Some("kernel") {
@@ -95,6 +136,7 @@ fn main() {
             Tool::Remotezip { args } => oneios_image::remotezip::main(&args),
             Tool::Rangeserve { args } => oneios_image::rangeserve::main(&args),
             Tool::Package { command } => oneios_package::main(command),
+            Tool::Serve(cli) => oneios_serve::main(cli),
             Tool::Debug { command } => oneios_testkit::main(command),
         },
         Err(e) if !e.use_stderr() => {
@@ -117,6 +159,11 @@ fn main() {
             Some("prelink") => {
                 let _ = e.print();
                 oneios_prelink::refused(&e)
+            }
+            // (README "serve": 3 for a wrong command line of `serve` itself)
+            Some("serve") => {
+                let _ = e.print();
+                3
             }
             _ => {
                 let _ = e.print();

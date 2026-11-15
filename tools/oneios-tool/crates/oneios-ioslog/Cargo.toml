@@ -6,6 +6,8 @@ license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+# job: the running request's stop and its result rows (`oneios-tool serve`)
+oneios-common.workspace = true
 oneios-image.workspace = true
 # The decoder of Apple's unified log (tracev3, timesync, uuidtext, dsc): Mandiant's library, Apache-2.0.
 # 0.8.0 is on GitHub only (crates.io has 0.7.0, whose API has no lazy message and no by-UUID string loading), so it

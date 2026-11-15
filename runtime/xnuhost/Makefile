@@ -15,7 +15,7 @@ ARM64_NATIVE := $(if $(filter Linux,$(HOST_OS)),$(filter aarch64 arm64,$(HOST_AR
 ARM64_RUN := $(if $(ARM64_NATIVE),,$(QEMU))
 
 WARN := -Wall -Wextra -Werror
-INC := -Iinclude -Isrc -Istub -I../loader/include -I../bridges/include -I../../drivers/bridge -I../../drivers/camera
+INC := -Iinclude -Isrc -Istub -I../loader/include -I../bridges/include -I../bridges/encoder -I../../drivers/bridge -I../../drivers/camera
 CFLAGS ?= -O2 -g
 SRC := main return ready log perf config insn mem discard ramfix usb mmio gic sysreg uart blk imageset virtio virtio_blk virtio_input virtio_gpu gpu3d display input input_script pen cpu hostcalls task
 PORTABLE := return ready log perf config insn discard ramfix usb mmio gic sysreg uart blk imageset virtio virtio_blk virtio_input input input_script pen virtio_gpu gpu3d cpu task
@@ -123,8 +123,13 @@ $(BRIDGES): FORCE
 CAMERA := ../bridges/camera/build/android/libonecamera.a
 $(CAMERA): FORCE
 	$(MAKE) -s -C ../bridges/camera NDK=$(NDK) build/android/libonecamera.a
+# The video encoder's end in xnuhost (runtime/bridges/encoder): the "droidvm,virtio-media" device and the backend that
+# talks to the oneios-encoder helper. No MediaCodec (it is in the helper), so xnuhost stays static.
+ENCODER := ../bridges/encoder/build/android/liboneencoder.a
+$(ENCODER): FORCE
+	$(MAKE) -s -C ../bridges/encoder NDK=$(NDK) build/android/liboneencoder.a
 FORCE:
-$(A)/xnuhost: $(SRC:%=$(A)/%.o) $(A)/kctx.o $(A)/arch.o $(patsubst ../loader/src/%.c,$(A)/loader_%.o,$(LOADER_SRC)) $(CAMERA) $(BRIDGES) $(GPU3D)
+$(A)/xnuhost: $(SRC:%=$(A)/%.o) $(A)/kctx.o $(A)/arch.o $(patsubst ../loader/src/%.c,$(A)/loader_%.o,$(LOADER_SRC)) $(CAMERA) $(ENCODER) $(BRIDGES) $(GPU3D)
 	$(ANDROID_CC) -static -o $@ $^ -lm
 
 # ---- host unit tests ----

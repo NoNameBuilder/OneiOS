@@ -241,7 +241,7 @@ package and not in the APK** (as `lib/arm64-v8a/liboneios-tool.so`):
 - *Updates apart from the app:* the tool's code lives in OneiOS and changes with the runtime and the kernel (its
   `prelink`, `image` and `ioslog` follow them); in the package it updates with each runtime release, without a new APK,
   and the version the app talks to is the one beside the xnuhost it serves.
-- *Size:* 13,772,784 bytes stripped (this branch, built on Linux); the package of `0.0.0-ci` with it is 5,306,913 bytes (v0.1.9 without it: 805,244);
+- *Size:* 13,772,784 bytes stripped (this branch before `serve` came in with #52; the README gives 14,556,592 with it); the package of `0.0.0-ci` with the first is 5,306,913 bytes (v0.1.9 without it: 805,244);
   in the APK every user would carry it, also those who never set up iOS.
 - *What it costs:* no tool before a runtime is staged. The flows need a staged runtime anyway (the Make iOS image step
   starts with the runtime download), and the runtime's own import keeps root's shell checks, so no step needs the

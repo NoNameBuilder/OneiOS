@@ -202,6 +202,67 @@ fn rewrite(kext: &str, segment: &str, address: u64, old: u32, new: u32, instruct
     v
 }
 
+/// What the scan of a kext's code found.
+#[derive(Default)]
+struct Found {
+    scanned: usize,
+    /// (file offset, the new word) of each rewrite, in the order of the scan
+    patches: Vec<(usize, u32)>,
+    rewrites: Vec<Value>,
+    mpidr: Vec<Value>,
+    pointers: Vec<Value>,
+    counts: Counter,
+}
+
+/// One executable segment of a kext, word by word: the rewrites (listed, not written: `read` is not changed) and
+/// the privileged instructions.
+fn scan_segment(read: &[u8], name: &str, in_scope: bool, (segment, va, fileoff, filesize): &(String, u64, usize, usize), found: &mut Found) {
+    found.scanned += filesize;
+    let mut offset = *fileoff;
+    // range(fileoff, fileoff + filesize - 3, 4)
+    while offset + 3 < fileoff + filesize {
+        let word = u32_at(read, offset);
+        let address = va + (offset - fileoff) as u64;
+        if in_scope {
+            if word & 0xfffff0df == 0xd50340df {
+                // msr DAIFSet / DAIFClr, #imm
+                found.counts.add(if word & 0x20 != 0 { "msr DAIFClr" } else { "msr DAIFSet" }, 1);
+            } else if word & 0xfff80000 == 0xd5080000 && (word >> 16 & 7) != 3 {
+                // sys (tlbi, at, dc at EL1)
+                found.counts.add(&format!("sys #{}, C{}, C{}, #{}", word >> 16 & 7, word >> 12 & 15, word >> 8 & 15, word >> 5 & 7), 1);
+            }
+        }
+        if word & 0xfffffc00 == 0xb2501c00 {
+            // orr xD, xN, #0x00ff000000000000 -> and xD, xN, #0xff00ffffffffffff
+            let new = 0x9248dc00 | (word & 0x3ff);
+            found.patches.push((offset, new));
+            let (d, n) = (word & 31, word >> 5 & 31);
+            found.pointers.push(rewrite(name, segment, address, word, new, format!("orr x{d}, x{n}, #0xff000000000000 -> and x{d}, x{n}, #0xff00ffffffffffff")));
+            offset += 4;
+            continue;
+        }
+        if word & 0xffd00000 != 0xd5100000 {
+            offset += 4;
+            continue;
+        }
+        let key = register(word);
+        let read_op = word >> 21 & 1 != 0;
+        if key == TPIDR_EL1 {
+            let new = (word & 0xffe0001f) | TPIDR_EL0_FIELD;
+            found.patches.push((offset, new));
+            found.rewrites.push(rewrite(name, segment, address, word, new, format!("{} x{}, TPIDR_EL1 -> TPIDR_EL0", if read_op { "mrs" } else { "msr" }, word & 31)));
+        } else if key == MPIDR_EL1 && read_op {
+            // ldr wN, [x18]: the vCPU index (kernel/hosted-fixup.py)
+            let new = 0xb9400240 | (word & 31);
+            found.patches.push((offset, new));
+            found.mpidr.push(rewrite(name, segment, address, word, new, format!("mrs x{}, MPIDR_EL1 -> ldr w{}, [x18]", word & 31, word & 31)));
+        } else if !EL0.contains(&key) && in_scope {
+            found.counts.add(&format!("{}{}", if read_op { "mrs " } else { "msr " }, name_of(key)), 1);
+        }
+        offset += 4;
+    }
+}
+
 pub fn run(args: Args) -> Result<()> {
     let source = std::fs::read(&args.kernelcache).with_context(|| args.kernelcache.clone())?;
     let mut data = source.clone();
@@ -218,71 +279,82 @@ pub fn run(args: Args) -> Result<()> {
     let mut privileged: Vec<(String, Counter)> = Vec::new();
     let mut x18: Vec<(String, Value)> = Vec::new();
     let mut scanned = 0usize;
-    for (name, at) in entries(&source) {
-        if name == "com.apple.kernel" {
-            continue;
+    let kexts: Vec<(String, usize, bool)> = entries(&source)
+        .into_iter()
+        .filter(|(name, _)| name != "com.apple.kernel")
+        .map(|(name, at)| {
+            let in_scope = closure.as_ref().is_none_or(|c| c.contains(&name));
+            (name, at, in_scope)
+        })
+        .collect();
+    // One kext's findings into the report, in the kexts' order (Python creates a kext's Counter at its first count).
+    let mut merge = |name: &str, found: Found| {
+        scanned += found.scanned;
+        rewrites.extend(found.rewrites);
+        mpidr.extend(found.mpidr);
+        pointers.extend(found.pointers);
+        if found.counts.keys.is_empty() {
+            return;
         }
-        let in_scope = closure.as_ref().is_none_or(|c| c.contains(&name));
-        let segments = exec_segments(&data, at);
-        // where this kext's Counter goes: Python creates it at the first count
-        let mut slot: Option<usize> = privileged.iter().position(|(n, _)| *n == name);
-        let count = |privileged: &mut Vec<(String, Counter)>, slot: &mut Option<usize>, key: &str| {
-            let i = *slot.get_or_insert_with(|| {
-                privileged.push((name.clone(), Counter::default()));
-                privileged.len() - 1
-            });
-            privileged[i].1.add(key, 1);
-        };
-        for (segment, va, fileoff, filesize) in &segments {
-            scanned += filesize;
-            let mut offset = *fileoff;
-            // range(fileoff, fileoff + filesize - 3, 4)
-            while offset + 3 < fileoff + filesize {
-                let word = u32_at(&data, offset);
-                let address = va + (offset - fileoff) as u64;
-                if in_scope {
-                    if word & 0xfffff0df == 0xd50340df {
-                        // msr DAIFSet / DAIFClr, #imm
-                        count(&mut privileged, &mut slot, if word & 0x20 != 0 { "msr DAIFClr" } else { "msr DAIFSet" });
-                    } else if word & 0xfff80000 == 0xd5080000 && (word >> 16 & 7) != 3 {
-                        // sys (tlbi, at, dc at EL1)
-                        count(&mut privileged, &mut slot, &format!("sys #{}, C{}, C{}, #{}", word >> 16 & 7, word >> 12 & 15, word >> 8 & 15, word >> 5 & 7));
-                    }
+        let slot = privileged.iter().position(|(n, _)| n == name).unwrap_or_else(|| {
+            privileged.push((name.to_string(), Counter::default()));
+            privileged.len() - 1
+        });
+        for (key, n) in found.counts.items() {
+            privileged[slot].1.add(key, n);
+        }
+    };
+    // The per-kext work in every thread of the pool: each kext's code is read from the kernelcache as it came and
+    // its rewrites are listed, then written in the kexts' order. That is what the loop below does one kext after
+    // the other, as long as no two kexts share code and no rewrite falls on a load command (both are checked; the
+    // loop runs instead when one fails, and for --x18, which reads each kext's rewritten code).
+    let mut in_threads = !args.x18 && {
+        let mut ranges: Vec<(usize, usize)> = kexts.iter().flat_map(|(_, at, _)| exec_segments(&source, *at)).map(|(_, _, fileoff, filesize)| (fileoff, fileoff + filesize)).collect();
+        ranges.sort_unstable();
+        ranges.windows(2).all(|w| w[0].1 <= w[1].0)
+    };
+    if in_threads {
+        use rayon::prelude::*;
+        let found: Vec<Found> = kexts
+            .par_iter()
+            .map(|(name, at, in_scope)| -> Result<Found> {
+                oneios_common::job::check()?;
+                let mut found = Found::default();
+                for segment in &exec_segments(&source, *at) {
+                    scan_segment(&source, name, *in_scope, segment, &mut found);
                 }
-                if word & 0xfffffc00 == 0xb2501c00 {
-                    // orr xD, xN, #0x00ff000000000000 -> and xD, xN, #0xff00ffffffffffff
-                    let new = 0x9248dc00 | (word & 0x3ff);
-                    data[offset..offset + 4].copy_from_slice(&new.to_le_bytes());
-                    let (d, n) = (word & 31, word >> 5 & 31);
-                    pointers.push(rewrite(&name, segment, address, word, new, format!("orr x{d}, x{n}, #0xff000000000000 -> and x{d}, x{n}, #0xff00ffffffffffff")));
-                    offset += 4;
-                    continue;
-                }
-                if word & 0xffd00000 != 0xd5100000 {
-                    offset += 4;
-                    continue;
-                }
-                let key = register(word);
-                let read = word >> 21 & 1 != 0;
-                if key == TPIDR_EL1 {
-                    let new = (word & 0xffe0001f) | TPIDR_EL0_FIELD;
-                    data[offset..offset + 4].copy_from_slice(&new.to_le_bytes());
-                    rewrites.push(rewrite(&name, segment, address, word, new, format!("{} x{}, TPIDR_EL1 -> TPIDR_EL0", if read { "mrs" } else { "msr" }, word & 31)));
-                } else if key == MPIDR_EL1 && read {
-                    // ldr wN, [x18]: the vCPU index (kernel/hosted-fixup.py)
-                    let new = 0xb9400240 | (word & 31);
-                    data[offset..offset + 4].copy_from_slice(&new.to_le_bytes());
-                    mpidr.push(rewrite(&name, segment, address, word, new, format!("mrs x{}, MPIDR_EL1 -> ldr w{}, [x18]", word & 31, word & 31)));
-                } else if !EL0.contains(&key) && in_scope {
-                    count(&mut privileged, &mut slot, &format!("{}{}", if read { "mrs " } else { "msr " }, name_of(key)));
-                }
-                offset += 4;
+                Ok(found)
+            })
+            .collect::<Result<_>>()?;
+        for (offset, new) in found.iter().flat_map(|f| &f.patches) {
+            data[*offset..*offset + 4].copy_from_slice(&new.to_le_bytes());
+        }
+        in_threads = kexts.iter().all(|(_, at, _)| exec_segments(&data, *at) == exec_segments(&source, *at));
+        if in_threads {
+            for ((name, _, _), found) in kexts.iter().zip(found) {
+                merge(name, found);
             }
+        } else {
+            data.copy_from_slice(&source);
         }
-        if args.x18 && in_scope {
-            let users = x18_users(&data, &segments)?;
-            if !users.is_empty() {
-                x18.push((name.clone(), Value::List(users)));
+    }
+    if !in_threads {
+        for (name, at, in_scope) in &kexts {
+            oneios_common::job::check()?;
+            let segments = exec_segments(&data, *at);
+            for segment in &segments {
+                let mut found = Found::default();
+                scan_segment(&data, name, *in_scope, segment, &mut found);
+                for (offset, new) in &found.patches {
+                    data[*offset..*offset + 4].copy_from_slice(&new.to_le_bytes());
+                }
+                merge(name, found);
+            }
+            if args.x18 && *in_scope {
+                let users = x18_users(&data, &segments)?;
+                if !users.is_empty() {
+                    x18.push((name.clone(), Value::List(users)));
+                }
             }
         }
     }

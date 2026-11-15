@@ -1,6 +1,7 @@
 //! Shared helpers of oneios-tool: read-only file maps and JSON text that is byte for byte what Python's `json`
 //! module writes (`pyjson`), so a Rust step can replace a Python step and leave the same file.
 
+pub mod job;
 pub mod pyjson;
 pub mod pyrepr;
 pub mod pytar;

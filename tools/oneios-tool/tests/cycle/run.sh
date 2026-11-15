@@ -10,12 +10,14 @@
 # session's log (there until the switch replaces it, 40 s on the phone, 3 s here); a drop with the same file carries
 # on after the last line, a drop that comes back to a new file (same first line, another inode) reads it from its
 # start; status --watch.
-# cycle: --dry-run (nothing started, no adb call); a whole cycle (kernel, prelink with the stubs check, runtime
+# cycle: --dry-run (nothing started, no adb call); the app's checkout (ONEOS_DIR, --oneos, app/ of the checkout
+# present, empty and missing, --force app with each, a failing app build); a whole cycle (kernel, prelink with the stubs check, runtime
 # package, host tests, stage of only what differs, switch, markers, hold, return, the folder with summary.md); a
 # second cycle that stages nothing; a panic, a boot that never gets ready, Ctrl-C in the hold with and without
 # --stay; a failed collect step (summary.md's head names it, status 1); a split run (`--only stage,switch,watch`,
 # then `--only return,collect` with the same name: the summary reads the markers from the saved xnuhost.log and
-# says so); an audit failure and bad stubs stop it before the phone is touched; no switch without the return script,
+# says so); collect's ioslog-health.txt from the folder's ioslog.txt (its lines printed and in summary.md), without a log, and from a
+# data.img that is no store; an audit failure and bad stubs stop it before the phone is touched; no switch without the return script,
 # during an import, or when the preflight refuses; one phone lock. Every case ends the stand-in session it left
 # (end_case), and at the end, a failure or Ctrl-C none is left running (lib.sh's traps).
 # Env: TOOL, KEEP=1 (keep out/rustport-cycle), FAKE_PROC=host|stand-in (as tests/phone/run.sh).
@@ -38,7 +40,7 @@ export ADB=$HERE/../phone/fake-adb.sh FAKE_ADB_LOG=$W/adb.log FAKE_ROOT_LOG=$W/r
 export FAKE_PROC; echo "(the stand-in's /proc: $FAKE_PROC)"
 unset ANDROID_SERIAL FAKE_NO_ROOT FAKE_DEVICES ONEIOS_DSC_INDEX
 FORK=$(fork_dir)
-[ -n "$FORK" ] || { echo "run.sh: the cycle's checks need the OneOS fork's root script (ONEOS_DIR, or ../OneOS beside the main checkout)"; exit 2; }
+[ -n "$FORK" ] || { echo "run.sh: the cycle's checks need the OneOS fork's root script: its checkout as oneios-tool app finds it (above: ONEOS_DIR, app/ here after \`git submodule update --init --remote app\`, app/ of the main checkout, or OneOS beside it)"; exit 2; }
 export FAKE_FORK_ROOT_SH=$FORK/app-android/app/src/full/assets/root/oneios_root.sh ONEOS_DIR=$FORK
 P=$W/phone; export FAKE_PHONE=$P; make_phone "$P"
 S=$P/data/local/tmp/oneios
@@ -184,6 +186,32 @@ done
 check "cycle --only with a word that is no step" 1 "boot is not a step \(build, tests, stage, switch, watch, hold, return, collect\)" cycle --only boot
 check "cycle --dry-run --only watch,return" 0 "^cycle c1: watch, return \(dry run" cycle --dry-run --only watch,return --name c1
 
+# ---- the app's checkout is the one `oneios-tool app` finds: app/ of the OneiOS checkout (the submodule) when
+# none is named by hand. $R is its own git checkout, so nothing of this box is beside it.
+cycle_app() { (cd "$R" && env -u ONEOS_DIR "$TOOL" cycle "$@"); }   # without the ONEOS_DIR the suite runs with
+sub="git submodule update --init --remote app"
+check "cycle: the app's checkout named by hand (ONEOS_DIR)" 0 "^would: app: the source is .* in $FORK \(ONEOS_DIR\); " cycle --dry-run --only build --name a0
+check "cycle, none found: said, the cycle goes on" 0 "^would: app: no source to compare \(no OneOS checkout .*: $R/app is not there; $W/OneOS is not there\. " cycle_app --dry-run --only build --name a1
+check "cycle --force app, none found: refused" 1 "--force app: no OneOS checkout .*$R/app is not there" cycle_app --dry-run --only build --force app --name a2
+mkdir "$R/app"
+check "cycle, app/ empty: said with the command" 0 "^would: app: no source to compare \(no OneOS checkout .*: $R/app is empty: the app submodule is not initialised \(in $R: $sub\)" cycle_app --dry-run --only build --name a3
+check "cycle --force app, app/ empty: refused with the command" 1 "--force app: no OneOS checkout .*: $R/app is empty: the app submodule is not initialised \(in $R: $sub\)" cycle_app --dry-run --only build --force app --name a4
+mkdir -p "$R/app/app-android/app" "$R/app/switcher/assets"; echo "# stand-in" > "$R/app/switcher/assets/oneios_switch.sh"
+printf 'android {\n    defaultConfig {\n        applicationId = "com.fahadali.oneos"\n        versionCode = 199\n        versionName = "0.4.99"\n    }\n}\n' > "$R/app/app-android/app/build.gradle.kts"
+printf '#!/bin/sh\necho "$PWD: gradlew $*" >> "%s"\necho "FAILURE: Build failed with an exception."; exit 1\n' "$W/gradle.log" > "$R/app/app-android/gradlew"; chmod +x "$R/app/app-android/gradlew"
+check "cycle, app/ present: its version, and where it is" 0 "^would: app: the source is 0.4.99 \(versionCode 199\) in $R/app \(app/ of the OneiOS checkout\); " cycle_app --dry-run --only build --name a5
+check "cycle --force app, app/ present: app build && app install of app/" 0 "^would: app: oneios-tool app build && app install \(0.4.99 199\) of $R/app \(app/ of the OneiOS checkout\)$" cycle_app --dry-run --only build --force app --name a6
+check "cycle, app/ present: --oneos still wins" 0 "^would: app: the source is .* in $FORK \(--oneos\); " cycle_app --dry-run --only build --oneos "$FORK" --name a7
+check "cycle, app/ present: ONEOS_DIR still wins" 0 "^would: app: the source is .* in $FORK \(ONEOS_DIR\); " cycle --dry-run --only build --name a8
+check "cycle, app/ present: ONEOS_DIR says that app/ is not used" 0 "^note: ONEOS_DIR is set, so $R/app is not used$" cycle --dry-run --only build --name a9
+[ ! -e "$W/gradle.log" ] && ok "cycle --dry-run: gradlew was not started" || bad "cycle --dry-run started gradlew"
+# not a dry run: gradlew of app/ is what runs (it fails here: the app is never built in this suite)
+before=$(calls)
+check "cycle --force app: the build of app/ runs, and its failure stops the cycle" 1 "gradlew ended with exit status: 1" cycle_app --only build --force app --name appbuild
+grep -q "^$R/app/app-android: gradlew test assembleFullDebug$" "$W/gradle.log" 2>/dev/null && ok "cycle --force app: cd app/app-android && ./gradlew test assembleFullDebug" || bad "cycle --force app: the gradle command" "$(cat "$W/gradle.log" 2>&1 | tail -n 1)"
+[ "$(calls)" = "$before" ] && ok "cycle --force app: a failed app build did not touch the phone" || bad "cycle --force app: the phone was touched after a failed app build"
+rm -rf "$R/app"   # the rest of the suite runs with ONEOS_DIR and no app/, as before
+
 # ---- the whole cycle
 out=$(cycle --kernel-out t --runtime-version 0.1.7 --tests --hold 1 --name full 2>&1); st=$?
 [ $st = 0 ] && ok "cycle: the whole cycle ends with status 0" || bad "cycle: the whole cycle" "status $st: $(printf '%s' "$out" | tail -n 4 | tr '\n' '|')"
@@ -267,6 +295,29 @@ miss=""; for want in "^- kernel: " "^- launchd: " "^- backboardd: " "^- SpringBo
 [ -z "$miss" ] && [ "$(grep -c '^- backboardd: ' "$M")" = 1 ] && [ "$(sed -n '/^## Markers/,/^## Panics/p' "$M" | grep -c '^- ')" = "$("$TOOL" phone log --markers 2>/dev/null | wc -l)" ] \
   && ok "summary.md of a split run: the markers of the saved xnuhost.log, each stage once (as phone log --markers has them)" || bad "summary.md of a split run: the markers" "missing:$miss; $(sed -n '/^## Markers/,/^## Panics/p' "$M" | cut -c1-50 | tr '\n' '|')"
 end_case
+
+# ---- collect writes ioslog-health.txt (iOS's hangs, kills and timeouts) from what the session's folder holds, prints
+# its lines and puts them into summary.md. The log is tests/ioslog/health.txt, written by hand in `ioslog show`'s form.
+mkdir -p "$D/health"; cp "$HERE/../ioslog/health.txt" "$D/health/ioslog.txt"
+out=$(cycle --only collect --name health 2>&1); st=$?
+H=$D/health/ioslog-health.txt; M=$D/health/summary.md
+[ $st = 0 ] && printf '%s\n' "$out" | grep -q "^--- ioslog health $D/health/ioslog.txt$" && printf '%s\n' "$out" | grep -q "^$D/health/ioslog.txt: .*, 36 entries, from .* (600 s)$" \
+  && [ "$(printf '%s\n' "$out" | grep -Ec '^(hangs|watchdog|xpc-timeouts|jetsam|crashes|stuck-idle|encode-fail) +[0-9]+')" = 7 ] \
+  && printf '%s\n' "$out" | grep -q "^hangs  *8  109.7 s in all, longest 61.27 s (Preferences), 5 over 1 s; Preferences 4 (64.9 s, longest 61.27 s, 2 over 1 s), SpringBoard 2 (40.1 s, longest 39.34 s, 1 over 1 s), MobileSafari 2 (4.8 s, longest 3.50 s, 2 over 1 s)$" \
+  && ok "cycle --only collect: ioslog health of the folder's ioslog.txt, its head and one line per kind printed" || bad "cycle --only collect: ioslog health" "status $st: $(printf '%s' "$out" | tail -n 4 | cut -c1-200 | tr '\n' '|')"
+[ "$(grep -Ec '^(hangs|watchdog|xpc-timeouts|jetsam|crashes|stuck-idle|encode-fail) +[0-9]+' "$H")" = 7 ] && grep -q "^watchdog  *5  chronod 3, SpringBoard 1, backboardd 1; named: com.example.clock.widget 2, com.example.weather.widget 2$" "$H" \
+  && grep -q "^    texts: initial call 2 (SpringBoard 2), default 1 (SpringBoard 1), timeout 1 (Preferences 1)$" "$H" && grep -q "^    by process: MobileSafari 2, Preferences 1, nfcd 1$" "$H" && grep -q "^    e.g. 2026-11-15 09:05:00.000000Z kernel\[0\] Default chronod\[87\] Corpse allowed 1 of 5$" "$H" \
+  && ok "ioslog-health.txt in the session's folder: the lines, and under each kind its texts, every process and examples" || bad "ioslog-health.txt" "$(head -n 3 "$H" 2>&1 | cut -c1-200 | tr '\n' '|')"
+[ "$(sed -n '/^## iOS.s log: hangs, kills and timeouts/,$p' "$M" | grep -Ec '^(hangs|watchdog|xpc-timeouts|jetsam|crashes|stuck-idle|encode-fail) +[0-9]+')" = 7 ] && grep -q "^xpc-timeouts  *4  SpringBoard 3, Preferences 1; services: " "$M" \
+  && grep -q "^$D/health/ioslog.txt: .*, 36 entries" "$M" && ! grep -q "^    texts: " "$M" && grep -q "the result: every step that ran ended well$" "$M" \
+  && ok "summary.md: the health report's head and its seven lines (the details stay in ioslog-health.txt)" || bad "summary.md: the health lines" "$(sed -n '/^## iOS/,$p' "$M" | cut -c1-80 | tr '\n' '|')"
+out=$(cycle --only collect --name nohealth 2>&1); st=$?
+[ $st = 0 ] && printf '%s\n' "$out" | grep -q "^  ioslog-health.txt: not written: this folder has no data.img (--pull-data copies the Data store) and no ioslog.txt" && [ ! -e "$D/nohealth/ioslog-health.txt" ] && ! grep -q "ioslog health" "$D/nohealth/summary.md" \
+  && ok "cycle --only collect in a folder without a store's copy or a log: says why there is no ioslog-health.txt, status 0" || bad "cycle --only collect without a log" "status $st: $(printf '%s' "$out" | tail -n 3 | cut -c1-200 | tr '\n' '|')"
+# the folder of the failed --pull-data above holds the stand-in's data.img, which is no APFS store: no report, and the step fails by name
+out=$(cycle --only collect --name failcollect 2>&1); st=$?
+[ $st = 1 ] && printf '%s\n' "$out" | grep -q "oneios-tool cycle: collect: ioslog health: " && [ ! -e "$D/failcollect/ioslog-health.txt" ] && grep -Eq "^\| collect \| [0-9.]+ \| failed: ioslog health: " "$D/failcollect/summary.md" \
+  && ok "cycle --only collect on a data.img that is no APFS store: the collect step fails as ioslog health, no report is written" || bad "cycle --only collect on a bad data.img" "status $st: $(printf '%s' "$out" | tail -n 3 | cut -c1-200 | tr '\n' '|')"
 
 # ---- what stops a cycle before the phone is touched, or before the switch
 before=$(calls); touch "$R/audit-fails"

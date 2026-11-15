@@ -42,6 +42,18 @@ output is frozen in `tools/oneios-tool/tests/prelinkpy`): `oneios-tool prelink c
 `prelink lead-between NAME_A NAME_B [--add [NOTE]]` (each takes its script's arguments; the two lead tools read the
 files of this checkout or of `--repo CHECKOUT`, and write `kernel/prelink/lead/lead-reviewed.json`).
 
+**The whole build in one process (2026-11-15): `oneios-tool prelink build`.** For the phone, which has no bash, and
+for the OneOS app's `oneios-tool serve` (its `prelink` request): the steps below with the same arguments and files,
+`stubs-check` added before `kernel.kc` is put in place, `X18=1` left out. Steps that wait for nothing of each other
+run at the same time there (`native-input` and `merge-reviewed` beside `roots` and `hosted`; the two `align` beside
+`kclasses` and `structors`; `audit`, `stubs-check`, `record` and the hash list), and in both ways `hosted` and
+`emit` read the kexts' code in threads. `build.sh` is unchanged and runs one step after the other. Compared on the
+Linux-built kernel `13ed0b70` (`tools/oneios-tool/tests/prelink/compare-build.sh`): `kernel.kc` `ffbe95f7` from
+`build.sh`, from `prelink build` with one thread and with four, and from `serve`; 24 of 24 files the same; 13.7 s
+(`build.sh`) and 11.7 s (`prelink build`) on 4 CPUs. `prelink record` takes `--no-git`, `--oneios-commit` and
+`--xnuprelink-commit` for a host without git (the record's two commits are then the ones given, or null). **Not run
+on the phone.** Options and numbers: `tools/oneios-tool/README.md`, "prelink build, and the threads".
+
 1. `prelink native-input`: the kernel's weak-lookup binds resolved to its own definitions (Linux's ld64 left one,
    `native_source_storage_start`; Xcode 27.2's ld leaves seven: the `boot_progress_*` and `boot_log_export_put`
    defaults, `native_adreno_fences`, `native_ufs_dpu_map`), and the same for `REFERENCE`;

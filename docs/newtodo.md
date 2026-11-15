@@ -52,11 +52,20 @@ Built and host-tested on the Linux PC, **not run on the phone**. Details: `docs/
   patch 0008; `gpu-level=hold` is the old rule. The PC's model of it (`test_gpu_policy`): time held at the top, before ->
   after: a still lock screen redrawing 100 % -> 3 %, typing 100 % -> 2 %, a light animation 100 % -> 3 %, a 120 Hz scroll of
   3 ms frames 100 % -> 100 %, no frame later than before.
-- **Per-context priority.** Each queue's KGSL priority is its owner's class (render server and front 4, default 8,
-  background 12), from the name (`xnu:backboardd`; STOPGAP name list for WidgetRenderer, PosterBoard, the poster and photo
-  extensions, iconservicesagent, assetsd, searchd, analyticsd...) and the guest's hint (the task's RunningBoard role,
+- **Per-context priority.** Each queue's KGSL priority is its owner's class (render server and front 4, default and
+  background 8 since fix-gpu-widgets; background was 12), from the name (`xnu:backboardd`; a name list of six daemons that
+  never draw what the user sees: photoanalysisd, mediaanalysisd, assetsd, searchd, analyticsd, suggestd), whether the
+  render server reads the context's surfaces (then never background), and the guest's hint (the task's RunningBoard role,
   DarwinBG, the thread's QoS: `oneios_gpu_hint` in the GPU archive, sent in CTX_CREATE and every fenced SUBMIT_3D).
   `gpu-priority=0` turns it off.
+- **Widgets' GPU starvation (fix-gpu-widgets, 2026-11-15; phone, 8644ae9 with v0.1.9).** WidgetRenderer_Default was
+  background by the name list (KGSL priority 12, the lowest level at a still screen) although the guest said foreground:
+  `other fences 85, mean 181112 us`, `fence timeouts +5`. Fixed in xnuhost alone (`docs/gpu.md` 2.2b, "The widgets' GPU
+  starvation"). The white widgets themselves are chronod's snapshots (no HEVC encoder: `fix-widget-snapshots`). Lines
+  to read on the next session: `gpu: context N xnu:WidgetRenderer_Default: default` (or `... the render server reads its
+  surfaces: default now, not background`), `drm2kgsl: queue N of xnu:WidgetRenderer_Default: default, KGSL priority 8`,
+  `gpu: 10 s host: ... other fences N, mean` under 10000 us, `oneios-gpu-report: ... fence timeouts +0`, and the new
+  `gpu: 10 s fences over 100 ms: ...` line absent or naming only a listed daemon.
 - **The storms (iconservicesagent 89-98 %, PosterBoard 48 %, MercuryPosterExtension 38 %, assetsd 37 %, searchd,
   analyticsd): what is ours, traced in the code.** No session folder was on this PC, so each candidate was read in the
   code, not in the session's lines:
@@ -78,7 +87,9 @@ Built and host-tested on the Linux PC, **not run on the phone**. Details: `docs/
     `gpu: context N xnu:NAME: CLASS ...` line per context, so a process making contexts again and again shows on the phone.
   - So, from the code, the storm processes' CPU is iOS's own work (first-boot icon drawing, the photo library's and
     Spotlight's indexing, analytics) [I: not proven without the session's lines]. What is ours now: their GPU work runs at
-    KGSL priority 12, never holds the clock, and at the lowest level once the screen is still. Their CPU placement is
+    KGSL priority 12, never holds the clock, and at the lowest level once the screen is still (since fix-gpu-widgets:
+    priority 8, and only assetsd, searchd and analyticsd of them stay background by name; iconservicesagent and the
+    posters are classed by role and by whether the render server reads their surfaces). Their CPU placement is
     the CPU agent's.
 - **Tests:** `make -C runtime/xnuhost test` (the new `test_gpu_policy` 116 checks; `test_xnuhost` with the hint checks;
   `test_drm2kgsl`'s new priority scenario built, skipped here: `/dev/udmabuf` is root:kvm), `drivers/tests/host.sh`
@@ -91,8 +102,8 @@ Built and host-tested on the Linux PC, **not run on the phone**. Details: `docs/
   home screen still for a minute, scroll Settings for 30 s, type in a text field for 30 s, open and close three apps, then
   return. Then one session with `gpu-level=hold` for the same steps (the before). Read and compare:
   - xnuhost's log: `gpu: level:` (once: the clocks and the mode), `drm2kgsl: clock hold: ... only for frames that need
-    it`, `gpu: context N xnu:NAME: CLASS` (every context's class and priority; iconservicesagent, PosterBoard,
-    WidgetRenderer, MercuryPosterExtension background 12), `drm2kgsl: queue N of xnu:NAME: CLASS, KGSL priority P` (no
+    it`, `gpu: context N xnu:NAME: CLASS` (every context's class and priority; since fix-gpu-widgets assetsd, searchd,
+    analyticsd background 8, WidgetRenderer and the posters not background), `drm2kgsl: queue N of xnu:NAME: CLASS, KGSL priority P` (no
     `refused` line), `gpu: 10 s level:` (frames, at the top, missed, over budget, background at the lowest), `gpu: 10 s
     host:` (`clock held +N times, keep-alives +M`: far fewer at a still screen than with `hold`), `drm2kgsl: context N:
     power constraint at the lowest level`, `ONEIOS BACKLIGHT: N requests repeated the level last sent` after a slider
@@ -240,6 +251,13 @@ Actions is on for the fork); rerunning a failed CI job needs the token's Actions
    ram-giveback=0 ram-prefault=1 ram-lock=1`, now the defaults) should show `CAP_IPC_LOCK yes`, `memory: the guest's RAM
    is held: N MiB prefaulted in T ms, locked`, no `the host swaps iOS's RAM`, `oneios-mem: free pages given back to the
    host: no`, the `thermal: 30 s:` line without swap traffic, and `stopping:` right after the return's SIGTERM.
+   **fix-ram-hugepages (2026-11-15):** the memfd's offset 0 now sits at a 2 MiB boundary (before, no 2 MiB page could be
+   mapped with one entry) and xnuhost's window gets `MADV_HUGEPAGE` where `shmem_enabled` allows (`ram-huge=0` off).
+   That is the window's TLB reach and its own page tables (size / 512, 14 MiB at 7 GiB); the 575 MiB of page tables are
+   the iOS tasks', which map 16 KiB at a time, so the fit's 8 % stays (`docs/booter.md` 2.2, "2 MiB pages"). The fork
+   would have to set `shmem_enabled` to `advise` at the switch and restore it at the return (`oneos/interface.md` 4):
+   not done. Phone lines: `memory: 2 MiB host pages: yes|no (shmem_enabled ...)`, `memory: 2 MiB pages (the prefault
+   done): xnuhost maps N of M MiB ... with 2 MiB entries`, `page tables P MiB (xnuhost's own V MiB)`.
 6. **Haptics and the power key** (`docs/hardware.md` 5, PR #17): the counters show where a tap stops. PC boot with
    `--set haptics=sim`; phone: `Actuator: user client N opened by audiomxd`, audiomxd's `actuator port` lines; the
    power-key boot with `oneios-actuator=0`. **Power key (fix-power-key, 2026-11-14; confirmed broken in the 9f6dc38

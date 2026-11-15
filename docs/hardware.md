@@ -2590,6 +2590,88 @@ With `pen=auto` in the session's `xnuhost.conf` (or `--set pen=auto`):
 `N of a layout not known` above 0 with `0 stylus events given ...` means the event data is not the layout orient()
 knows: tilt and pressure then stay as the driver made them (pressure 0..1, no angles).
 
+## 7g. Video encoder (hevc-encoder, 2026-11-15; host done, guest archive not yet built)
+
+The phone's hardware video encoder (Qualcomm's Codec2 `c2.qti.hevc.encoder` / `c2.qti.avc.encoder`) for iOS, so
+VideoToolbox encodes HEVC and H.264 and **CMPhoto writes HEIC**: chronod's widget snapshots, screenshots, the photo
+library and Live Photos (then the camera's recording, screen recording and FaceTime). Host side:
+`runtime/bridges/encoder`; guest side: `kernel/patches/oneios-hosted/codec`.
+
+**The fault (session 8644ae9, 2026-11-15).** Home-screen widgets rendered white: chronod logged 58 times `Error
+[com.apple.imageio:chronod] writeImageAtIndex: *** CMPhotoCompressionSessionAddImage: err =
+kCMBaseObjectError_UnsupportedOperation [-N] (codec: 'hvc1')`, then `finalizeDestination: session write failed`, and
+WidgetRenderer then `Content load failed: unable to find or unarchive file for key: ...systemSmall...` for Weather,
+Calendar, News and Maps, sending 50 `WidgetRendererErrorDomain/1` replies to SpringBoard. The owner chose real
+HEVC/HEIC through the phone's encoder, not a JPEG fallback.
+
+### The route [F the 24A446 cache, read on the Linux PC 2026-11-15]
+
+VideoToolbox 3350.77.1.6 carries a whole **paravirtualized** encoder and decoder
+(`ParavirtualizedVideoEncoder_CreateInstanceWithSpecification`, `..._EncodeFrame/EncodeTile`,
+`paravirtualizedVideoEncoder_HandleMessageFromHost`; symbols in the cache) and uses them for every eligible codec
+once `VTParavirtualizationIsRunningInGuest` — i.e. once the service **`AppleVideoToolboxParavirtualizationDriver`**
+(string in `VideoToolboxParavirtualizationSupport` 71.0.14) is published. CMPhoto 488.22.4's HEIC path takes it:
+`_CMPhotoSupportsHEVCHWEncode`'s block calls `VTSelectAndCreateVideoEncoderInstance` with
+`kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder` = true and `kCFBooleanTrue`, and sets
+`hwSupported` from whether an encoder is returned (disassembled at `0x1a676e924`). The paravirtualized encoder
+answers `UsingHardwareAcceleratedVideoEncoder` true, so CMPhoto sees hardware HEVC and `AddImage(codec: 'hvc1')`
+stops failing. [F] these cache reads; [I] that iOS 27's encode graph takes the device unchanged (the next session's
+log confirms, `codec/README.md`).
+
+**Route chosen: publish Apple's own paravirtualization service** (the guest kernel archive is UniXNU-droidvm's
+`DroidVMVTParavirt.cpp` + `DroidVMVTHost.cpp` + `DroidVMVirtioMedia.c`, proven to the iPad home screen on iPadOS 27),
+with the real encoding in the host over Android's MediaCodec. **Not** an AVE2 user-client emulation (the `ave`
+device-tree node is `compatible = "ave2"`, `soc-id "t8150"`, and `AppleAVE2` 913.43.1's firmware command ABI is
+Apple's, not serveable by another encoder) and **not** a `.videoencoder` bundle of ours (CMPhoto requires a
+*hardware* encoder; a plain bundle registers as software). This is the route the code already supports: the Metal and
+camera plug-ins are likewise iOS-side code built on Apple's own loaders.
+
+### The host side (`runtime/bridges/encoder`) — done, proven on the PC
+
+A stateful V4L2 encoder device, `droidvm,virtio-media` (`/arm-io/virtio-media-0`), on xnuhost's transport: OUTPUT is
+tightly packed NV12 (the IOSurfaces VideoToolbox gives, copied by `DroidVMVTHost` into the pool), CAPTURE is the
+HEVC/H.264 bitstream (Annex-B NAL units, parameter sets). The real encoding runs in the **oneios-encoder helper**
+(xnuhost is static, MediaCodec is a shared library, as with the camera and audio helpers); the helper runs the NDK's
+`AMediaCodec` (`video/hevc` → `c2.qti.hevc.encoder`), one keyframe and constant quality for a still. The MMAP'd V4L2
+buffers live in a 48 MiB **media pool** carved after the GPU pool, inside the 64 MiB the hosted kernel already lets a
+task map (`0024-gpu-pool.patch`, so no new pmap patch). Off by default (`encoder=auto`).
+
+- **Code [F]:** `media_device.c` (the device), `backend_ndk.c` (MediaCodec), `backend_helper.c` + `helper.c` (the
+  helper split), `encctl.c` (the phone test). The message layout and the V4L2 ioctl set are what `DroidVMVTHost.cpp`
+  issues.
+- **Tested [F]:** `make test` — 69 checks, the device driven over xnuhost's real transport (`virtio.c`) by a guest of
+  plain memory, replaying `DroidVMVTHost`'s encoder sequence (OPEN, S_FMT HEVC+NV12, REQBUFS/QUERYBUF/MMAP, STREAMON,
+  QBUF a NV12 test pattern, the coded DQBUF, ENCODER_CMD STOP → EOS) through the **real helper process** built for the
+  host with the stand-in encoder; it checks the pool MMAP and that the NV12 pattern reaches the encoder and returns a
+  well-formed HEVC Annex-B access unit (VPS/SPS/PPS + IDR with the frame's dims and checksum). The Android build
+  (`oneios-encoder`, `encctl`, `liboneencoder.a`) builds with NDK r28c; xnuhost links it.
+- **Guess [I]:** NV12 as `COLOR_FormatYUV420SemiPlanar` ByteBuffer input to `c2.qti.hevc.encoder` (not yet run on the
+  phone); the still-image CQ settings. `encctl` checks this on the phone.
+
+### The guest side (`kernel/patches/oneios-hosted/codec`) — written, not yet built
+
+`OneiOSCodec.c` (`oneios_codec_start`, a weak hook in `drivers/bridge/OneiOSBridge.c`) brings up the virtio-media
+transport and publishes the paravirtualization service. It stages the three UniXNU-droidvm files unchanged. The
+generator `oneios-tool kernel gen codec` and the `build-hosted.sh` wiring are the **remaining step** (they need a
+kernel build to produce and freeze; `codec/README.md` says exactly what the Mac builds). The weak hook and xnuhost's
+`droidvm-vt-paravirt=1` (added with `encoder=auto`) are in place, so a kernel built with the archive starts it and a
+kernel without it is unchanged.
+
+### What the Mac must build and stage
+
+1. `make -C runtime/bridges/encoder` → ship `build/android/oneios-encoder` as `bin/oneios-encoder` (0755) in the
+   runtime package; `encctl` to the phone for the check above.
+2. Add `oneios-tool kernel gen codec` + the `build-hosted.sh` wiring (`codec/README.md`), build `kernel.kc`, boot with
+   `encoder=auto`.
+
+### The phone lines that prove it
+
+- `xnuhost.log`: `encoder: on: mediacodec-helper backend, media pool 48 MiB at ...`; `ONEIOS CODEC: 1 virtio-media
+  device(s), 1 up; VideoToolbox paravirtualization registered (stage 2)`.
+- `oneios-tool ioslog`: **no** `CMPhotoCompressionSessionAddImage ... (codec: 'hvc1')` /
+  `kCMBaseObjectError_UnsupportedOperation`; WidgetRenderer **without** `Content load failed`; `oneios-gpu-pixels:
+  WidgetRenderer_ ... drawn`; a screenshot saved as HEIC (`....ftypheic`).
+
 ## 8. Sources
 
 | What | Repository and commit |

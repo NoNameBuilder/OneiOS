@@ -600,19 +600,29 @@ impl Emit<'_> {
 
     /// Rewrite selected executable entries using explicit ADRP provenance.
     fn rewrite_branches(&mut self) -> Result<()> {
+        use rayon::prelude::*;
         let cache = self.cache;
+        // The per-kext work that reads the kernelcache alone, in every thread of the pool: each kext's code is
+        // searched for its inline data pools and scanned for its branches and address pairs. The rebinding
+        // below then takes the kexts in the kernelcache's order, one by one, as before: it allocates stubs and
+        // counts as it goes, so its order is the output's. The same kernel.kc, byte for byte (README "prelink").
+        let mut work: Vec<(&String, crate::image::Segment)> = Vec::new();
         for (name, (_, entry_at)) in &cache.entries {
             if name == KERNEL || self.closure.is_some_and(|c| !c.contains(name)) {
                 continue;
             }
-            for segment in &Image::new(cache.data, *entry_at as usize)?.segments {
-                if segment.name != "__TEXT_EXEC" || segment.filesize == 0 {
-                    continue;
+            for segment in Image::new(cache.data, *entry_at as usize)?.segments {
+                if segment.name == "__TEXT_EXEC" && segment.filesize != 0 {
+                    work.push((name, segment));
                 }
+            }
+        }
+        type Scanned = (Vec<(usize, usize)>, Vec<(u64, u64, bool)>, Vec<crate::image::Ref>);
+        let scanned: Vec<Scanned> = work
+            .par_iter()
+            .map(|(_, segment)| {
                 let blob = &cache.data[segment.fileoff as usize..(segment.fileoff + segment.filesize) as usize];
                 let pools = inline_data_ranges(blob);
-                self.report.inc("inline_data_pools_preserved", pools.len() as i128);
-                self.report.inc("inline_data_bytes_preserved", pools.iter().map(|(b, e)| (e - b) as i128).sum());
                 let (mut begin, mut calls, mut refs) = (0, Vec::new(), Vec::new());
                 for &(end, next_begin) in pools.iter().chain([&(blob.len(), blob.len())]) {
                     let found = scan(&blob[begin..end], segment.va + begin as u64);
@@ -620,6 +630,16 @@ impl Emit<'_> {
                     refs.extend(found.refs);
                     begin = next_begin;
                 }
+                (pools, calls, refs)
+            })
+            .collect();
+        {
+            for (&(name, ref segment), (pools, calls, refs)) in work.iter().zip(scanned) {
+                // (between kexts: a cancel or the heat limit of `serve`; nothing is asked of a build that runs alone)
+                oneios_common::job::check()?;
+                let blob = &cache.data[segment.fileoff as usize..(segment.fileoff + segment.filesize) as usize];
+                self.report.inc("inline_data_pools_preserved", pools.len() as i128);
+                self.report.inc("inline_data_bytes_preserved", pools.iter().map(|(b, e)| (e - b) as i128).sum());
                 let file = |pc: u64| (segment.fileoff + pc - segment.va) as usize;
                 for (pc, target, _) in calls {
                     if !self.mapped(target) {

@@ -4,10 +4,11 @@
 //! by Mandiant's macos-unifiedlogs. CSV and JSONL are what its `unifiedlog_iterator` writes, so the two can be
 //! compared byte for byte (tests/ioslog/compare.sh).
 //!
-//! Hand-written here: the choice of the files in the image (`source.rs`), the filters, the text output and the
-//! checks. Everything that decodes a log file is the library's.
+//! Hand-written here: the choice of the files in the image (`source.rs`), the filters, the text output, the
+//! checks and the health counts (`health.rs`). Everything that decodes a log file is the library's.
 
 mod checks;
+pub mod health;
 #[cfg(test)]
 mod lib_tests;
 mod source;
@@ -31,7 +32,7 @@ use uuid::Uuid;
     name = "oneios-tool ioslog",
     about = "iOS's unified log from a copy of the phone's Data store (data.img), a .logarchive, or a mounted Data volume",
     after_help = "SOURCE: a raw image of the Data store (read without mounting it), a .logarchive folder, or a folder that \
-                  holds db/diagnostics and db/uuidtext.\nTimes are the guest's clock, in UTC. Docs: tools/oneios-tool/README.md."
+                  holds db/diagnostics and db/uuidtext (health: also a text file that show wrote; without SOURCE the staged store).\nTimes are the guest's clock, in UTC. Docs: tools/oneios-tool/README.md."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -66,12 +67,22 @@ pub enum Command {
         #[arg(long, default_value_t = 3)]
         examples: usize,
     },
+    /// Count a boot's hangs, watchdog kills, XPC timeouts, jetsam kills, crashes, stuck idle demotions and encode
+    /// failures: one line per kind with its count, its total and longest, and its top processes
+    Health(Box<health::Args>),
 }
 
 #[derive(Args)]
 pub struct From {
     /// The Data store's image, a .logarchive folder, or a folder with db/diagnostics
     source: String,
+    #[command(flatten)]
+    how: How,
+}
+
+/// How a source is read: the options every subcommand takes.
+#[derive(Args)]
+pub struct How {
     /// The image's volume: its number or its name (default: the first volume that holds a log)
     #[arg(long)]
     volume: Option<String>,
@@ -87,6 +98,13 @@ pub struct From {
     /// Print the decoder's warnings on stderr
     #[arg(short, long)]
     verbose: bool,
+}
+
+impl Default for How {
+    /// What a command line without these options gives.
+    fn default() -> How {
+        How { volume: None, block0: false, checkpoint: None, apfs: oneios_image::apfs::fuse::Backend::Auto, verbose: false }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, ValueEnum)]
@@ -159,6 +177,7 @@ pub fn main(command: Command) -> i32 {
         Command::Save { from, archive } => cmd_save(from, archive),
         Command::Boots { from } => cmd_boots(from),
         Command::Checks { from, boot, examples } => checks::run(from, &boot, examples),
+        Command::Health(args) => health::run(*args),
     };
     match result {
         Ok(()) => 0,
@@ -174,15 +193,19 @@ pub fn main(command: Command) -> i32 {
 }
 
 fn open(from: &From) -> Result<Source> {
-    if from.verbose {
+    open_source(&from.source, &from.how)
+}
+
+pub(crate) fn open_source(what: &str, how: &How) -> Result<Source> {
+    if how.verbose {
         let _ = tracing_subscriber::fmt().with_writer(std::io::stderr).with_max_level(tracing::Level::WARN).without_time().try_init();
     }
-    let pick = match from.checkpoint {
+    let pick = match how.checkpoint {
         Some(xid) => Pick::Xid(xid),
-        None if from.block0 => Pick::Block0,
+        None if how.block0 => Pick::Block0,
         None => Pick::Newest,
     };
-    let source = Source::open(&from.source, from.volume.as_deref(), pick, from.apfs)?;
+    let source = Source::open(what, how.volume.as_deref(), pick, how.apfs)?;
     if source.tracev3.is_empty() {
         bail!("{}: the log folders hold no tracev3 file", source.what);
     }
@@ -279,13 +302,25 @@ fn cmd_boots(from: From) -> Result<()> {
     );
     println!("{:<32}  {:<27}  {:<27}  {:<27}  {:>9}", "boot", "start (logd's record)", "first entry", "last entry", "entries");
     for boot in boots(&source)? {
+        let start = boot.start.map(|t| time_text(t as f64));
         println!(
             "{:<32}  {:<27}  {:<27}  {:<27}  {:>9}",
             uuid_text(boot.uuid),
-            boot.start.map(|t| time_text(t as f64)).unwrap_or_else(|| "-".into()),
+            start.as_deref().unwrap_or("-"),
             time_text(boot.first),
             time_text(boot.last),
             boot.entries
+        );
+        // (`oneios-tool serve`: the same boot as a row; nothing without a listener)
+        oneios_common::job::row(
+            "boot",
+            &[
+                ("uuid", uuid_text(boot.uuid).into()),
+                ("start", start.into()),
+                ("first", time_text(boot.first).into()),
+                ("last", time_text(boot.last).into()),
+                ("entries", boot.entries.into()),
+            ],
         );
     }
     Ok(())
@@ -470,6 +505,14 @@ fn cmd_show(show: Show) -> Result<()> {
     let (mut seen, mut written) = (0u64, 0u64);
     visit_provider(&source, |entry| {
         seen += 1;
+        // every 4,096 entries: the running request's stop (`oneios-tool serve`; nothing is asked of a command that
+        // runs alone)
+        if seen % 4096 == 0 {
+            if let Err(stop) = oneios_common::job::check() {
+                failure = Some(stop.into());
+                return ControlFlow::Break(());
+            }
+        }
         if !filter.keeps(&entry) {
             return ControlFlow::Continue(());
         }
@@ -504,5 +547,6 @@ fn cmd_show(show: Show) -> Result<()> {
     if show.output.is_some() {
         eprintln!("ioslog: {written} of {seen} entries from {}", source.what);
     }
+    oneios_common::job::row("shown", &[("entries", written.into()), ("of", seen.into())]);
     Ok(())
 }

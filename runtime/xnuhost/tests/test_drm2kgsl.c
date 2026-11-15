@@ -8,7 +8,8 @@
 //     (kgsl_mem_entry_attach_to_process -> kgsl_mmu_get_gpuaddr), ENOMEM when nothing is left;
 //   - a VBO may be as large as the range (gpumem_max_va_size), not larger (EINVAL);
 //   - BIND_RANGES takes children of the same process, whole pages, inside the child and inside the VBO.
-// Each scenario runs in a process of its own (the renderer is one per process). Skipped without /dev/udmabuf.
+// Each scenario runs in a process of its own (the renderer is one per process). Without /dev/udmabuf (root:kvm on a PC)
+// only the policy's scenarios run, on a stand-in for it (fake_udmabuf); the memory scenarios need the real one.
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
@@ -27,6 +28,7 @@
 #include <sys/syscall.h>
 #include <sys/wait.h>
 #include <linux/types.h>
+#include <linux/udmabuf.h>
 #define __user
 #include "drm2kgsl/msm_kgsl.h"
 
@@ -146,6 +148,18 @@ static int fake_kgsl(unsigned long request, void *arg)
   }
 }
 
+// Without this host's /dev/udmabuf (root:kvm on a PC): a stand-in for it too, for the scenarios that never read pages
+// through it (the classes, the surface sharing): UDMABUF_CREATE_LIST gives a memfd of the list's size, not the guest's pages.
+static bool fake_udmabuf;
+static int fake_udmabuf_create(const struct udmabuf_create_list *list)
+{
+  uint64_t bytes = 0;
+  for (unsigned i = 0; i < list->count; i++) bytes += list->list[i].size;
+  int fd = (int)syscall(SYS_memfd_create, "fake-udmabuf", 1u);
+  if (fd >= 0 && ftruncate(fd, (off_t)bytes)) { close(fd); return -1; }
+  return fd;
+}
+
 int __real_ioctl(int fd, unsigned long request, ...);
 int __wrap_ioctl(int fd, unsigned long request, ...);
 int __wrap_ioctl(int fd, unsigned long request, ...)
@@ -154,6 +168,7 @@ int __wrap_ioctl(int fd, unsigned long request, ...)
   va_start(ap, request);
   void *arg = va_arg(ap, void *);
   va_end(ap);
+  if (fake_udmabuf && request == UDMABUF_CREATE_LIST) return fake_udmabuf_create(arg);
   return _IOC_TYPE(request) == KGSL_IOC_TYPE ? fake_kgsl(request, arg) : __real_ioctl(fd, request, arg);
 }
 
@@ -165,7 +180,8 @@ int __wrap_open(const char *path, int flags, ...)
   va_start(ap, flags);
   int mode = va_arg(ap, int);
   va_end(ap);
-  if (!strcmp(path, "/dev/kgsl-3d0") || !strcmp(path, "/dev/dma_heap/system")) return __real_open("/dev/null", O_RDWR | O_CLOEXEC);
+  if (!strcmp(path, "/dev/kgsl-3d0") || !strcmp(path, "/dev/dma_heap/system") || (fake_udmabuf && !strcmp(path, "/dev/udmabuf")))
+    return __real_open("/dev/null", O_RDWR | O_CLOEXEC);
   return __real_open(path, flags, mode);
 }
 
@@ -178,7 +194,8 @@ typedef struct { uint32_t seqno, rsp_mem_offset, async_error, global_faults; } m
 static unsigned checks, failed;
 #define CHECK(x) do { checks++; if (!(x)) { failed++; printf("FAILED %s:%d: %s\n", __FILE__, __LINE__, #x); } } while (0)
 static char last_error[512];
-static void log_line(int level, const char *line) { if (level == 0) snprintf(last_error, sizeof last_error, "%s", line); if (getenv("TEST_VERBOSE")) printf("  %d %s\n", level, line); }
+static char last_context[512];   // the last "gpu: context" line (the policy's)
+static void log_line(int level, const char *line) { if (level == 0) snprintf(last_error, sizeof last_error, "%s", line); if (!strncmp(line, "gpu: context", 12)) snprintf(last_context, sizeof last_context, "%s", line); if (getenv("TEST_VERBOSE")) printf("  %d %s\n", level, line); }
 
 static uint8_t *ram;
 static xh_gpu3d *gpu;
@@ -389,24 +406,70 @@ static unsigned priority_of(uint32_t id) { return id && id <= nqueues ? (queue_f
 static int classes(void)
 {
   CHECK(renderer());
-  context render, icons, app, other;
+  context render, icons, app, other, photos;
   CHECK(context_named(&render, 1, 1, "xnu:backboardd"));
   CHECK(context_named(&icons, 2, 2, "xnu:iconservicesagent"));
   CHECK(context_named(&app, 3, 3, "xnu:MobileSafari"));
   CHECK(context_named(&other, 4, 4, "xnu:MobileSafari"));
+  CHECK(context_named(&photos, 5, 5, "xnu:photoanalysisd"));
   // The guest's hint: Safari in front (role 1), the other one sent to the background (role 2).
   gpu->hint(gpu, 3, (const uint8_t[3]){ OG_HINT_VALID | OG_ROLE_FOREGROUND, OG_QOS_USER_INTERACTIVE, 0 });
   gpu->hint(gpu, 4, (const uint8_t[3]){ OG_HINT_VALID | OG_ROLE_BACKGROUND, OG_QOS_USER_INTERACTIVE, 0 });
   uint32_t q1 = queue_new(&render, 0x80000000u);          // DRM2KGSL_SUBMITQUEUE_DEADLINE: the compositor's
-  uint32_t q2 = queue_new(&icons, 0), q3 = queue_new(&app, 0), q4 = queue_new(&other, 0);
-  CHECK(q1 && q2 && q3 && q4);
+  uint32_t q2 = queue_new(&icons, 0), q3 = queue_new(&app, 0), q4 = queue_new(&other, 0), q5 = queue_new(&photos, 0);
+  CHECK(q1 && q2 && q3 && q4 && q5);
   CHECK(priority_of(q1) == 4 && (queue_flags[q1 - 1] & KGSL_CONTEXT_PWR_CONSTRAINT));
-  CHECK(priority_of(q2) == 12 && (queue_flags[q2 - 1] & KGSL_CONTEXT_PWR_CONSTRAINT));      // background: can carry the lowest
+  // iconservicesagent draws icons the user sees: no longer background by name (fix-gpu-widgets).
+  CHECK(priority_of(q2) == 8 && !(queue_flags[q2 - 1] & KGSL_CONTEXT_PWR_CONSTRAINT));
   CHECK(priority_of(q3) == 4 && !(queue_flags[q3 - 1] & KGSL_CONTEXT_PWR_CONSTRAINT));
-  CHECK(priority_of(q4) == 12);
+  // Background, by role or by name: the default's ringbuffer (never under it), and able to carry the lowest level.
+  CHECK(priority_of(q4) == 8 && (queue_flags[q4 - 1] & KGSL_CONTEXT_PWR_CONSTRAINT));
+  CHECK(priority_of(q5) == 8 && (queue_flags[q5 - 1] & KGSL_CONTEXT_PWR_CONSTRAINT));
   // No constraint was set by making them, and the level setter alone sets none (the next submission does).
   drm2kgsl_renderer_set_level(0);
   CHECK(nconstraints == 0);
+  for (uint32_t i = 1; i <= 5; i++) gpu->ctx_destroy(gpu, i);
+  return 0;
+}
+
+// A widget renderer that the guest calls non-UI (background by its role) is not background once the render server makes a
+// blob over the same guest pages as one of its blobs (it reads the surface): its next queue is the default's, with no
+// lowest level; a later hint keeps it so. Two contexts of one process sharing pages, or a blob over other pages, change nothing.
+static int shown_surfaces(void)
+{
+  CHECK(renderer());
+  context render, widget, other, twin;
+  CHECK(context_named(&render, 1, 1, "xnu:backboardd"));
+  CHECK(context_named(&widget, 2, 2, "xnu:WidgetRenderer_Default"));
+  CHECK(context_named(&other, 3, 3, "xnu:Extension"));
+  CHECK(context_named(&twin, 4, 4, "xnu:Extension"));
+  gpu->hint(gpu, 2, (const uint8_t[3]){ OG_HINT_VALID | OG_ROLE_NONUI, OG_QOS_USER_INITIATED, 0 });
+  gpu->hint(gpu, 3, (const uint8_t[3]){ OG_HINT_VALID | OG_ROLE_NONUI, OG_QOS_USER_INITIATED, 0 });
+  gpu->hint(gpu, 4, (const uint8_t[3]){ OG_HINT_VALID | OG_ROLE_NONUI, OG_QOS_USER_INITIATED, 0 });
+  CHECK(strstr(last_context, "context 4 xnu:Extension: background (by the guest's role"));
+  uint32_t q1 = queue_new(&widget, 0);
+  CHECK(q1 && priority_of(q1) == 8 && (queue_flags[q1 - 1] & KGSL_CONTEXT_PWR_CONSTRAINT));      // background by role
+  // The widget draws into a surface; the extension and its twin (one process) share another; the render server imports a
+  // page nobody else has, then the widget's.
+  const xh_gpu_entry surface = { .addr = RAM_PHYS + (4u << 20), .length = 0x8000 }, shared = { .addr = RAM_PHYS + (6u << 20), .length = 0x4000 },
+                     alone = { .addr = RAM_PHYS + (8u << 20), .length = 0x4000 };
+  CHECK(guest_buffer(&widget, 10, 1, widget.slice + (16u << 20), 0x8000, &surface, 1) == 0);
+  CHECK(guest_buffer(&other, 11, 1, other.slice + (16u << 20), 0x4000, &shared, 1) == 0);
+  CHECK(guest_buffer(&twin, 12, 1, twin.slice + (16u << 20), 0x4000, &shared, 1) == 0);
+  CHECK(guest_buffer(&render, 13, 1, render.slice + (16u << 20), 0x4000, &alone, 1) == 0);
+  CHECK(!strstr(last_context, "reads its surfaces"));
+  CHECK(guest_buffer(&render, 14, 2, render.slice + (32u << 20), 0x8000, &surface, 1) == 0);
+  CHECK(strstr(last_context, "context 2 xnu:WidgetRenderer_Default: the render server reads its surfaces: default now, not background"));
+  uint32_t q2 = queue_new(&widget, 0);
+  CHECK(q2 && priority_of(q2) == 8 && !(queue_flags[q2 - 1] & KGSL_CONTEXT_PWR_CONSTRAINT));     // not background now
+  // A new hint (a utility thread now) keeps it out of the background.
+  gpu->hint(gpu, 2, (const uint8_t[3]){ OG_HINT_VALID | OG_ROLE_NONUI, OG_QOS_UTILITY, 0 });
+  uint32_t q3 = queue_new(&widget, 0);
+  CHECK(q3 && !(queue_flags[q3 - 1] & KGSL_CONTEXT_PWR_CONSTRAINT));
+  // The extension is still background: its pages are shared with its own twin only.
+  uint32_t q4 = queue_new(&other, 0);
+  CHECK(q4 && (queue_flags[q4 - 1] & KGSL_CONTEXT_PWR_CONSTRAINT));
+  for (uint32_t r = 10; r <= 14; r++) gpu->unref(gpu, r);
   for (uint32_t i = 1; i <= 4; i++) gpu->ctx_destroy(gpu, i);
   return 0;
 }
@@ -423,11 +486,20 @@ static bool scenario(const char *name, int (*run)(void))
 int main(void)
 {
   int node = __real_open("/dev/udmabuf", O_RDWR | O_CLOEXEC);
-  if (node < 0) { printf("drm2kgsl on a stand-in KGSL: no /dev/udmabuf here (%s): skipped\n", strerror(errno)); return 0; }
+  if (node < 0) {
+    // The scenarios that read the guest's pages need the real one; the policy's run on the stand-in.
+    printf("drm2kgsl on a stand-in KGSL: no /dev/udmabuf here (%s): the memory scenarios skipped, the policy's on a stand-in udmabuf\n",
+           strerror(errno));
+    fake_udmabuf = true;
+    bool ok = scenario("queue priorities by the owner's class (patch 0008)", classes);
+    ok = scenario("a context whose surfaces the render server reads is not background", shown_surfaces) && ok;
+    return ok ? 0 : 1;
+  }
   close(node);
   bool ok = scenario("a VBO over the whole address range (the phone, runtime 0.1.3)", whole_range);
   ok = scenario("a VBO that leaves room; buffers past udmabuf's limits", with_room) && ok;
   ok = scenario("each import's IO coherence read back (patch 0007)", coherence) && ok;
   ok = scenario("queue priorities by the owner's class (patch 0008)", classes) && ok;
+  ok = scenario("a context whose surfaces the render server reads is not background", shown_surfaces) && ok;
   return ok ? 0 : 1;
 }

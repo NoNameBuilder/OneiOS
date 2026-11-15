@@ -1729,13 +1729,15 @@ static void test_config(const char *dir)
         c.ram_auto_available == 7ull * G && c.ram_percent == 90 && c.ram_host_floor == (int64_t)XH_RAM_AUTO_FLOOR && c.host_mem_log == 30 &&
         c.usb_log == 3 && c.ready_content_wait == XH_READY_CONTENT_WAIT &&
         c.ram_auto_bound == XH_RAM_BOUND_AVAILABLE && c.ram_fit_on == 1 && c.ram_fit / M == 5451 && c.ram_fit_available == 7 * G && c.ram_giveback == 0 && c.ram_prefault == 1 && c.ram_lock == 1 &&
-        !c.ram_lock_expected &&
+        !c.ram_lock_expected && c.ram_lock_fit == 0 &&
         c.ram_session_reserve == (int64_t)XH_RAM_SESSION_RESERVE && c.ram_unlock_below == (int64_t)XH_RAM_UNLOCK_BELOW && c.ram_gpu_reserve == (int64_t)XH_RAM_GPU_RESERVE && c.ram_pagetable_percent == 8);
   // Where the lock can work (the phone: root with CAP_IPC_LOCK): the headroom is 768 MiB, (7168 - 1024) / 1.08 = 5688 -> 5632 MiB.
   fake_can = true;
   xh_config_defaults(&c);
   CHECK(xh_config_args(&c, 5, ram1) == 0 && xh_config_finish(&c) == 0 && c.ram_bytes == 5632 * M && c.ram_lock_expected &&
         c.ram_session_reserve == (int64_t)XH_RAM_SESSION_RESERVE_LOCKED && c.ram_fit / M == 5688 && c.ram_giveback == 0 && c.ram_lock == 1);
+  CHECK(c.ram_lock_fit == 5632 * M && c.ram_huge == 1);                         // the locked size that fits; 2 MiB pages asked
+  CHECK(xh_config_set(&c, "ram-huge", "0") == 0 && c.ram_huge == 0 && xh_config_set(&c, "ram-huge", "x") != 0);
   // The owner's boot of 2026-11-15 says the default explicitly: the same.
   char *ram1e[] = { "xnuhost", "--image", image, "--set", set_meminfo, "--set", "ram-giveback=0", "--set", "ram-prefault=1", "--set", "ram-lock=1" };
   xh_config_defaults(&c);
@@ -2246,6 +2248,47 @@ static void test_ramfix(const char *dir)
   xh_ramfix_counters c;
   xh_ramfix_sample(&c);
   CHECK(c.major_faults < (1ull << 40));
+  CHECK(c.vm_pte > 0 && c.minor_faults > 0);                                    // VmPTE and minflt read (fix-ram-hugepages)
+  uint64_t pmd_shmem = 1, pmd_file = 1, pmd_anon = 1;
+  CHECK(xh_pmd_mapped_self(&pmd_shmem, &pmd_file, &pmd_anon) == (access("/proc/self/smaps_rollup", R_OK) == 0));
+
+  // 2 MiB host pages (fix-ram-hugepages): shmem_enabled's bracketed value decides, from named files under a root.
+  {
+    char root[300], p[400];
+    snprintf(root, sizeof root, "%s/hp", dir);
+    const char *parts[] = { "", "/sys", "/sys/kernel", "/sys/kernel/mm", "/sys/kernel/mm/transparent_hugepage", "/proc" };
+    for (unsigned i = 0; i < 6; i++) { snprintf(p, sizeof p, "%s%s", root, parts[i]); mkdir(p, 0755); }
+    char se[400], pmd[400], mi[400];
+    snprintf(se, sizeof se, "%s/sys/kernel/mm/transparent_hugepage/shmem_enabled", root);
+    snprintf(pmd, sizeof pmd, "%s/sys/kernel/mm/transparent_hugepage/hpage_pmd_size", root);
+    snprintf(mi, sizeof mi, "%s/proc/meminfo", root);
+    FILE *w = fopen(pmd, "w"); fputs("2097152\n", w); fclose(w);
+    w = fopen(mi, "w"); fputs("MemTotal:       11350016 kB\nHugePages_Total:       0\nHugePages_Free:        0\nHugepagesize:       2048 kB\n", w); fclose(w);
+    xh_huge_choice h;
+    w = fopen(se, "w"); fputs("always within_size [advise] never deny force\n", w); fclose(w);   // this PC's
+    xh_huge_choose(root, true, &h);
+    CHECK(h.mode == XH_HUGE_SHMEM && !strcmp(h.shmem_enabled, "advise") && h.pmd_size == 2u << 20 && h.hugetlb_free == 0 && h.hugetlb_size == 2u << 20);
+    xh_huge_choose(root, false, &h);                                              // ram-huge=0 or ram-giveback=1
+    CHECK(h.mode == XH_HUGE_NONE && strstr(h.why, "not asked"));
+    w = fopen(se, "w"); fputs("always within_size advise [never] deny force\n", w); fclose(w);   // Linux's default
+    xh_huge_choose(root, true, &h);
+    CHECK(h.mode == XH_HUGE_NONE && !strcmp(h.shmem_enabled, "never") && strstr(h.why, "the fork's switch would set advise"));
+    w = fopen(se, "w"); fputs("always within_size advise never [deny] force\n", w); fclose(w);
+    xh_huge_choose(root, true, &h);
+    CHECK(h.mode == XH_HUGE_NONE && !strcmp(h.shmem_enabled, "deny"));
+    w = fopen(se, "w"); fputs("[always] within_size advise never deny force\n", w); fclose(w);
+    xh_huge_choose(root, true, &h);
+    CHECK(h.mode == XH_HUGE_SHMEM && !strcmp(h.shmem_enabled, "always"));
+    w = fopen(pmd, "w"); fputs("524288\n", w); fclose(w);                         // 512 KiB: a 16 KiB-page kernel
+    xh_huge_choose(root, true, &h);
+    CHECK(h.mode == XH_HUGE_NONE && h.pmd_size == 512u << 10 && strstr(h.why, "hpage_pmd_size"));
+    unlink(se); unlink(pmd);
+    xh_huge_choose(root, true, &h);                                               // no THP at all
+    CHECK(h.mode == XH_HUGE_NONE && h.pmd_size == 0 && !*h.shmem_enabled);
+    xh_huge_choose("/nonexistent", true, &h);
+    CHECK(h.mode == XH_HUGE_NONE);
+  }
+
   char kgsl[64] = "x";
   CHECK(xh_kgsl_memory(getpid(), kgsl, sizeof kgsl) == strlen(kgsl));   // no KGSL here: 0 and ""
 
