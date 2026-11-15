@@ -364,6 +364,6 @@ the phone": why there and not in the APK). The fork runs it for one flow at a ti
   (the package carries `profiles/` there; a package path has no comma), `indir` `<stage>/make/inputs` and `resume`.
 - Pause and Resume: the fork sends `{"cmd":"pause","id":...}` and `{"cmd":"resume","id":...}` (the user's buttons;
   and Android's default network lost and back) and shows `paused`, `resumed` and `net` (`state` `waiting`|`resumed`,
-  `retry_in`, `text`), only when `hello`'s `cmds` lists `pause` and `resume`. These are the fork's expectation, written
-  before the tool's README (branch `tool-download-resume`) has them: whichever changes, the other follows. A flow the
+  `next`, `text`; an `error` with the id and a code), only when `hello`'s `cmds` lists `pause` and `resume`. These follow
+  the tool's README of branch `tool-download-resume` ("Downloads on a mobile network"). A flow the
   app was ended in is started again with the same requests; the tool goes on from what `resume` kept.
