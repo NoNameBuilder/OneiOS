@@ -1,4 +1,4 @@
 [submodule "app"]
 	path = app
 	url = https://github.com/akshaynexus/OneOS
-	branch = fix-macos-tests-2
+	branch = fix-macos-tests-3
