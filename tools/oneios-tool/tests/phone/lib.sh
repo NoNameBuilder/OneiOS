@@ -28,12 +28,12 @@ check() {
   elif [ -n "$pat" ] && ! printf '%s\n' "$out" | grep -Eq -- "$pat"; then bad "$name" "no /$pat/ in: $(printf '%s' "$out" | tail -n 4 | tr '\n' '|')"
   else ok "$name"; fi
 }
-# The OneOS fork's checkout, for its root script (the stand-in phone runs it under its test root).
+# The OneOS fork's checkout, for its root script (the stand-in phone runs it under its test root): the one
+# `oneios-tool app` finds from this checkout (`app dir`: ONEOS_DIR, app/ here, app/ of the main checkout, OneOS
+# beside it), so the suites and the tool never disagree. Nothing is printed when there is none; the tool's notes
+# and its reason go to stderr.
 fork_dir() {
-  local d
-  for d in "${ONEOS_DIR:-}" "$(cd "$ROOT" && cd "$(git rev-parse --git-common-dir 2>/dev/null)/../.." 2>/dev/null && pwd)/OneOS" "$ROOT/../OneOS"; do
-    [ -n "$d" ] && [ -f "$d/app-android/settings.gradle.kts" ] && { (cd "$d" && pwd); return; }
-  done
+  (cd "$ROOT" && ONEIOS_ROOT=$ROOT "$TOOL" app dir) || true
 }
 # make_phone DIR: a phone with a stage, an installed app (versionCode 115), root, no session.
 make_phone() {

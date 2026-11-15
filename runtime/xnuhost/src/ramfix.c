@@ -172,17 +172,61 @@ void xh_ramfix_facts(char *out, size_t size)
            cap < 0 ? "?" : cap ? "yes" : "no", cg, max, high, swap);
 }
 
-// ---- the counters of the `memory:` lines ------------------------------------------------------------------------------
-static uint64_t field_kib(const char *path, const char *key)
+// ---- 2 MiB host pages (fix-ram-hugepages, 2026-11-15) -----------------------------------------------------------------
+// The RAM is a memfd (udmabuf takes no other file) that every iOS task maps in 16 KiB pieces. So of Linux's 2 MiB pages:
+// - shmem THP: a memfd is on the kernel's internal shmem mount, governed by shmem_enabled; with "advise" a mapping with
+//   MADV_HUGEPAGE gets 2 MiB folios, "always"/"within_size"/"force" give them anyway, "never" (the kernel's default) and
+//   "deny" never. A task's 16 KiB mapping of a 2 MiB folio is mapped with 4 KiB entries, which Linux allows.
+// - hugetlb (MFD_HUGETLB): every mmap of such a file must be 2 MiB-aligned in offset and length, which a task's 16 KiB
+//   page is not, and GKI 6.1's defconfig has no CONFIG_HUGETLBFS. Read for the log only.
+// - Nothing global is written here (the phone's rule: what is changed is restored): where shmem_enabled is "never", the
+//   OneOS fork's switch would write "advise" and its return "never" (oneos/interface.md); xnuhost only reads.
+void xh_huge_choose(const char *root, bool want, xh_huge_choice *c)
 {
-  FILE *f = fopen(path, "r");
-  char line[256];
-  size_t n = strlen(key);
-  uint64_t v = 0;
-  while (f && fgets(line, sizeof line, f))
-    if (!strncmp(line, key, n) && (line[n] == ':' || line[n] == ' ')) { v = strtoull(line + n + 1, NULL, 10); break; }
-  if (f) fclose(f);
-  return v;
+  char path[320], text[160];
+  memset(c, 0, sizeof *c);
+  if (!root) root = "";
+  snprintf(path, sizeof path, "%s/sys/kernel/mm/transparent_hugepage/shmem_enabled", root);
+  if (read_line(path, text, sizeof text)) {
+    // "always within_size [advise] never deny force": the bracketed one is in force
+    char *open = strchr(text, '['), *close = open ? strchr(open, ']') : NULL;
+    if (open && close && close - open - 1 < (long)sizeof c->shmem_enabled) {
+      memcpy(c->shmem_enabled, open + 1, (size_t)(close - open - 1));
+      c->shmem_enabled[close - open - 1] = 0;
+    }
+  }
+  snprintf(path, sizeof path, "%s/sys/kernel/mm/transparent_hugepage/hpage_pmd_size", root);
+  if (read_line(path, text, sizeof text)) c->pmd_size = strtoull(text, NULL, 10);
+  snprintf(path, sizeof path, "%s/proc/meminfo", root);
+  static const char *const keys[2] = { "HugePages_Free", "Hugepagesize" };
+  uint64_t v[2] = { 0, 0 };
+  (void)xh_proc_values(path, keys, 2, v);
+  c->hugetlb_free = v[0];
+  c->hugetlb_size = v[1];
+  const char *s = c->shmem_enabled;
+  if (!want) snprintf(c->why, sizeof c->why, "not asked (ram-huge=0, or ram-giveback=1: a give-back's pieces would split them)");
+  else if (c->pmd_size != (2ull << 20))
+    snprintf(c->why, sizeof c->why, "no (hpage_pmd_size %llu: no transparent huge pages of 2 MiB on this kernel)", (unsigned long long)c->pmd_size);
+  else if (!strcmp(s, "advise") || !strcmp(s, "always") || !strcmp(s, "within_size") || !strcmp(s, "force"))
+    c->mode = XH_HUGE_SHMEM;
+  else if (!*s) snprintf(c->why, sizeof c->why, "no (shmem_enabled unreadable)");
+  else snprintf(c->why, sizeof c->why, "no (shmem_enabled %s: a memfd gets 4 KiB pages; the fork's switch would set advise and its "
+                "return restore %s)", s, s);
+}
+
+// ---- the counters of the `memory:` lines ------------------------------------------------------------------------------
+// This process's memory mapped with 2 MiB entries (/proc/self/smaps_rollup: ShmemPmdMapped, FilePmdMapped,
+// AnonHugePages). The kernel walks every mapping of the process for it (the kernel's heap and the tasks' maps are many),
+// so it is read at the prefault's end and at the stop only, not every host-mem-log.
+bool xh_pmd_mapped_self(uint64_t *shmem, uint64_t *file, uint64_t *anon)
+{
+  static const char *const keys[3] = { "ShmemPmdMapped", "FilePmdMapped", "AnonHugePages" };
+  uint64_t v[3] = { 0, 0, 0 };
+  unsigned found = xh_proc_values("/proc/self/smaps_rollup", keys, 3, v);
+  *shmem = v[0];
+  *file = v[1];
+  *anon = v[2];
+  return found > 0;
 }
 
 bool xh_vmstat_swaps(uint64_t *ins, uint64_t *outs)
@@ -198,16 +242,23 @@ bool xh_vmstat_swaps(uint64_t *ins, uint64_t *outs)
 void xh_ramfix_sample(xh_ramfix_counters *c)
 {
   memset(c, 0, sizeof *c);
-  c->vm_locked = field_kib("/proc/self/status", "VmLck") << 10;
+  static const char *const keys[2] = { "VmLck", "VmPTE" };
+  uint64_t v[2] = { 0, 0 };
+  (void)xh_proc_values("/proc/self/status", keys, 2, v);
+  c->vm_locked = v[0];
+  c->vm_pte = v[1];
   (void)xh_vmstat_swaps(&c->swap_ins, &c->swap_outs);
-  // /proc/self/stat: majflt is the 12th field, after "(comm)" which may hold spaces
+  // /proc/self/stat: minflt is the 10th field and majflt the 12th, after "(comm)" which may hold spaces
   char text[1024];
   FILE *f = fopen("/proc/self/stat", "r");
   size_t got = f ? fread(text, 1, sizeof text - 1, f) : 0;
   if (f) fclose(f);
   text[got] = 0;
   char *p = strrchr(text, ')');
-  for (int field = 2; p && field < 12; field++) p = strchr(p + 1, ' ');
+  for (int field = 2; p && field < 12; field++) {
+    p = strchr(p + 1, ' ');
+    if (p && field == 9) c->minor_faults = strtoull(p + 1, NULL, 10);
+  }
   if (p) c->major_faults = strtoull(p + 1, NULL, 10);
 }
 

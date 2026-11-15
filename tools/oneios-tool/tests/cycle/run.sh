@@ -10,7 +10,8 @@
 # session's log (there until the switch replaces it, 40 s on the phone, 3 s here); a drop with the same file carries
 # on after the last line, a drop that comes back to a new file (same first line, another inode) reads it from its
 # start; status --watch.
-# cycle: --dry-run (nothing started, no adb call); a whole cycle (kernel, prelink with the stubs check, runtime
+# cycle: --dry-run (nothing started, no adb call); the app's checkout (ONEOS_DIR, --oneos, app/ of the checkout
+# present, empty and missing, --force app with each, a failing app build); a whole cycle (kernel, prelink with the stubs check, runtime
 # package, host tests, stage of only what differs, switch, markers, hold, return, the folder with summary.md); a
 # second cycle that stages nothing; a panic, a boot that never gets ready, Ctrl-C in the hold with and without
 # --stay; a failed collect step (summary.md's head names it, status 1); a split run (`--only stage,switch,watch`,
@@ -38,7 +39,7 @@ export ADB=$HERE/../phone/fake-adb.sh FAKE_ADB_LOG=$W/adb.log FAKE_ROOT_LOG=$W/r
 export FAKE_PROC; echo "(the stand-in's /proc: $FAKE_PROC)"
 unset ANDROID_SERIAL FAKE_NO_ROOT FAKE_DEVICES ONEIOS_DSC_INDEX
 FORK=$(fork_dir)
-[ -n "$FORK" ] || { echo "run.sh: the cycle's checks need the OneOS fork's root script (ONEOS_DIR, or ../OneOS beside the main checkout)"; exit 2; }
+[ -n "$FORK" ] || { echo "run.sh: the cycle's checks need the OneOS fork's root script: its checkout as oneios-tool app finds it (above: ONEOS_DIR, app/ here after \`git submodule update --init --remote app\`, app/ of the main checkout, or OneOS beside it)"; exit 2; }
 export FAKE_FORK_ROOT_SH=$FORK/app-android/app/src/full/assets/root/oneios_root.sh ONEOS_DIR=$FORK
 P=$W/phone; export FAKE_PHONE=$P; make_phone "$P"
 S=$P/data/local/tmp/oneios
@@ -183,6 +184,32 @@ for want in "scripts/bg.sh cycle-kernel env HOSTED_OUT=t XNU_FILESET_REFERENCE=1
 done
 check "cycle --only with a word that is no step" 1 "boot is not a step \(build, tests, stage, switch, watch, hold, return, collect\)" cycle --only boot
 check "cycle --dry-run --only watch,return" 0 "^cycle c1: watch, return \(dry run" cycle --dry-run --only watch,return --name c1
+
+# ---- the app's checkout is the one `oneios-tool app` finds: app/ of the OneiOS checkout (the submodule) when
+# none is named by hand. $R is its own git checkout, so nothing of this box is beside it.
+cycle_app() { (cd "$R" && env -u ONEOS_DIR "$TOOL" cycle "$@"); }   # without the ONEOS_DIR the suite runs with
+sub="git submodule update --init --remote app"
+check "cycle: the app's checkout named by hand (ONEOS_DIR)" 0 "^would: app: the source is .* in $FORK \(ONEOS_DIR\); " cycle --dry-run --only build --name a0
+check "cycle, none found: said, the cycle goes on" 0 "^would: app: no source to compare \(no OneOS checkout .*: $R/app is not there; $W/OneOS is not there\. " cycle_app --dry-run --only build --name a1
+check "cycle --force app, none found: refused" 1 "--force app: no OneOS checkout .*$R/app is not there" cycle_app --dry-run --only build --force app --name a2
+mkdir "$R/app"
+check "cycle, app/ empty: said with the command" 0 "^would: app: no source to compare \(no OneOS checkout .*: $R/app is empty: the app submodule is not initialised \(in $R: $sub\)" cycle_app --dry-run --only build --name a3
+check "cycle --force app, app/ empty: refused with the command" 1 "--force app: no OneOS checkout .*: $R/app is empty: the app submodule is not initialised \(in $R: $sub\)" cycle_app --dry-run --only build --force app --name a4
+mkdir -p "$R/app/app-android/app" "$R/app/switcher/assets"; echo "# stand-in" > "$R/app/switcher/assets/oneios_switch.sh"
+printf 'android {\n    defaultConfig {\n        applicationId = "com.fahadali.oneos"\n        versionCode = 199\n        versionName = "0.4.99"\n    }\n}\n' > "$R/app/app-android/app/build.gradle.kts"
+printf '#!/bin/sh\necho "$PWD: gradlew $*" >> "%s"\necho "FAILURE: Build failed with an exception."; exit 1\n' "$W/gradle.log" > "$R/app/app-android/gradlew"; chmod +x "$R/app/app-android/gradlew"
+check "cycle, app/ present: its version, and where it is" 0 "^would: app: the source is 0.4.99 \(versionCode 199\) in $R/app \(app/ of the OneiOS checkout\); " cycle_app --dry-run --only build --name a5
+check "cycle --force app, app/ present: app build && app install of app/" 0 "^would: app: oneios-tool app build && app install \(0.4.99 199\) of $R/app \(app/ of the OneiOS checkout\)$" cycle_app --dry-run --only build --force app --name a6
+check "cycle, app/ present: --oneos still wins" 0 "^would: app: the source is .* in $FORK \(--oneos\); " cycle_app --dry-run --only build --oneos "$FORK" --name a7
+check "cycle, app/ present: ONEOS_DIR still wins" 0 "^would: app: the source is .* in $FORK \(ONEOS_DIR\); " cycle --dry-run --only build --name a8
+check "cycle, app/ present: ONEOS_DIR says that app/ is not used" 0 "^note: ONEOS_DIR is set, so $R/app is not used$" cycle --dry-run --only build --name a9
+[ ! -e "$W/gradle.log" ] && ok "cycle --dry-run: gradlew was not started" || bad "cycle --dry-run started gradlew"
+# not a dry run: gradlew of app/ is what runs (it fails here: the app is never built in this suite)
+before=$(calls)
+check "cycle --force app: the build of app/ runs, and its failure stops the cycle" 1 "gradlew ended with exit status: 1" cycle_app --only build --force app --name appbuild
+grep -q "^$R/app/app-android: gradlew test assembleFullDebug$" "$W/gradle.log" 2>/dev/null && ok "cycle --force app: cd app/app-android && ./gradlew test assembleFullDebug" || bad "cycle --force app: the gradle command" "$(cat "$W/gradle.log" 2>&1 | tail -n 1)"
+[ "$(calls)" = "$before" ] && ok "cycle --force app: a failed app build did not touch the phone" || bad "cycle --force app: the phone was touched after a failed app build"
+rm -rf "$R/app"   # the rest of the suite runs with ONEOS_DIR and no app/, as before
 
 # ---- the whole cycle
 out=$(cycle --kernel-out t --runtime-version 0.1.7 --tests --hold 1 --name full 2>&1); st=$?

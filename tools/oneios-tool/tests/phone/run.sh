@@ -13,7 +13,8 @@
 # a size that does not match); sparse-write. The session check's command is the phone's, byte for byte, and a pid
 # that is not an xnuhost's is no session. Every case ends the stand-in session it left (end_case), and at the
 # end, a failure or Ctrl-C none is left running (lib.sh's traps).
-# With the OneOS fork's checkout at hand (ONEOS_DIR, or ../OneOS beside the main checkout), begin, receive, finish
+# With the OneOS fork's checkout at hand (lib.sh's fork_dir: the one `oneios-tool app dir` finds from this checkout:
+# ONEOS_DIR, app/ here, app/ of the main checkout, OneOS beside it), begin, receive, finish
 # and status are the fork's own root script under its test root; without it those checks are skipped, with a line.
 # With it, usb.sh also runs the fork's switch and return scripts' USB steps (the record, the session's USB watcher
 # across unplug and replug, the return's restore) against a stand-in gadget: oneos/interface.md, "USB and adb".

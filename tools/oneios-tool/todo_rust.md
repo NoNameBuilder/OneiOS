@@ -461,8 +461,8 @@ Open, in order:
 Written; **nothing of it ran on the real phone, and the app was not built or installed with it**. Crate
 `crates/oneios-phone` (`adb.rs`: the one phone and the rules; `phone.rs`; `sparse.rs`; `app.rs`; `session.rs`: the
 commands that run only in a session, 2026-11-14). README "phone" and
-"app" have the commands and what the stand-in tests show (`tests/phone/run.sh` 200 checks since 2026-11-14, `tests/app/run.sh` 65,
-`tests/cycle/run.sh` 103; `tests/phone/modes.sh` runs them with the host's `/proc` and with the stand-in's own, macOS's
+"app" have the commands and what the stand-in tests show (`tests/phone/run.sh` 222 checks, `tests/app/run.sh` 103,
+`tests/cycle/run.sh` 117 (2026-11-15); `tests/phone/modes.sh` runs them with the host's `/proc` and with the stand-in's own, macOS's
 only mode).
 
 `cycle`'s `summary.md`, two faults the phone showed on 2026-11-13, fixed (`cycle.rs`; README "cycle"): the result
@@ -470,6 +470,14 @@ line said "every step that ran ended well" above a failed `collect` in the Steps
 step results now, and a failed `collect` ends the cycle with status 1), and "Markers: none seen" in the summary of
 `--only return,collect` after `--only stage,switch,watch` with the same name (a run that did not watch reads the
 markers from the saved `xnuhost.log` and says so). Eight checks of `tests/cycle/run.sh` are for these (95 before).
+
+The fork's checkout (2026-11-15; the fork becomes the submodule `app/` of OneiOS): `app.rs`'s `look` is the one
+lookup of `app`, `cycle` and the suites (`fork_dir` of `tests/phone/lib.sh` asks `app dir`). The order: `--oneos`,
+`ONEOS_DIR`, the current folder, `app/` of the checkout, `app/` of the main checkout (from a worktree), `OneOS`
+beside it; an empty `app/` is passed over with the command to run; a checkout is told by what it holds
+(`app-android/app/build.gradle.kts`, `switcher/assets/oneios_switch.sh`). `cycle --force app` with no checkout now
+ends the cycle. README "app" and "cycle" have it and the checks (`tests/app` 103, `tests/cycle` 117). Left: a run
+in a checkout that has the real submodule (added on another branch), and the first real build from `app/`.
 
 Open, in order:
 1. **The first run on the phone** (the Mac has it): `phone status`, then `phone sums` against

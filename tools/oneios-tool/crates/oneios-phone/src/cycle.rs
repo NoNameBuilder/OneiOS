@@ -69,7 +69,7 @@ pub struct Args {
     /// The phone's adb serial (or ANDROID_SERIAL)
     #[arg(long, short = 's')]
     serial: Option<String>,
-    /// The OneOS checkout, for the app's version
+    /// The OneOS checkout, for the app's version and --force app (else as `oneios-tool app` finds it)
     #[arg(long)]
     oneos: Option<String>,
 }
@@ -326,19 +326,23 @@ impl Cycle<'_> {
         } else {
             self.say("plug-ins: not built (macOS only, with --force plugins; from elsewhere: their files in --image DIR)");
         }
-        // the app: said, and built only when asked
+        // the app: said, and built only when asked. Its checkout is the one `oneios-tool app` finds (app::look:
+        // --oneos, ONEOS_DIR, the current folder, app/ of this checkout, of the main checkout, OneOS beside it)
         match app::find_fork(self.a.oneos.as_deref()).and_then(|f| app::source_version(&f).map(|v| (f, v))) {
+            // asked to build it and there is nothing to build: not a line to read past on the way to the phone
+            Err(e) if forced("app") => bail!("--force app: {e:#}"),
             Err(e) => self.say(&format!("app: no source to compare ({e:#})")),
             Ok((fork, v)) => {
+                let at = format!("{} ({})", fork.dir.display(), fork.how);
                 if forced("app") {
-                    self.say(&format!("app: oneios-tool app build && app install ({} {})", v.name, v.code));
+                    self.say(&format!("app: oneios-tool app build && app install ({} {}) of {at}", v.name, v.code));
                     if !self.dry {
                         app::build(&fork, false)?;
                         app::install(Some(&fork), self.a.serial.as_deref(), None, None, "akshaynexus/OneOS", Path::new("out/app"))?;
                     }
                 } else {
-                    self.say(&format!("app: the source is {} (versionCode {}); the stage step compares it with the installed app (--force app builds and installs it)", v.name, v.code));
-                    self.notes.push(format!("app source: {} (versionCode {})", v.name, v.code));
+                    self.say(&format!("app: the source is {} (versionCode {}) in {at}; the stage step compares it with the installed app (--force app builds and installs it)", v.name, v.code));
+                    self.notes.push(format!("app source: {} (versionCode {}) in {at}", v.name, v.code));
                 }
             }
         }

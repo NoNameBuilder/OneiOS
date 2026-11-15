@@ -43,7 +43,7 @@ xnuhost --selftest            # on the phone: page size, address bits, PAC keys 
 | `FILE.trustcache`, `.vroot`, `.gpuaddon`, `.ramdisk`, `.adt` | optional | DarwinBoot's sidecars beside the kernel, same formats and checks |
 | `DIR/identity.adt` | optional | the device's own decoded device tree: model, target-type, board name and `/product` are taken from it. No script writes one (2026-11-13: `scripts/image/build.sh` does not, and the PC's set `out/image-pc/24A446` has none), so `/product` is only `product-name`, `artwork-scale-factor` and `model`: none of the iPhone's own `/product` (`artwork-display-gamut P3`, `oled-display`, `graphics-featureset-class APPLE10`, `ui-background-quality 100`, ...), which MobileGestalt answers from. `--set identity=out/kernel-inputs/24A446/devicetree.bin` (the decoded tree as it is) gives them for one run (`kernel/patches/oneios-hosted/display/README.md`, "What iOS reads about the panel") |
 | `--display-format bgrx\|rgba16f` (`display-format=`) | `bgrx` | the frame's pixels (section 2.8): 8-bit sRGB, or half floats that keep wide colour and EDR |
-| `DIR/xnuhost.conf` | optional | `key=value` lines: `boot-args`, `disk`, `disk-rw`, `data-store`, `scale`, `scale-fixup`, `text-fixup`, `ram`, `ram-percent`, `ram-host-floor`, `host-mem-log`, `ram-giveback`, `ram-prefault`, `ram-lock`, `ram-session-reserve`, `ram-unlock-below`, `ready-content-wait`; the command line wins |
+| `DIR/xnuhost.conf` | optional | `key=value` lines: `boot-args`, `disk`, `disk-rw`, `data-store`, `scale`, `scale-fixup`, `text-fixup`, `ram`, `ram-percent`, `ram-host-floor`, `host-mem-log`, `ram-giveback`, `ram-prefault`, `ram-lock`, `ram-session-reserve`, `ram-unlock-below`, `ram-huge`, `ready-content-wait`; the command line wins |
 | `DIR/overlay/userland/xnuhost.conf` | optional | the same, written by the userland hook: `scale=3` or `scale=2`, the UI scale the image's Data seed was made for (`docs/userland.md` "The screen") |
 | `--width W --height H`, `--hz N` (or `width=`, `height=`, `hz=` in the image set's `xnuhost.conf`) | the display helper's report of the panel | the guest's display mode (section 2.8); for a PC run or another panel |
 | `--scale 2\|3` (`--set scale=2`) | the image set's, else 3 | the UI scale: pixels per point |
@@ -58,6 +58,7 @@ xnuhost --selftest            # on the phone: page size, address bits, PAC keys 
 | `--set gpu-level=deadline\|hold\|governor` (`gpu-level=`) | `deadline` | the GPU's level (`docs/gpu.md` 2.2b): the top only for a frame that would miss its deadline; `hold`: every render-server frame at the top to 150 ms after it (the rule before 2026-11-15); `governor`: KGSL's governor alone. Passed to the renderer as `ONEIOS_GPU_LEVEL` |
 | `--set gpu-priority=0\|1` (`gpu-priority=`) | 1 | 1: each GPU context's KGSL priority from its owner's class (render server and front 4, default 8, background 12), background contexts at KGSL's lowest level at a still screen; 0: the guest's queue priority, as upstream (`ONEIOS_GPU_PRIORITY=off`) |
 | `--set ram-pagetable-percent=N` | 8 | what fits counts the iOS tasks' page tables as this share of the guest's RAM, 0 to 50 |
+| `--set ram-huge=0\|1` | 1 | 1: 2 MiB host pages for xnuhost's window of the RAM where the host allows them (shmem THP by `MADV_HUGEPAGE`; only with the RAM held fixed); section 2.2, "2 MiB pages" |
 | `--set ram-percent=N` | 90 | `ram=auto`'s share of `MemTotal`, 10 to 100 |
 | `--set ram-host-floor=SIZE` | 1.5G | what `ram=auto` always leaves the host |
 | `--set host-mem-log=SECONDS` | 30 | a `memory: host MemAvailable` line every so often; 0 = only at the start and the stop |
@@ -229,6 +230,8 @@ multiple of 2 MiB away from the link base, which is the slide the kernel finds w
     system_server (`oneos/interface.md` 4) and before the guest takes anything.
   - The page tables: every iOS task is a Linux process with its own page tables over the memfd, and the same pages are
     mapped by many tasks (the shared cache, the shared region): 575 MiB for 7,263 MiB held, 7.9 %, so 8 % of the guest.
+    Almost all of it is the tasks' (fix-ram-hugepages, below: xnuhost's own window costs size / 512, 14 MiB at 7 GiB),
+    so 2 MiB host pages do not change this term (`config.ram_lock_fit` is the locked size that fits, in 256 MiB steps).
   - The GPU: KGSL's own memory for xnuhost (contexts, ringbuffers, the import tables and IOMMU tables of the blobs, about
     1 % of the blobs' bytes [estimate]): 256 MiB. The `memory: fixed RAM` line prints KGSL's per-process files, so the
     next phone boot gives the steady figure.
@@ -408,6 +411,50 @@ multiple of 2 MiB away from the link base, which is the slide the kernel finds w
     fix-ram-locked (2026-11-15, the owner's rule) before the phone has shown `locked (mlock: the host cannot swap it)`:
     the owner's next boot sets the same settings explicitly, and the phone's 3233fed session showed that without the
     lock Linux swaps iOS's RAM even at a size that fits.
+- **2 MiB pages (`ram-huge`, fix-ram-hugepages, 2026-11-15; on by default).** What changed:
+  - **The memfd's layout.** The window starts at `0x2000000000 + (link base mod 2 MiB)`, `0x...4000`, and until now the
+    memfd's offset 0 was that byte, so address and offset never agreed modulo 2 MiB and Linux could not map any 2 MiB
+    page of it with one entry. Now the memfd is 2 MiB longer, its offset 0 is at the 2 MiB boundary below the window
+    (`g_mem.fd_phys`, 16 KiB below; that head is mapped, never guest RAM), and every offset is `address - fd_phys`
+    (the tasks' maps, `kernel_map`, `ram_discard`, the GPU's udmabufs). Measured natively on the PC (a 64 MiB memfd
+    mapped `MAP_SHARED` with `MADV_HUGEPAGE`, `shmem_enabled` advise): at offset 0 `ShmemPmdMapped 65536 kB`, VmPTE
+    56 kB; at offset `0x4000`, today's layout, `ShmemPmdMapped 0 kB`, VmPTE 176 kB.
+  - **The choice** (`xh_huge_choose`, `ramfix.c`; read only, named files, once): `shmem_enabled` (a memfd is on the
+    kernel's internal shmem mount, which that file governs), `hpage_pmd_size`, and `/proc/meminfo`'s `HugePages_Free`
+    and `Hugepagesize`. With `advise`, `always`, `within_size` or `force` and 2 MiB PMD pages, xnuhost's window gets
+    `madvise(MADV_HUGEPAGE)` before the first touch; the prefault and `mlock` then fault it 2 MiB at a time (16 MiB
+    steps, eight pages each). Not with `ram-giveback=1` (a give-back's pieces would split every page) or `ram-huge=0`.
+    `never` (Linux's default) or `deny`: 4 KiB pages, and the line says the OneOS fork's switch would have to write
+    `advise` and its return the old value (`oneos/interface.md` 4); xnuhost writes no global setting. hugetlb
+    (`MFD_HUGETLB`) is not used: each of its mmaps must be 2 MiB-aligned, which a task's 16 KiB page is not, and GKI
+    6.1's `gki_defconfig` (android14-6.1) has no `CONFIG_HUGETLBFS`; it has `CONFIG_TRANSPARENT_HUGEPAGE=y` and
+    `CONFIG_TRANSPARENT_HUGEPAGE_MADVISE=y`. The phone's `shmem_enabled` has not been read (no session log here):
+    Linux 6.1's default is `never` [so 4 KiB pages until the fork sets `advise`: inference].
+  - **What it gains, and what it does not.** xnuhost's window (every access of the kernel, every vCPU) is mapped with
+    2 MiB entries: 512 times the TLB reach, and the window's own page tables (size / 512: 14 MiB at 6,912 MiB, 20 MiB at
+    10 GiB) gone. The iOS tasks map the same folios 16 KiB at a time, with 4 KiB entries (Linux maps a 2 MiB shmem
+    folio with one entry only where a mapping covers the whole aligned 2 MiB), so their page tables and their TLB misses
+    stay as they are. They are nearly all of the page tables: on the PC (boot E below) xnuhost's own were 6 MiB of
+    the host's 93 MiB at 900 s and the boot's task processes' 49 MiB; the phone's 575 MiB at 7,263 MiB held are
+    therefore the tasks' (each task is a Linux process with its own tables for the shared region it maps). So the
+    page-table term of what fits (8 %) stays: 2 MiB pages give iOS about 14 MiB of it, under one 256 MiB step.
+    A guess about the rest: page tables shared between processes exist in Linux only for hugetlb (PMD sharing),
+    which the tasks' 16 KiB maps exclude.
+  - **Log.** At the start `memory: 2 MiB host pages: yes, the window is mapped with MADV_HUGEPAGE (shmem THP)|no
+    (...); shmem_enabled S, hpage_pmd_size N, hugetlb pool F free of K KiB pages; the memfd's offset 0 is at A, 16 KiB
+    below the window`; when the prefault is done and at the stop `memory: 2 MiB pages: xnuhost maps N of M MiB of the
+    guest's RAM with 2 MiB entries (ShmemPmdMapped; FilePmdMapped .., AnonHugePages .. MiB); its page tables P MiB
+    (VmPTE; 4 KiB entries for the whole window would be W MiB)` (`/proc/self/smaps_rollup` walks every mapping of the
+    process, so not periodically); every host-mem-log seconds the second `memory:` line adds `(xnuhost's own V MiB);
+    2 MiB pages: host ShmemHugePages H MiB, ShmemPmdMapped P MiB` and the fixed-RAM line `minor +m` faults.
+  - **PC boot E** (2026-11-15, 960 s, `--ram 4G`, 8 vCPUs, `kernel.kc` `4fb7be43`, the new layout): launchd at +526 s,
+    SpringBoard at +680 s (the PC shared with other agents' boots, and the host swapping 1.7 GiB of iOS's RAM with
+    9.5 GiB available), no panic: the moved offsets work for the tasks' maps and `kernel_map`. qemu-user refuses
+    `MADV_HUGEPAGE` (`madvise(MADV_HUGEPAGE) on the RAM: Invalid argument`, also for a static test program), so no PC
+    boot can show the 2 MiB pages themselves, and under qemu `/proc/self/stat`'s minor faults read 0. **Not run:** the
+    phone.
+  - With the RAM more than fits (`ram=` by hand) the `memory: fixed RAM` line said `held, prefault running` for the
+    whole session (no prefault was started); now `held, not locked`.
 - **The kernel's own address space** outside the window (zones, kalloc, stacks, IOKit buffers) is a
   no-access reservation from the end of the RAM, rounded up to 1 GiB, to `0x3c00000000`
   (`xh_info.kva_base/kva_size`). `kernel_map(va, size, prot, phys)` maps RAM pages into it and

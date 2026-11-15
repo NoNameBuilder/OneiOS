@@ -541,7 +541,7 @@ $T cycle --only return,collect --name NAME                 # end a session that 
 
 | Step | What it does |
 |---|---|
-| `build` | Only what changed. The hosted kernel (`scripts/bg.sh cycle-kernel env HOSTED_OUT=NAME XNU_FILESET_REFERENCE=1 kernel/build-hosted.sh`) when `--kernel-out NAME` is given and `xnu.macho` is older than the newest file of `kernel/patches/oneios-hosted` (or missing). The collection (`kernel/prelink/build.sh` with `KERNEL=` and `REFERENCE=` of that tree) when the kernel is newer than `out/kernel/24A446/kernel.kc`; **the cycle stops unless the build ends with status 0 (the audit: 0 failures) and `oneios-tool prelink stubs-check` says `0 bad`**. The runtime (`runtime/package.sh V`, unpacked into `out/cycle/runtime-V`) with `--runtime-version V`; `--runtime DIR` takes one that is built. The image parts (`kernel.kc`, `kernel.kc.hashes`; not `manifest.json` or `xnuhost.conf`: `out/image/24A446` is the Mac's own set, not the phone's) are gathered in `out/cycle/image`; `--image DIR` takes a folder instead, which is also where iOS plug-ins built elsewhere go. The iOS plug-ins build on macOS only (`--force plugins`). The app: its source's version is said; `--force app` runs `app build` and `app install`. `--force kernel,prelink,...` builds a part whatever its state. Long builds run in tmux and the cycle waits for their exit code |
+| `build` | Only what changed. The hosted kernel (`scripts/bg.sh cycle-kernel env HOSTED_OUT=NAME XNU_FILESET_REFERENCE=1 kernel/build-hosted.sh`) when `--kernel-out NAME` is given and `xnu.macho` is older than the newest file of `kernel/patches/oneios-hosted` (or missing). The collection (`kernel/prelink/build.sh` with `KERNEL=` and `REFERENCE=` of that tree) when the kernel is newer than `out/kernel/24A446/kernel.kc`; **the cycle stops unless the build ends with status 0 (the audit: 0 failures) and `oneios-tool prelink stubs-check` says `0 bad`**. The runtime (`runtime/package.sh V`, unpacked into `out/cycle/runtime-V`) with `--runtime-version V`; `--runtime DIR` takes one that is built. The image parts (`kernel.kc`, `kernel.kc.hashes`; not `manifest.json` or `xnuhost.conf`: `out/image/24A446` is the Mac's own set, not the phone's) are gathered in `out/cycle/image`; `--image DIR` takes a folder instead, which is also where iOS plug-ins built elsewhere go. The iOS plug-ins build on macOS only (`--force plugins`). The app: its source's version and its checkout are said (the checkout `oneios-tool app` finds: section 7; `app/` of this checkout unless one is named with `--oneos DIR` or `ONEOS_DIR`); `--force app` runs `app build` and `app install` on it, and ends the cycle when there is no checkout (an empty `app/`: `git submodule update --init --remote app`). `--force kernel,prelink,...` builds a part whatever its state. Long builds run in tmux and the cycle waits for their exit code |
 | `tests` | `--tests`: `runtime/host-tests.sh`; a failure stops the cycle before the phone is touched |
 | `stage` | `phone sums`, then `stage image` with only the files whose SHA-256 differs from the phone's and `stage runtime` when a file of it differs, then `phone sums` again, which must equal the local hashes (`sums.txt`). Files staged with no `manifest.json` of their own get one made from the phone's (`phone manifest`); then `phone image-check`. `data.seed` is never staged |
 | `switch` | First the way back: root, no session, `oneios_return.sh`, `oneios_switch.sh` and `bin/oneios_root.sh` staged, no import in progress (`runtime.new`, `image.new`), and the root script's preflight says `ready 1`. Then `phone switch` |
@@ -711,8 +711,15 @@ $T app install --release 0.4.86      # the CI prerelease oneios-0.4.86 instead, 
 $T app stage-scripts     # the fork's oneios_switch.sh, oneios_return.sh, oneios_root.sh into the stage, sha256 before and after
 ```
 
-The checkout is `--oneos DIR`, `ONEOS_DIR`, the current folder, or `OneOS` beside the OneiOS main checkout; each
-command says which. By hand, and what the tool runs:
+The checkout is the first of: `--oneos DIR`; `ONEOS_DIR`; the current folder when it is a checkout; `app/` of the
+OneiOS checkout (the submodule: the default); `app/` of the OneiOS main checkout when the command runs in a worktree;
+`OneOS` beside the OneiOS main checkout (the clone from before the submodule). A checkout named by hand comes before
+`app/`, and a named folder that is no checkout is an error, not a reason to take `app/`. A checkout is a folder with
+`app-android/app/build.gradle.kts` and `switcher/assets/oneios_switch.sh`, whatever its name. An empty `app/` (the
+submodule is not initialised) is not one: the tool says so with the command, `git submodule update --init --remote app`,
+and looks further; with nothing found it ends with status 1 and lists the places. Each command's first line says
+which checkout and how it was found; `$T app dir` prints the path alone. `cycle` (section 6) uses the same lookup.
+By hand, and what the tool runs:
 
 Repo `akshaynexus/OneOS`, branch `oneios`. Every OneiOS pull request, push to `main` and release builds the APK
 from the head of that branch (`./gradlew test assembleFullDebug`, and `./gradlew test` on macOS; the job `apk` of

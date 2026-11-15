@@ -250,6 +250,7 @@ static void gic_line(unsigned cpu, bool line) { xh_cpu_line(cpu, line); }
 // The guest's RAM held fixed for the session (ramfix.c, docs/booter.md 2.2 "Fixed RAM"): the kernel is told before it
 // starts (XH_FEATURE_RAM_FIXED: no free pages given back), and the whole memfd is prefaulted, locked where Linux allows
 // and it fits, on a nice-19 thread while the boot goes on. ram-giveback=1: 0058's way, nothing of this.
+static xh_huge_choice huge_choice;     // 2 MiB host pages for the RAM: what xh_huge_choose found (fix-ram-hugepages)
 static xh_ramfix_counters was;         // the `memory: fixed RAM` line's counters at its last line (first: the start)
 static bool have_was;
 
@@ -275,6 +276,9 @@ static void ram_fix_start(void)
     LOGI("memory: the guest's RAM is held for the session: %llu MiB, not locked and not prefaulted (more than fits beside the "
          "session's needs: %llu MiB); free pages are not given back (ram-giveback=0); %s", (unsigned long long)(g_mem.size >> 20),
          (unsigned long long)(config.ram_fit >> 20), facts);
+    // No prefault runs: done, so that the `memory: fixed RAM` line says "held, not locked" (it said "prefault running"
+    // for the whole session before 2026-11-15) and the 2 MiB pages line comes at once.
+    __atomic_store_n(&g_ramfix.done, true, __ATOMIC_RELEASE);
     return;
   }
   char valve[160] = "";
@@ -489,7 +493,17 @@ static int boot(void)
   uint64_t fb_bytes = ((uint64_t)fb_width * fb_height * 4 + 0x1fffff) & ~0x1fffffull;
   uint64_t pool_bytes = strcmp(config.gpu, "2d") ? GPU_POOL_BYTES : 0;
   uint64_t window = config.ram_bytes - fb_bytes - pool_bytes;
-  if (xh_mem_map(kernel.base) || xh_mem_io(XL_BOARD_IO_BASE, XL_BOARD_IO_SIZE)) return -1;
+  // 2 MiB host pages for the RAM where this kernel allows them (fix-ram-hugepages; ramfix.c xh_huge_choose): shmem THP
+  // by madvise, only with the RAM held fixed (a give-back's pieces would split them).
+  xh_huge_choose("", config.ram_huge && !config.ram_giveback, &huge_choice);
+  if (xh_mem_map(kernel.base, huge_choice.mode == XH_HUGE_SHMEM) || xh_mem_io(XL_BOARD_IO_BASE, XL_BOARD_IO_SIZE)) return -1;
+  if (huge_choice.mode == XH_HUGE_SHMEM && !g_mem.huge)      // the line above it says why (qemu-user refuses the advice)
+    snprintf(huge_choice.why, sizeof huge_choice.why, "no (madvise(MADV_HUGEPAGE) refused)");
+  LOGI("memory: 2 MiB host pages: %s; shmem_enabled %s, hpage_pmd_size %llu, hugetlb pool %llu free of %llu KiB pages; the memfd's "
+       "offset 0 is at 0x%llx, %llu KiB below the window", g_mem.huge ? "yes, the window is mapped with MADV_HUGEPAGE (shmem THP)" : huge_choice.why,
+       *huge_choice.shmem_enabled ? huge_choice.shmem_enabled : "?", (unsigned long long)huge_choice.pmd_size,
+       (unsigned long long)huge_choice.hugetlb_free, (unsigned long long)(huge_choice.hugetlb_size >> 10),
+       (unsigned long long)g_mem.fd_phys, (unsigned long long)(g_mem.head >> 10));
   uint64_t phys = g_mem.phys;                       // physical = where it is mapped (mem.c)
   boot_fb_pa = phys + window + pool_bytes;
   if (xh_mem_kva() == 0) { g_info.kva_base = g_mem.kva; g_info.kva_size = g_mem.kva_size; }
@@ -558,7 +572,7 @@ static int boot(void)
     // The GPU's level and priorities (gpu3d_kgsl.c, drm2kgsl patch 0008; docs/gpu.md 2.2b) read these.
     setenv("ONEIOS_GPU_LEVEL", *config.gpu_level ? config.gpu_level : "deadline", 1);
     if (!config.gpu_priority) setenv("ONEIOS_GPU_PRIORITY", "off", 1);
-    gpu3d = xh_gpu3d_kgsl_open(g_mem.fd, phys, g_mem.size, xh_ram(phys + window, pool_bytes), phys + window, pool_bytes, gpu_log, &why);
+    gpu3d = xh_gpu3d_kgsl_open(g_mem.fd, g_mem.fd_phys, g_mem.head + g_mem.size, xh_ram(phys + window, pool_bytes), phys + window, pool_bytes, gpu_log, &why);   // the memfd from its offset 0 (mem.c)
     if (!gpu3d && !strcmp(config.gpu, "3d")) { LOGE("gpu: no 3D: %s", why); return -1; }
     if (!gpu3d) LOGI("gpu: 2D only: %s", why);
   }
@@ -993,9 +1007,10 @@ static void host_memory_tick(bool now)
   last = t;
   // One read of /proc/meminfo for every figure here (before, five: MemTotal and MemAvailable, SwapTotal, SwapFree,
   // PageTables, and Mlocked in the counters).
-  static const char *const keys[6] = { "MemTotal", "MemAvailable", "SwapTotal", "SwapFree", "PageTables", "Mlocked" };
-  uint64_t mi[6] = { 0, 0, 0, 0, 0, 0 };
-  (void)xh_proc_values(config.ram_meminfo, keys, 6, mi);
+  static const char *const keys[8] = { "MemTotal", "MemAvailable", "SwapTotal", "SwapFree", "PageTables", "Mlocked", "ShmemHugePages",
+                                       "ShmemPmdMapped" };
+  uint64_t mi[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
+  (void)xh_proc_values(config.ram_meminfo, keys, 8, mi);
   uint64_t total = mi[0], available = mi[1], swap_total = mi[2], swap_free = mi[3], tables = mi[4];
   struct stat st;
   uint64_t held = g_mem.fd >= 0 && fstat(g_mem.fd, &st) == 0 ? (uint64_t)st.st_blocks * 512 : 0;
@@ -1016,10 +1031,13 @@ static void host_memory_tick(bool now)
   xh_ramfix_sample(&c);
   c.mlocked = mi[5];
   uint64_t in_ram = g_mem.host ? ram_resident_from(xh_ramfix_unlocked_from(&g_ramfix, c.vm_locked)) : 0;
+  // Since fix-ram-hugepages: xnuhost's own share of the page tables (VmPTE: its window, the kernel's heap mappings; the
+  // rest are the iOS tasks' processes) and the host's 2 MiB shmem folios (all processes; on the phone xnuhost's memfd).
   LOGI("memory: the guest's RAM: %llu MiB in the host's RAM, %llu MiB swapped out by the host; host swap %llu of %llu MiB used, "
-       "page tables %llu MiB", (unsigned long long)(in_ram >> 20), (unsigned long long)((held > in_ram ? held - in_ram : 0) >> 20),
+       "page tables %llu MiB (xnuhost's own %llu MiB); 2 MiB pages: host ShmemHugePages %llu MiB, ShmemPmdMapped %llu MiB",
+       (unsigned long long)(in_ram >> 20), (unsigned long long)((held > in_ram ? held - in_ram : 0) >> 20),
        (unsigned long long)((swap_total > swap_free ? swap_total - swap_free : 0) >> 20), (unsigned long long)(swap_total >> 20),
-       (unsigned long long)(tables >> 20));
+       (unsigned long long)(tables >> 20), (unsigned long long)(c.vm_pte >> 20), (unsigned long long)(mi[6] >> 20), (unsigned long long)(mi[7] >> 20));
   // The fixed RAM (2026-11-13, ramfix.c): what is held and locked, what was refused, and since the last line the host's
   // swap traffic (all processes) and this process's faults that needed the host's I/O (a swapped-out page read back).
   // With the RAM held and locked, `held` stays at the RAM's size, `swapped out` at 0, and the KGSL figures (the host's
@@ -1033,14 +1051,38 @@ static void host_memory_tick(bool now)
                       g_ramfix.unlocked ? "held, unlocked by the valve" : ram_all_locked() ? "held and locked" :
                       g_ramfix.locked ? "held, locked in part" : "held, not locked";
   LOGI("memory: fixed RAM: %s; prefaulted %llu of %llu MiB, locked %llu MiB (VmLck; host Mlocked %llu MiB); give-back refused %llu calls; "
-       "since the last line: host swap-ins +%llu, swap-outs +%llu pages, xnuhost major faults +%llu%s", state,
+       "since the last line: host swap-ins +%llu, swap-outs +%llu pages, xnuhost major faults +%llu, minor +%llu%s", state,
        (unsigned long long)(__atomic_load_n(&g_ramfix.prefaulted, __ATOMIC_RELAXED) >> 20), (unsigned long long)(g_mem.size >> 20),
        (unsigned long long)(c.vm_locked >> 20), (unsigned long long)(c.mlocked >> 20),
        (unsigned long long)__atomic_load_n(&g_discard_fixed_refused, __ATOMIC_RELAXED),
        (unsigned long long)(have_was ? c.swap_ins - was.swap_ins : 0), (unsigned long long)(have_was ? c.swap_outs - was.swap_outs : 0),
-       (unsigned long long)(have_was ? c.major_faults - was.major_faults : 0), kgsl);
+       (unsigned long long)(have_was ? c.major_faults - was.major_faults : 0), (unsigned long long)(have_was ? c.minor_faults - was.minor_faults : 0),
+       kgsl);
   was = c;
   have_was = true;
+}
+
+// The window's 2 MiB pages (fix-ram-hugepages): once when the prefault is done (or at once without one) and at the stop.
+// smaps_rollup walks every mapping of this process, so not every host-mem-log. ShmemPmdMapped is what xnuhost maps with
+// 2 MiB entries: with shmem THP and the RAM prefaulted, the whole window; the tasks map the same folios 4 KiB at a time.
+static void huge_report(const char *when)
+{
+  uint64_t shmem = 0, file = 0, anon = 0;
+  if (!g_mem.host || !xh_pmd_mapped_self(&shmem, &file, &anon)) return;
+  xh_ramfix_counters c;
+  xh_ramfix_sample(&c);
+  // With 4 KiB entries xnuhost's window alone takes 8 bytes per 4 KiB page: the size / 512 that 2 MiB entries save.
+  LOGI("memory: 2 MiB pages%s: xnuhost maps %llu of %llu MiB of the guest's RAM with 2 MiB entries (ShmemPmdMapped; FilePmdMapped %llu, "
+       "AnonHugePages %llu MiB); its page tables %llu MiB (VmPTE; 4 KiB entries for the whole window would be %llu MiB)", when,
+       (unsigned long long)(shmem >> 20), (unsigned long long)(g_mem.size >> 20), (unsigned long long)(file >> 20), (unsigned long long)(anon >> 20),
+       (unsigned long long)(c.vm_pte >> 20), (unsigned long long)((g_mem.size / 512) >> 20));
+}
+static void huge_tick(void)
+{
+  static bool said;
+  if (said || !g_mem.huge || (config.ram_prefault && !__atomic_load_n(&g_ramfix.done, __ATOMIC_ACQUIRE))) return;
+  said = true;
+  huge_report(config.ram_prefault ? " (the prefault done)" : "");
 }
 
 // Once a second while the guest's RAM is locked: the valve (ramfix.c). On the main thread (nice 0, SCHED_OTHER), so busy
@@ -1186,6 +1228,7 @@ int main(int argc, char **argv)
     host_memory_tick(false);                // "memory: host MemAvailable" every host-mem-log seconds
     swap_watch();                           // "memory: the host swaps iOS's RAM" when it does (nothing while all is locked)
     ram_valve_tick();                       // the lock's valve, once a second while locked
+    huge_tick();                            // "memory: 2 MiB pages (the prefault done): ..." once
     usb_tick(false, "");                    // "usb: state ..." when the USB gadget changed
     ready_tick();                           // session/ready for an iOS that only draws black (ready-content-wait)
     // Until the guest's display driver presents a frame of its own, show what its kernel console draws (not until
@@ -1224,6 +1267,7 @@ int main(int argc, char **argv)
 
   LOGI("stopping: %s (reason %u, code %u)", stop_state.why, stop_state.reason, stop_state.code);
   host_memory_tick(true);
+  if (g_mem.huge) huge_report(" at the stop");
   usb_tick(true, " (at the stop)");
   for (unsigned i = 0; i < g_ncpu; i++)
     LOGI("cpu%u: %s, %llu interrupts (%llu timer, %llu IPI acknowledged, %llu re-raised), %llu device accesses, %llu emulated instructions, %llu task traps", i,

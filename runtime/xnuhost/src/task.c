@@ -583,7 +583,7 @@ int64_t xh_task_destroy(uint64_t handle)
 static int64_t ram_offset(uint64_t phys, uint64_t size)
 {
   if (phys < g_mem.phys || phys - g_mem.phys > g_mem.size || size > g_mem.size - (phys - g_mem.phys)) return -1;
-  return (int64_t)(phys - g_mem.phys);
+  return (int64_t)(phys - g_mem.fd_phys);        // the memfd's offset (mem.c: the file starts at fd_phys)
 }
 
 static bool user_range(uint64_t va, uint64_t size)

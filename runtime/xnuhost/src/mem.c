@@ -23,10 +23,11 @@ xh_mem g_mem = { .fd = -1 };
 int xh_mem_create(uint64_t size)
 {
   // Inherited by the task factory: no CLOEXEC. Sealable, and sealed against shrinking once it has its size: udmabuf,
-  // which turns the guest's pages into the dma-bufs the GPU imports (gpu3d.c), takes no other memfd.
+  // which turns the guest's pages into the dma-bufs the GPU imports (gpu3d.c), takes no other memfd. XH_MEM_HEAD_ROOM
+  // more than the RAM: the window starts `head` bytes into the file (xh_mem_map); the rest of that room is never touched.
   int fd = (int)syscall(SYS_memfd_create, "xnuhost-ram", 2u /* MFD_ALLOW_SEALING */);
   if (fd < 0) { LOGE("memfd_create: %s", strerror(errno)); return -1; }
-  if (ftruncate(fd, (off_t)size)) { LOGE("RAM of %llu MiB: %s", (unsigned long long)(size >> 20), strerror(errno)); close(fd); return -1; }
+  if (ftruncate(fd, (off_t)(size + XH_MEM_HEAD_ROOM))) { LOGE("RAM of %llu MiB: %s", (unsigned long long)(size >> 20), strerror(errno)); close(fd); return -1; }
   if (fcntl(fd, 1033 /* F_ADD_SEALS */, 2 /* F_SEAL_SHRINK */)) LOGE("RAM: no shrink seal (%s): the GPU cannot import guest pages", strerror(errno));
   g_mem.fd = fd;
   g_mem.size = size;
@@ -35,20 +36,31 @@ int xh_mem_create(uint64_t size)
 
 // The window's physical address IS its address in xnuhost: one number names a byte of RAM for
 // the kernel's pointers, its "physical" addresses (page tables it may still write, DMA addresses in
-// virtqueues, boot_args.physBase) and the offsets tasks map (address - base). Code that runs before
+// virtqueues, boot_args.physBase) and the offsets tasks map (address - fd_phys). Code that runs before
 // the kernel's MMU switch and computes physical addresses therefore still touches the right bytes.
-int xh_mem_map(uint64_t low21)
+// The file is mapped from offset 0 at the 2 MiB boundary below the window (fix-ram-hugepages, 2026-11-15). Before, offset
+// 0 was the window's first byte, at 0x...4000 (the kernel's link base modulo 2 MiB), so no 2 MiB host page could be
+// mapped with one entry anywhere; now address and offset agree modulo 2 MiB and, where shmem THP is on, Linux maps the
+// window in 2 MiB entries.
+int xh_mem_map(uint64_t low21, bool huge)
 {
-  uint64_t want = RAM_HINT + (low21 & 0x1fffff);
+  const uint64_t head = low21 & 0x1fffff, length = head + g_mem.size;
+  uint64_t want = RAM_HINT;
   void *p = MAP_FAILED;
   for (int attempt = 0; attempt < 16 && p == MAP_FAILED; attempt++, want += 0x400000000ull) {
-    p = mmap((void *)(uintptr_t)want, g_mem.size, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_SHARED | MAP_FIXED_NOREPLACE, g_mem.fd, 0);
-    if (p != MAP_FAILED && (uint64_t)(uintptr_t)p != want) { munmap(p, g_mem.size); p = MAP_FAILED; }
+    p = mmap((void *)(uintptr_t)want, length, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_SHARED | MAP_FIXED_NOREPLACE, g_mem.fd, 0);
+    if (p != MAP_FAILED && (uint64_t)(uintptr_t)p != want) { munmap(p, length); p = MAP_FAILED; }
   }
   if (p == MAP_FAILED) { LOGE("cannot map %llu MiB of RAM executable: %s", (unsigned long long)(g_mem.size >> 20), strerror(errno)); return -1; }
-  g_mem.host = p;
-  g_mem.phys = (uint64_t)(uintptr_t)p;
-  madvise(p, g_mem.size, MADV_DONTDUMP);
+  g_mem.host = (uint8_t *)p + head;
+  g_mem.phys = (uint64_t)(uintptr_t)g_mem.host;
+  g_mem.head = head;
+  g_mem.fd_phys = g_mem.phys - head;
+  madvise(p, length, MADV_DONTDUMP);
+  // Before the first touch: shmem gives a 2 MiB folio to the first fault in a 2 MiB range through a mapping with
+  // VM_HUGEPAGE (shmem_enabled "advise"), and 4 KiB pages to a range first touched through another mapping (a task's).
+  g_mem.huge = huge && madvise(p, length, MADV_HUGEPAGE) == 0;
+  if (huge && !g_mem.huge) LOGE("memory: madvise(MADV_HUGEPAGE) on the RAM: %s: 4 KiB host pages", strerror(errno));
   return 0;
 }
 
@@ -92,7 +104,7 @@ int64_t xh_mem_kernel_map(uint64_t va, uint64_t size, uint32_t prot, uint64_t ph
   int p = (prot & XH_PROT_READ ? PROT_READ : 0) | (prot & XH_PROT_WRITE ? PROT_WRITE : 0) | (prot & XH_PROT_EXEC ? PROT_EXEC : 0);
   // Populated in the same call: the kernel touches what it maps (a stack, a zone page), and each first touch was a
   // Linux fault of its own on the vCPU (host-overhead, 2026-11-15).
-  void *at = mmap((void *)(uintptr_t)va, size, p, MAP_SHARED | MAP_FIXED | MAP_POPULATE, g_mem.fd, (off_t)(phys - g_mem.phys));
+  void *at = mmap((void *)(uintptr_t)va, size, p, MAP_SHARED | MAP_FIXED | MAP_POPULATE, g_mem.fd, (off_t)(phys - g_mem.fd_phys));
   return at == MAP_FAILED ? -errno : 0;
 }
 

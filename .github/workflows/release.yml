@@ -323,13 +323,32 @@ jobs:
         run: app/scripts/build-guest-manager.sh --debug
       - name: Unit tests on macOS (./gradlew test, core:root's script tests among them)
         working-directory: app/app-android
+        env:
+          WATCHDOG_MIN: 30
         run: |
           set -euo pipefail
           PATH=$(printf '%s' "$PATH" | tr ':' '\n' | grep -Ev '^(/opt/homebrew|/usr/local)(/|$)' | paste -sd: -)
           export PATH
           for t in gstat gsha256sum gtimeout gtac gsed; do command -v "$t" > /dev/null && echo "note: $t is still on PATH: $(command -v "$t")"; done
           echo "macOS $(sw_vers -productVersion), sh: $(ls -l /bin/sh | awk '{print $NF}'), stat: $(command -v stat)"
-          ./gradlew --max-workers=3 --continue test
+          # Every test's start and end in the log (.github/scripts/gradle-test-events.gradle). The watchdog: a run
+          # that is not done after WATCHDOG_MIN minutes prints the processes and the test JVMs' threads (where it
+          # hangs), then stops Gradle, so that the failed tests and the reports below still come out (the first
+          # runs, 2026-11-15, hung in :core:root:testDebugUnitTest until the job's limit cancelled everything).
+          ./gradlew --max-workers=3 --continue --init-script "$GITHUB_WORKSPACE/.github/scripts/gradle-test-events.gradle" test &
+          g=$!
+          s=0
+          while kill -0 "$g" 2>/dev/null; do
+            sleep 10; s=$((s + 10))
+            if [ "$s" -ge $((WATCHDOG_MIN * 60)) ]; then
+              echo "::error::./gradlew test is still running after $WATCHDOG_MIN minutes: the processes and the test JVMs' threads follow, then Gradle is stopped"
+              ps -axww -o pid,ppid,etime,state,command | grep -Ev ' (/System/|/usr/libexec/|/usr/sbin/|/sbin/launchd)' | cut -c1-400
+              for p in $(jps -l | awk '/Gradle Test Executor|GradleWorkerMain/ { print $1 }'); do echo "=== jstack $p"; jstack "$p" | awk '/^"/ { keep = /Test worker|main/ } keep'; done
+              ./gradlew --stop || true; kill "$g" 2>/dev/null || true
+              exit 1
+            fi
+          done
+          wait "$g"
       - name: Failed tests
         if: failure()
         working-directory: app/app-android

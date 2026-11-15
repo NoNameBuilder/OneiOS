@@ -240,6 +240,13 @@ Actions is on for the fork); rerunning a failed CI job needs the token's Actions
    ram-giveback=0 ram-prefault=1 ram-lock=1`, now the defaults) should show `CAP_IPC_LOCK yes`, `memory: the guest's RAM
    is held: N MiB prefaulted in T ms, locked`, no `the host swaps iOS's RAM`, `oneios-mem: free pages given back to the
    host: no`, the `thermal: 30 s:` line without swap traffic, and `stopping:` right after the return's SIGTERM.
+   **fix-ram-hugepages (2026-11-15):** the memfd's offset 0 now sits at a 2 MiB boundary (before, no 2 MiB page could be
+   mapped with one entry) and xnuhost's window gets `MADV_HUGEPAGE` where `shmem_enabled` allows (`ram-huge=0` off).
+   That is the window's TLB reach and its own page tables (size / 512, 14 MiB at 7 GiB); the 575 MiB of page tables are
+   the iOS tasks', which map 16 KiB at a time, so the fit's 8 % stays (`docs/booter.md` 2.2, "2 MiB pages"). The fork
+   would have to set `shmem_enabled` to `advise` at the switch and restore it at the return (`oneos/interface.md` 4):
+   not done. Phone lines: `memory: 2 MiB host pages: yes|no (shmem_enabled ...)`, `memory: 2 MiB pages (the prefault
+   done): xnuhost maps N of M MiB ... with 2 MiB entries`, `page tables P MiB (xnuhost's own V MiB)`.
 6. **Haptics and the power key** (`docs/hardware.md` 5, PR #17): the counters show where a tap stops. PC boot with
    `--set haptics=sim`; phone: `Actuator: user client N opened by audiomxd`, audiomxd's `actuator port` lines; the
    power-key boot with `oneios-actuator=0`. **Power key (fix-power-key, 2026-11-14; confirmed broken in the 9f6dc38

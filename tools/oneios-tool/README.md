@@ -16,8 +16,8 @@ script before it may replace it; the commands and the results are below. What is
 | `package` | `runtime/package/pack.py` (the runtime package's Apple-file check, its manifest and archive) | ported, and the script **retired 2026-11-13**; `runtime/package.sh` and CI run the command | yes: 91 of 91 frozen cases (every refusal rule), `runtime/package/test.sh` 19 of 19 with the same output |
 | `debug` | the Python helpers of the tests (`tests/ksym/{compare,kcmap,make-log}.py`, `tests/kernelgen/{kernel-diff,drivers-command}.py`, `tests/phone/mkstream.py`) | done; the helpers deleted | yes: 24 of 24 comparisons, and each test before and after: the same output ("debug", below) |
 | `phone` | `scripts/phone/stage.sh`, the adb lines of `docs/building.md` section 6, the Mac's `sparsewrite.py` | written; **not run on the phone** (none on the box) | `stage` and `sums`: the same output and the same stage as `stage.sh` on a stand-in phone; 106 checks pass (`tests/phone/run.sh`, 30 of them the fork scripts' USB steps, `usb.sh`, with a fork checkout that has them); `sparse-write`: the bytes and length of `sparsewrite.py` on 7 streams and a 32 GiB one, not more blocks, a quarter of the CPU (`tests/phone/sparse-compare.sh`) |
-| `app` | the app lines of `docs/building.md` section 7 (new) | written; **the app was not built or installed with it** (the owner's decision for this box) | not applicable; 65 checks pass with a stand-in checkout, gradlew, gh and phone (`tests/app/run.sh`); `app version` runs on the real clone |
-| `cycle`, `phone log` | the test cycle of `docs/building.md` section 6 by hand (new) | written; **not run on the phone or with real builds** | not applicable; 90 checks pass with a stand-in checkout and phone (`tests/cycle/run.sh`) |
+| `app` | the app lines of `docs/building.md` section 7 (new) | written; **the app was not built or installed with it** (the owner's decision for this box) | not applicable; 103 checks pass with a stand-in checkout (also as the submodule `app/` of a stand-in OneiOS checkout), gradlew, gh and phone (`tests/app/run.sh`); `app version` runs on the real clone |
+| `cycle`, `phone log` | the test cycle of `docs/building.md` section 6 by hand (new) | written; **not run on the phone or with real builds** | not applicable; 117 checks pass with a stand-in checkout and phone (`tests/cycle/run.sh`) |
 
 **The image scripts, the kernel builds, the prelink and the runtime package run no Python tool of this repository any more** (2026-11-13; still Python: `scripts/ios/`, the root tweaks). The image scripts call `oneios-tool image`
 (`IMAGETOOL_IMPL` is gone; `scripts/image/imagetool.py` is left in the tree, unused), as do the retired tools' callers (`kernel/prelink/build.sh`
@@ -895,10 +895,10 @@ What each does:
 
 ```sh
 tools/oneios-tool/tests/phone/run.sh          # 222 checks against the stand-in phone (94 of them session-cmds.sh: display-restart, touch, backlight;
-                                              #   30 of them usb.sh: ONEOS_DIR=a fork checkout with --usb-watch;
+                                              #   30 of them usb.sh: with a fork checkout that has --usb-watch (found as `app dir` finds it);
                                               #   22 of them hw-backend.sh: the bridges' samsung and treble backends on stand-in
                                               #   phones, their host-built tools; docs/hardware.md 7e); ALL OK
-tools/oneios-tool/tests/cycle/run.sh          # phone log, status --watch and cycle: 95 checks; ALL OK
+tools/oneios-tool/tests/cycle/run.sh          # phone log, status --watch and cycle: 117 checks; ALL OK
 tools/oneios-tool/tests/phone/modes.sh        # phone, app and cycle in each /proc mode this host has (below); ALL OK
 FAKE_PROC=stand-in tools/oneios-tool/tests/phone/run.sh   # one suite with the stand-in's own /proc (macOS's way)
 tools/oneios-tool/tests/phone/sparse-compare.sh   # sparse-write against sparsewrite.py: 35 checks; ALL SAME ("The sparse copy" below)
@@ -1345,6 +1345,15 @@ oneios-tool cycle --only return,collect --name NAME
   `oneos/interface.md`. Long builds are `scripts/bg.sh cycle-NAME ...` (tmux); the cycle waits for
   `logs/cycle-NAME.exit` and stops on anything but 0, with the log's last lines. Ctrl-C while it waits ends the
   job's tmux session.
+- **The app's checkout** in the `build` step is the one `oneios-tool app` finds ("app" below: `--oneos DIR`,
+  `ONEOS_DIR`, the current folder, `app/` of the checkout, `app/` of the main checkout, `OneOS` beside it). The
+  step says the source's version and where it is
+  (`app: the source is 0.4.86 (versionCode 115) in DIR/app (app/ of the OneiOS checkout); ...`; `summary.md` has
+  the same after `app source:`). With no checkout it says `app: no source to compare (...)`, with the places
+  looked in (an empty `app/`: with `git submodule update --init --remote app`), and goes on. `--force app` builds
+  and installs that checkout (`app build`, `app install`); **with no checkout `--force app` ends the cycle**
+  (`--force app: no OneOS checkout ...`, status 1, before the phone is touched; until 2026-11-15 it said the
+  line above and went on to the phone without the build that was asked for).
 - **Safety.** One phone lock for the whole cycle (`out/phone.lock` of the main checkout, `flock`; a second cycle
   is refused and told who holds it). Before the switch: root, no open session, the three scripts staged, no
   import in progress, the root script's preflight `ready 1`. From the switch on, whatever happens (a panic, no
@@ -1403,6 +1412,16 @@ three it passes: the cycle's first half of the split run, the folder's files, th
 same counts, all ok, no stand-in session left. The reading of the phone's own `session/xnuhost.log` when the
 folder has no copy is not covered by a check (the stand-in's collect always copies one).
 
+The app's checkout (2026-11-15, the fork as the submodule `app/`): the suite has 117 checks now, fourteen for this,
+all dry runs but the last three: a checkout named with `ONEOS_DIR`; none found (said, the cycle goes on; with
+`--force app` refused); `app/` empty (said with the submodule command; with `--force app` refused with it);
+`app/` present (its version and `in DIR/app (app/ of the OneiOS checkout)`; `--force app` names it); `--oneos` and
+`ONEOS_DIR` before a present `app/`, with the note; no gradlew started by a dry run; and one real
+`cycle --only build --force app`, whose `app/app-android/gradlew` (a stand-in that fails) is what ran, with
+`test assembleFullDebug`, and whose failure ended the cycle before any adb call. Not covered: a `--force app` that
+builds and installs (the stand-in gradlew of this suite builds nothing; `tests/app` covers `build` and `install`
+by themselves).
+
 ## app
 
 `oneios-tool app [--oneos DIR] [--serial S] CMD`: the OneOS fork's app (`akshaynexus/OneOS`, branch `oneios`).
@@ -1417,12 +1436,37 @@ oneios-tool app build [--no-test]        # cd app-android && ./gradlew test asse
 oneios-tool app install [APK]            # adb install -r of the build output (or APK)
 oneios-tool app install --release 0.4.86 [--repo akshaynexus/OneOS] [--dir out/app]   # the CI prerelease oneios-<version>, through gh
 oneios-tool app stage-scripts            # the fork's oneios_switch.sh, oneios_return.sh and oneios_root.sh into the stage
+oneios-tool app dir                      # the checkout's path alone (for scripts; the suites' fork_dir)
 ```
 
-- **The checkout** is `--oneos DIR`, else `ONEOS_DIR`, else the current folder when it is one (it has
-  `app-android/settings.gradle.kts`), else `OneOS` beside the OneiOS main checkout, found through
-  `git rev-parse --git-common-dir`, so it works from a worktree. The first line of every command says which one
-  and how it was found.
+- **The checkout** (the fork becomes the submodule `app/` of OneiOS, 2026-11-15; in a checkout from before it
+  there is no `app/`, nothing is said about it and the lookup goes on) is the first of:
+  1. `--oneos DIR`;
+  2. `ONEOS_DIR`;
+  3. the current folder, when it is a checkout;
+  4. `app/` of the OneiOS checkout the command runs in (`ONEIOS_ROOT`, else the folder at or above the current
+     one with `scripts/bg.sh` and `oneos/interface.md`): the submodule, the default;
+  5. `app/` of the OneiOS main checkout, when the command runs in a worktree (found through
+     `git rev-parse --git-common-dir`): a new worktree's `app/` is empty;
+  6. `OneOS` beside the OneiOS main checkout: the clone from before the submodule.
+
+  Why this order: the owner's order is `app/` first, and among the places the tool finds by itself it is. A
+  checkout **named by hand** (1 and 2; 3 is the folder the user stands in) still comes before it, as before the
+  submodule, so that a named checkout is never silently replaced by the default. For the same reason a named folder that
+  is no checkout is an error and the lookup does not go on to `app/`; and when `ONEOS_DIR` (easy to forget in a
+  shell) takes the place of an `app/` that is a checkout, a `note:` line on stderr says so.
+  - **A checkout is told by what it holds**, not by its name: `app-android/app/build.gradle.kts` (the version is
+    read from it) and `switcher/assets/oneios_switch.sh` (the fork's own; upstream OneOS and a checkout on another
+    branch have none).
+  - **An `app/` that is an empty folder is not a checkout**: the submodule is not initialised (a clone without
+    `--recurse-submodules`, a new worktree). It is passed over, with
+    `note: DIR/app is empty: the app submodule is not initialised (in DIR: git submodule update --init --remote app)`
+    on stderr when a later place is a checkout; when none is, that line is in the error, which lists every place
+    looked in and why it was not taken (`is not there`, `is empty`, `is not the fork's checkout (no FILE)`) and
+    exits with status 1. An `app/` that holds other files is passed over the same way.
+  - The first line of every command says which checkout and how it was found, for example
+    `OneOS checkout: /x/OneiOS/app (app/ of the OneiOS checkout)`. `cycle` and the suites' `fork_dir`
+    (`tests/phone/lib.sh`, through `app dir`) use this same lookup.
 - `version` reads `app-android/app/build.gradle.kts` (`applicationId`, `versionName`, `versionCode`; the `full`
   flavour's `-<oneos.series>` suffix when `gradle.properties` sets one; the `probe` flavour's `.probe` and
   `-probe`), the commit, the branch and whether the tree is dirty. With a phone on adb it adds the installed
@@ -1452,7 +1496,7 @@ oneios-tool app stage-scripts            # the fork's oneios_switch.sh, oneios_r
   app's makes the app's own checks refuse them until it stages its own again.
 
 ```sh
-tools/oneios-tool/tests/app/run.sh            # 65 checks; ALL OK
+tools/oneios-tool/tests/app/run.sh            # 103 checks; ALL OK
 ```
 
 The stand-ins: a OneOS checkout whose `gradlew` is a script that records its arguments and "builds" an APK; APKs
@@ -1461,6 +1505,24 @@ signature is filler, the tool reads the certificate and does not verify the APK)
 two files; the stand-in phone of `tests/phone/`. Result, Linux x86_64, 2026-11-12: 65 checks, all ok. What they
 cannot show: a real Gradle build, real APKs signed by `apksigner` or Gradle (v2 and v3 blocks as Android writes
 them), `adb install` on Android, `gh` against GitHub.
+
+The lookup with the submodule (2026-11-15): 103 checks, 38 more, in stand-in OneiOS checkouts (their own git
+checkouts with `scripts/bg.sh` and `oneos/interface.md`): `app/` present (first, before `OneOS` beside; from a
+folder inside the checkout; with `ONEIOS_ROOT` from outside; `app dir`; `app build` runs gradlew in
+`app/app-android`); `app/` empty (alone: status 1 with the command; with `OneOS` beside: that one, the note on
+stderr only); `app/` with other files, and with the build file but without `oneios_switch.sh` (passed over, said);
+`--oneos` and `ONEOS_DIR` before a present and an empty `app/`; a named folder that is empty or no checkout (an
+error, `app/` is not taken instead); the current folder; `OneOS` beside the checkout from a worktree; a worktree
+with no `app/`, an empty one and its own; none found, in a checkout and outside every checkout. Seven of them use a
+**real git submodule** (`git submodule add -b oneios` of the stand-in fork into a stand-in OneiOS checkout, then
+`git clone` without `--recurse-submodules`): the clone's `app/` is an empty folder and the tool says so with the
+command; after `git submodule update --init --remote app` it is the checkout, with the submodule's version; a new
+worktree's `app/` is empty and the main checkout's is taken. The crate's own tests (`cargo test -p oneios-phone`,
+`app::tests`, nine) check the order on made-up folders. `modes.sh`, Linux x86_64, 2026-11-15: `host` and
+`stand-in` mode each phone 222, app 103, cycle 117 checks, all ok, no stand-in session left; `cargo test
+--release`: 134 passed, 0 failed. **Not tested:** OneiOS's own `app/` submodule (it is added on another branch;
+in this checkout there is no `app/`, and every suite here found the fork as `OneOS` beside the main checkout, the
+sixth place), CI, macOS, a real build or install from `app/`.
 
 ## prelink
 
