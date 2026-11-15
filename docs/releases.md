@@ -83,7 +83,8 @@ so do a Java class, a 45 MB file and a file with `OneOSGuest.apk`'s listed hash;
 sparse image, a Mach-O, a fat Mach-O, an AEA file, an Odin `.tar.md5`, an `.ozip`, an ext4 volume, a 70 MB file, a
 file whose hash a set list names, and a file that the APK's own list names `vendor_boot.img` is refused. On the
 real APK (fork 0.5.14, versionCode 143, 2026-11-15): the first run (43705081715) refused it for the two
-false refusals above, fixed since; the run after the fix is named in "macOS: the fork's unit tests" below.
+false refusals above; with the fix, run 43710905603 passes it: 3310 entries, every content-addressed file named
+by the APK's `scripts.sha256` (the largest `guest_manager.apk`, 45,548,812 bytes), no set file among them.
 
 ## What a release must be able to load
 
@@ -237,16 +238,24 @@ packages; tribalfs' are public. The secret path stays in case GitHub changes tha
 no secret is needed today.
 
 **macOS: the fork's unit tests** (the goal: `./gradlew test` passes on the owner's Mac, so that `oneios-tool cycle
---force app` runs there without `--no-test`). The first runs, 2026-11-15, ubuntu's `./gradlew test
-assembleFullDebug` passed for both fork commits; on `macos-15` (macOS 15.8.2, Homebrew off `PATH`) every module's
-tests passed up to `:core:root:testDebugUnitTest`, which did not end:
+--force app` runs there without `--no-test`). Every run of 2026-11-15 passed ubuntu's `./gradlew test
+assembleFullDebug` for every fork commit below. On `macos-15` (macOS 15.8.2, Homebrew off `PATH`) every other
+module's tests passed, and `:core:root:testDebugUnitTest` gave:
 
 | Run | Fork commit | `:core:root:testDebugUnitTest` on macOS |
 |---|---|---|
-| 43705081715 (#43) | `820253b`, the head of `oneios` | `OneiosScriptTest`: `theLogVerbsListTheSessionLogsAndReadThemInWholeLines` (line 2175), `aCheckRunsTheStagedToolAndReportsItsOutputAndExitCode` (2020) and `aProcessThatEndsLateAfterSigkillIsWaitedForAtGateA` (1228) failed, then the task hung until the job's 60 minutes |
-| 43705167315 (#44, test only) | `479d474`, `fix-macos-tests-2` (OneOS PR #7) | no failure printed, and the task hung from its start (10:46:58) until the job's 60 minutes |
+| 43705081715 (#43) | `820253b`, the head of `oneios` | `theLogVerbsListTheSessionLogsAndReadThemInWholeLines`, `aCheckRunsTheStagedToolAndReportsItsOutputAndExitCode` and `aProcessThatEndsLateAfterSigkillIsWaitedForAtGateA` (`OneiosScriptTest`) failed, then the task hung until the job's 60 minutes |
+| 43705167315 (#44, test only) | `479d474`, `fix-macos-tests-2` (OneOS PR #7) | hung until the job's 60 minutes (no test events in the log yet) |
+| 43710905603 (#43), 43710921989 (#44) | `820253b`; `479d474` | with the test events and the watchdog: PR #7 fixes the first two failures (431 passed); `aProcessThatEndsLate...AtGateA` fails on both; both hang in `aHungToolIsEndedAtTheLimitAndWhatItChangedIsPutBack`. The watchdog's process list and `jstack`: `oneios_root.sh check levels` and its stand-in `brightctl levels` still running after 25 minutes, the test reading their output |
+| 43714546247 (#44) | `8c6fae1`, `fix-macos-tests-3` (OneOS PR #9: #7 and a third round: `now` without `date +%N`, a `cat` stand-in for `/proc/PID/cmdline`) | no hang: the task ran to its end, 270 tests, 4 failed (`aProcessThatEndsLate...AtGateA`, `theReturnsLogSaysWhoReturnedAndHow`, `aChatteringHoldOfTheRockerStillReturns`, `StageScriptTest.removeSystemDeletesOnlyTheSystemSetUpNow`), 2 skipped |
+| 43717760387 (#44) | `406f008`, `fix-macos-tests-3` (a fourth round for those four) | 270 tests, 1 failed: `theReturnsLogSaysWhoReturnedAndHow` (the return log's lines twice); Gate A, the chatter and the `find` test pass |
+| 43720242712 (#44) | `433cb0c`, `fix-macos-tests-3` (the return log) | **passes**: `./gradlew test` BUILD SUCCESSFUL on macOS, core:root's 270 tests with the 2 skipped as before. The same run's ubuntu job failed one test, `aReadyGuestIsLeftRunningPastTheDeadline` (a race of the test at its wakelock line, passed in every run before; fixed in `200263f`) |
 
-So PR #7 is not proven on macOS: it hangs. The watchdog above is there to name the test that hangs.
+The causes and the fixes are in OneOS PR #9 and the fork's `docs/oneios.md` ("The third round", "The fourth
+round"): the tests' stand-ins and timing on a Mac, and one line of `oneios_return.sh` that is read only with a test
+root (`ONEIOS_TEST_OUT_IS_LOG`, set by the test where there is no `/proc`: the return log written once); on the
+phone the script is as before. The head of `oneios` stays red on
+macOS until #9 (or #7 and #9) is merged; the job is no release gate.
 
 **The 3D GPU in a release.** The runtime job fetches Droid-VM's virglrenderer (`scripts/setup/get-references.sh virglrenderer`) before the host tests and the package, on every build, and refuses a package whose `xnuhost` or `gpuctl` was built without drm2kgsl. Without that checkout both build 2D-only and only say so at run time: runtime 0.1.1 was published that way and its GPU check failed on the phone with "this build has no drm2kgsl". 0.1.3 is the first release with the check (0.1.2's run failed to link: a stale 2D-only `gpu3d.o` from the host tests beside the real drm2kgsl; the fetch now runs before the host tests and `gpu3d.o` rebuilds when the drm2kgsl setting changes). Before 2026-11-15 only the tag's run fetched it; pull requests built 2D-only.
 
