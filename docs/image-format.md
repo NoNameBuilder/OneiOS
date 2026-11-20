@@ -5,17 +5,17 @@ Owner: image-build. Code: `profiles/`, `scripts/fetch/`, `scripts/image/`. Tests
 The image set is to OneiOS what `system.raw` plus its overlays are to OneOS: the guest system, built on the
 owner's machine from the vendor's firmware, pinned by size and SHA-256, staged in a folder on the phone. For
 OneOS the firmware is an Android OTA and the builder is MysticGSI. Here it is Apple's restore file (IPSW) for
-iPhone18,2, iOS 27.0.1 (24A446), and the builder is `scripts/image/build.sh`.
+iPhone18,2, iOS 27.2.1 (24B156), and the builder is `scripts/image/build.sh`.
 
 Nothing of the set is in git or in a release: it is Apple's software. A release carries the scripts; each
 owner fetches from Apple and builds.
 
 ```sh
-scripts/fetch/fetch.sh --list 'profiles/ios-27.0.1-iPhone18,2.toml'      # compare the profile with Apple's file, about 1 MiB
+scripts/fetch/fetch.sh --list 'profiles/ios-27.2.1-iPhone18,2.toml'      # compare the profile with Apple's file, about 1 MiB
 scripts/fetch/get-ipsw-cli.sh                                            # the AEA decryption tool, once
-scripts/bg.sh fetch scripts/fetch/fetch.sh 'profiles/ios-27.0.1-iPhone18,2.toml'    # 10.6 GiB -> inputs/24A446/
-scripts/bg.sh image scripts/image/build.sh 'profiles/ios-27.0.1-iPhone18,2.toml'    # -> out/image/24A446/ and the .tar.zst
-scripts/image/verify.sh out/image/OneiOS_iOS27.0.1_24A446_iPhone18-2.tar.zst
+scripts/bg.sh fetch scripts/fetch/fetch.sh 'profiles/ios-27.2.1-iPhone18,2.toml'    # 10.9 GiB -> inputs/24B156/
+scripts/bg.sh image scripts/image/build.sh 'profiles/ios-27.2.1-iPhone18,2.toml'    # -> out/image/24B156/ and the .tar.zst
+scripts/image/verify.sh out/image/OneiOS_iOS27.2.1_24B156_iPhone18-2.tar.zst
 ```
 
 ## 1. What is in a set
@@ -94,20 +94,20 @@ Roles: `os`, `systemos`, `app`, `trust-static`, `trust-system`, `trust-app`, `ro
 and the booter: `scripts/image/kernel-inputs.sh` unpacks them to `out/kernel-inputs/<build>/`);
 `buildmanifest`, `restore`.
 
-iOS 27.0.1 (24A446), iPhone18,2: 13 of the IPSW's 165 members, 10.59 GiB of 11.84 GiB.
+iOS 27.2.1 (24B156), iPhone18,2: 13 of the IPSW's 165 members, 10.91 GiB of 12.25 GiB.
 
 | Role | Member | Bytes |
 | --- | --- | --- |
-| os | `043-69487-662.dmg.aea` | 8 992 587 776 |
-| systemos | `043-70037-715.dmg.aea` | 2 348 810 240 |
-| app | `043-69297-793.dmg` | 16 777 216 |
-| trust-static | `Firmware/043-69487-662.dmg.aea.trustcache` | 92 017 |
-| trust-system | `Firmware/043-70037-715.dmg.aea.trustcache` | 3 191 |
-| trust-app | `Firmware/043-69297-793.dmg.trustcache` | 863 |
+| os | `141-10103-223.dmg.aea` | 9 261 023 232 |
+| systemos | `141-10617-235.dmg.aea` | 2 415 919 104 |
+| app | `141-08824-252.dmg` | 16 777 216 |
+| trust-static | `Firmware/141-10103-223.dmg.aea.trustcache` | 93 409 |
+| trust-system | `Firmware/141-10617-235.dmg.aea.trustcache` | 3 215 |
+| trust-app | `Firmware/141-08824-252.dmg.trustcache` | 863 |
 | roothash-os, -system, -app | `Firmware/<image>.root_hash` | 229 each |
-| kernelcache | `kernelcache.release.v54` | 23 390 449 |
-| devicetree | `Firmware/all_flash/DeviceTree.v54ap.im4p` | 68 480 |
-| buildmanifest, restore | `BuildManifest.plist`, `Restore.plist` | 816 945, 1 093 |
+| kernelcache | `kernelcache.release.v54` | 23 545 189 |
+| devicetree | `Firmware/all_flash/DeviceTree.v54ap.im4p` | 68 474 |
+| buildmanifest, restore | `BuildManifest.plist`, `Restore.plist` | 816 942, 1 093 |
 
 ## 3. `manifest.json`
 
@@ -115,17 +115,17 @@ iOS 27.0.1 (24A446), iPhone18,2: 13 of the IPSW's 165 members, 10.59 GiB of 11.8
 {
   "format": 1,
   "name": "oneios-image",
-  "id": "ios-27.0.1-24A446-iPhone18-2",
+  "id": "ios-27.2.1-24B156-iPhone18-2",
   "os": "iOS",
-  "version": "27.0.1",
-  "build": "24A446",
+  "version": "27.2.1",
+  "build": "24B156",
   "device": "iPhone18,2",
   "board": "v54ap",
   "arch": "arm64e",
   "chip_id": 33104,
   "board_id": 14,
-  "profile": { "name": "ios-27.0.1-24A446-iPhone18,2", "file": "ios-27.0.1-iPhone18,2.toml", "sha256": "<64 hex>" },
-  "source": { "ipsw_url": "https://updates.cdn-apple.com/...", "ipsw_size": 12708916186, "ipsw_sha256": "<64 hex>" },
+  "profile": { "name": "ios-27.2.1-24B156-iPhone18,2", "file": "ios-27.2.1-iPhone18,2.toml", "sha256": "<64 hex>" },
+  "source": { "ipsw_url": "https://updates.cdn-apple.com/...", "ipsw_size": 13155803124, "ipsw_sha256": "<64 hex>" },
   "stage": "/data/local/tmp/oneios/image",
   "chunk": 1048576,
   "data": { "seed": "data.seed", "volume_uuid": "1B7DB2B7-5ECA-4FDA-98AF-55DF8632E355", "volume_name": "Data",
@@ -245,7 +245,7 @@ SHA-256, the repository commit and whether `userland/` had uncommitted changes.
 
 ## 7. The archive, and how the OneOS fork verifies and stages it
 
-`out/image/<archive>` (`OneiOS_iOS27.0.1_24A446_iPhone18-2.tar.zst`) and `<archive>.sha256` (one
+`out/image/<archive>` (`OneiOS_iOS27.2.1_24B156_iPhone18-2.tar.zst`) and `<archive>.sha256` (one
 `sha256sum` line). The owner copies the archive to the phone and imports it in the fork's app; it is never
 uploaded.
 
