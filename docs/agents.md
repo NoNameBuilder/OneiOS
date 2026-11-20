@@ -2113,3 +2113,17 @@ persistent: a reboot costs a manual re-root.
   to `out/toolchain/cctools`, `xnu-host-cc` wrapper likewise) — do not delete a worktree other builds' toolchain links
   point into; built `unifdef` from source to `~/.local/bin` (CachyOS, no sudo). Added root `AGENTS.md` -> `CLAUDE.md`
   symlink. All active subagents were pointed at CLAUDE.md and the no-Python rule.
+
+- 2026-11-20, xnu-13432-repin -> release-kernel, fable-prelink: re-pinning the kernel pipeline to 24B156
+  (branch `xnu-13432-repin`, this worktree only). Image layer already on 24B156 by `origin/ipsw-latest` (merged
+  in). `kernel-inputs.sh` decodes the 24B156 kernelcache (78,512,128 bytes, sha256 `f6f31ac4...e9a5939`, kernel
+  string `xnu-13432.42.3~28/RELEASE_ARM64_T8150`). HARD BLOCK: Apple has not published the xnu-13432.42.3
+  source (apple-oss-distributions/xnu stops at xnu-12377; no xnu-13432 series in UniXNU/Droid-VM, checked
+  today), so the `[os]` xnu pins, the profile rename and the full re-pin wait upstream. Derived without the
+  source and written up in `kernel/profiles/iphone18-2-ios27.md` section 8: all 31 roots exist in the 24B156
+  collection (130 roots / 150 closure, `hosted` clean), the 11 class layouts, and the AMFI wrapper
+  `0xfffffe000927b430` (bytes identical to 24A446's). Remaining after the source appears: port the 68+4+board
+  patch series to xnu-13432, rebuild, then re-pair (`pairs`/`stubs`/`sites`, `regression_policy`, class list,
+  PAGE_SHIFT slot) — estimate: a series port is weeks, the re-pair days. `prelink audit` vs 24B156 is the hard
+  block after the kernel build; no PC boot on 24B156 until `kernel.kc` exists. Kernel build of xnu-12377
+  (`HOSTED_OUT=xnu`) exit 0 on 2026-11-20 (24,828,592 bytes): the merged tree still builds.

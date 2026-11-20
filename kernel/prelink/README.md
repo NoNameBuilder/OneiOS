@@ -440,6 +440,12 @@ the HMACs), `prelink audit` 3 s, the record and the chunk hashes 1 s.
 
 ## What is not done
 
+- **The 24B156 (xnu-13432.42.3) re-pin** (2026-11-20, branch `xnu-13432-repin`): the roots still apply
+  (130/150, no profile root missing), `hosted` runs clean, the 11 class layouts and the AMFI wrapper
+  (`0xfffffe000927b430`) are derived; the reviewed `pairs`/`stubs`/`sites`, `regression_policy` and the
+  class list wait on the xnu-13432 source (unpublished: `kernel/README.md`) and a kernel to pair against.
+  Details: `kernel/profiles/iphone18-2-ios27.md` section 8.
+
 - **The pairing is incomplete.** A kext call to an original kernel function with no pair goes to
   `_unixnu_fileset_unmapped`, which panics with the caller; `prelink unmapped ADDRESS` names it and its paired
   neighbours, and the answer goes into the reviewed file. When the "from" address is inside our kernel, a kernel

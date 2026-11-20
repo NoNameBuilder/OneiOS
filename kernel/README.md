@@ -35,6 +35,13 @@ Last build: `xnu-12377.121.6-ios-27.0.1-24A446-62c8ff7800cd`, 23,735,992 bytes, 
 The build id is a hash of the inputs (XNU commit, patches, configuration, UniXNU commit, the board archives'
 sources), not of the machine. The kernel's bytes are not reproducible: two builds of the same id differ.
 
+Re-pin to iOS 27.2.1 (24B156, xnu-13432.42.3): blocked upstream. Apple's open-source xnu stops at xnu-12377
+(no xnu-13432 tag in apple-oss-distributions/xnu, no xnu-13432 series in UniXNU or Droid-VM; checked
+2026-11-20). The image layer and the kernelcache pins moved (`profiles/ios-27.2.1-iPhone18,2.toml`,
+`kernelcache_sha256 f6f31ac4...`); the kernel build, its profile's `[os]` xnu pins and the prelink records
+stay xnu-12377 until the source is published. What the 24B156 kernelcache already gives:
+`profiles/iphone18-2-ios27.md` section 8.
+
 Other entry points: `kernel/fetch.sh` (sources at the pins of `pins.sh`, 40 MB), `kernel/series-tree.sh` (the
 patched tree with one commit per patch, for writing patches), `kernel/tests/host.sh` (CI), `kernel/publish.sh`.
 

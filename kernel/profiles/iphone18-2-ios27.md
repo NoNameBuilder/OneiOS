@@ -69,7 +69,7 @@ kexts) is made there.
 |---|---|---|
 | IPSW member | `kernelcache.release.j820` [I] | `kernelcache.release.v54`, 23,545,189 bytes, SHA-384 `6d25a7e3...bcea3` of the IM4P as shipped [F: image profile] |
 | `kernelcache_sha256` | `38e6d9fa...1780a` | `f6f31ac4...e9a5939`: the decoded file (78,512,128 bytes) that `scripts/image/kernel-inputs.sh` writes (image-build). **Pinned** in the OS profile |
-| `early_security_init` | `com.apple.driver.AppleMobileFileIntegrity=0xfffffe00092551ac` | the address of the AMFI wrapper that calls `_initializeAppleMobileFileIntegrity` and returns 0, in the iPhone kernelcache. A different address for certain. **To pin** (UniXNU's audit scripts, `scripts/audit-amfi-pmgr-contract.py` among them) |
+| `early_security_init` | `com.apple.driver.AppleMobileFileIntegrity=0xfffffe00092551ac` | `0xfffffe000927b430` in the 24B156 kernelcache (derived 2026-11-20: the same eight instructions and SHA-256 `e95dda72...ac8df167` as 24A446's wrapper; AMFI's `__text` slid by `0x48a64`). It wraps `0xfffffe000927ac78`, which builds the policy-conf/ops at `0xfffffe000813f770` and is the only caller of the `mac_policy_register` stub. **To review into the reviewed file** |
 | `abi/original-classes.json` | 1 file | the OSMetaClass list of the iPhone kernelcache. **To generate** |
 | `fileset-reviewed.json` (Droid-VM board) | reviewed for 24A446 J820 | the reviewed fileset placement for the V54 collection. **To review** |
 | `regression_policy` (upstream only) | `scripts/policies/ipados-27.0.1-24A446/prelink-regression.json` | allowed missing and stubbed calls. **To record** after the first prelink |
@@ -161,3 +161,28 @@ Not written yet: the hosted machine layer (`LINUXHOST`, `runtime/xnuhost/include
 3. An iPhone-only system call or KPI missing from the Darwin 26 patches (first seen as a `nosys` line at launchd).
 4. `compatible` = `V54AP` or the board's own.
 5. The scale rule of QuartzCore for a phone idiom.
+
+## 8. 24B156 derivation status (2026-11-20, branch `xnu-13432-repin`)
+
+The image layer moved to 24B156 (`profiles/ios-27.2.1-iPhone18,2.toml`); the kernel build and its `[os]` xnu
+pins stay xnu-12377 until Apple publishes the xnu-13432.42.3 source (no such tag in
+apple-oss-distributions/xnu, no xnu-13432 series in UniXNU or Droid-VM; checked 2026-11-20). Derived from
+the 24B156 kernelcache (`out/kernel-inputs/24B156/kernelcache.macho`, SHA-256 `f6f31ac4...e9a5939`,
+kernel string `xnu-13432.42.3~28/RELEASE_ARM64_T8150`):
+
+- Roots: `oneios-tool prelink roots` against the profile's 31 roots gives 130 roots, 150 in the closure,
+  and **none of the 31 missing** (same shape as 24A446: 319 executables, 130/150). `prelink hosted` runs
+  clean (0 TPIDR_EL1, 5 MPIDR_EL1, 11 pointer rewrites; 1,162 other privileged instructions in 8 kexts).
+- Classes: `oneios-tool prelink classes` reads the same 11 class layouts as `classes-24A446-v54.json`
+  (metaclass, size, vtable, slot counts) for the board drivers that subclass originals.
+- `early_security_init`: `0xfffffe000927b430` (section 3). Method: fileset entries of the decoded
+  kernelcache -> AMFI `__TEXT_EXEC` -> function starts (917) -> the one function referencing the
+  `AppleMobileFileIntegrity` policy-name string that calls a stub with `(conf, handle, NULL)` is
+  `0xfffffe000927ac78` (conf `0xfffffe000813f770`, handle `0xfffffe000813ece4`); its two callers are
+  `0xfffffe000927abbc` and the 8-instruction void-to-int wrapper, whose 32 bytes hash to the same
+  SHA-256 as 24A446's wrapper.
+
+Still to do (needs the xnu-13432 source first, then a kernel build to pair against): the `[os]` xnu pins
+and profile rename, `pairs`/`stubs`/`sites` reviewed records for the 24B156 originals, `regression_policy`,
+`abi/original-classes.json`, the AMFI `PAGE_SHIFT_CONST` slot, and the `lead`/`user` reviewed records.
+`prelink audit` against 24B156 fails until those exist: that is the hard block after the kernel build.
