@@ -25,7 +25,7 @@ import fixtures          # noqa: E402
 import imagetool as it   # noqa: E402
 import remotezip         # noqa: E402
 
-REAL_PROFILE = os.path.join(ROOT, "profiles", "ios-27.0.1-iPhone18,2.toml")
+REAL_PROFILE = os.path.join(ROOT, "profiles", "ios-27.2.1-iPhone18,2.toml")
 HAVE_ZSTD = shutil.which("zstd") is not None
 
 
@@ -48,16 +48,16 @@ class Case(unittest.TestCase):
 class ProfileTest(Case):
     def test_real_profile(self):
         p = it.load_profile(REAL_PROFILE)
-        self.assertEqual((p["os"]["build"], p["os"]["device"], p["os"]["version"]), ("24A446", "iPhone18,2", "27.0.1"))
+        self.assertEqual((p["os"]["build"], p["os"]["device"], p["os"]["version"]), ("24B156", "iPhone18,2", "27.2.1"))
         self.assertEqual(p["os"]["chip_id"], 0x8150)
         self.assertTrue(p["ipsw"]["url"].startswith("https://updates.cdn-apple.com/"))
-        self.assertTrue(p["ipsw"]["url"].endswith("iPhone18,2_27.0.1_24A446_Restore.ipsw"))
+        self.assertTrue(p["ipsw"]["url"].endswith("iPhone18,2_27.2.1_24B156_Restore.ipsw"))
         roles = {m["role"] for m in p["member"]}
         self.assertEqual(roles, set(it.ROLES))
         # every member that is not AEA is pinned by a cryptographic hash, the AEA ones by size and CRC-32
         for m in p["member"]:
             self.assertTrue(m.get("aea") or "sha384" in m or "sha256" in m, m["role"])
-        self.assertEqual(it.input_name(it.member_of(p, "os")), "043-69487-662.dmg")
+        self.assertEqual(it.input_name(it.member_of(p, "os")), "141-10103-223.dmg")
         self.assertEqual(p["image"]["stage"], "/data/local/tmp/oneios/image")
 
     def test_rejects(self):
@@ -66,7 +66,7 @@ class ProfileTest(Case):
         cases = {
             "schema": good.replace("schema = 1", "schema = 2"),
             "role": good.replace('role = "restore"', 'role = "bogus"'),
-            "crc": good.replace('crc32 = "7ceca2a1"', 'crc32 = "7ceca2a"'),
+            "crc": good.replace('crc32 = "5dc2e60e"', 'crc32 = "5dc2e60"'),
             "aea": good.replace("aea = true\nbuildmanifest_digest = \"c4", "buildmanifest_digest = \"c4"),
             "format": good.replace("format = 1", "format = 9"),
             "name": good.replace('os = "os.img"', 'os = "../os.img"'),

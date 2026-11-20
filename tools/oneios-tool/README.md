@@ -2292,7 +2292,7 @@ The comparison today is with the frozen output of the Python chain (`tests/preli
 size and SHA-256 of every file a step writes and the SHA-256 of every step's stdout; no Apple bytes):
 
 ```sh
-scripts/image/kernel-inputs.sh 'profiles/ios-27.0.1-iPhone18,2.toml'      # out/kernel-inputs/24A446/kernelcache.macho
+scripts/image/kernel-inputs.sh 'profiles/ios-27.2.1-iPhone18,2.toml'      # out/kernel-inputs/24B156/kernelcache.macho
 KERNEL=out/kernel/current-hosted-pc/xnu.macho REFERENCE=out/kernel/current-hosted-pc/reference.macho \
   tools/oneios-tool/tests/prelink/compare-golden.sh     # 40 hashes; without KERNEL: roots and hosted only, 10 hashes
 ```
