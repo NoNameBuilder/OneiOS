@@ -82,7 +82,7 @@ How a member is pinned:
 
 - `size` and `crc32` come from the IPSW's ZIP directory and are checked for every member.
 - A member that is not AEA carries `sha384`: the `Digest` of its component in BuildManifest.plist, which is
-  the SHA-384 of the file as shipped (checked on all nine such members of 24A446). `BuildManifest.plist`
+  the SHA-384 of the file as shipped (checked on all nine such members of 24B156). `BuildManifest.plist`
   and `Restore.plist` carry `sha256`.
 - An AEA member (`OS`, `Cryptex1,SystemOS`) has no hash of the profile's own. Its integrity is the archive's
   own authentication at decryption, with the key Apple's key service gives for that archive, plus size and
@@ -128,19 +128,19 @@ iOS 27.2.1 (24B156), iPhone18,2: 13 of the IPSW's 165 members, 10.91 GiB of 12.2
   "source": { "ipsw_url": "https://updates.cdn-apple.com/...", "ipsw_size": 13155803124, "ipsw_sha256": "<64 hex>" },
   "stage": "/data/local/tmp/oneios/image",
   "chunk": 1048576,
-  "data": { "seed": "data.seed", "volume_uuid": "1B7DB2B7-5ECA-4FDA-98AF-55DF8632E355", "volume_name": "Data",
+  "data": { "seed": "data.seed", "volume_uuid": "FB8BA685-FCF2-4528-8EA2-BDCFD1105A71", "volume_name": "Data",
             "case_sensitive": true, "store_gib": 16 },
   "kernel": "kernel.kc",
   "tweaks": { "hook": "userland/image-hook", "hook_sha256": "<64 hex>", "commit": "<git>", "dirty": false, "info": {} },
   "files": [
     { "path": "os.img", "size": 10359930880, "sha256": "<64 hex>", "role": "os", "format": "apfs-raw",
       "read_only": true, "hashes": "os.img.hashes",
-      "source": { "component": "OS", "member": "043-69487-662.dmg.aea", "decrypted": true },
+      "source": { "component": "OS", "member": "141-10103-223.dmg.aea", "decrypted": true },
       "apfs": { "container_offset": 0, "block_size": 4096, "block_count": 2529280, "container_uuid": "<UUID>",
                 "volumes": [ { "name": "...", "uuid": "<UUID>", "role": "system", "case_sensitive": true, "sealed": true } ] } },
     { "path": "os.img.hashes", "size": 316224, "sha256": "<64 hex>", "role": "hashes", "format": "oneios-hash-list-1" },
-    { "path": "trust/static.trustcache", "size": 92017, "sha256": "<64 hex>", "role": "trust-static", "format": "img4-payload",
-      "source": { "component": "StaticTrustCache", "member": "Firmware/043-69487-662.dmg.aea.trustcache", "decrypted": false } },
+    { "path": "trust/static.trustcache", "size": 93409, "sha256": "<64 hex>", "role": "trust-static", "format": "img4-payload",
+      "source": { "component": "StaticTrustCache", "member": "Firmware/141-10103-223.dmg.aea.trustcache", "decrypted": false } },
     { "path": "data.seed", "size": 1159813120, "sha256": "<64 hex>", "role": "data-seed", "format": "tar",
       "root": "/private/var", "entries": 18325, "added": 12, "changed": 5 }
   ]
@@ -258,7 +258,7 @@ How it maps to OneOS (`app-android/core/model/.../Images.kt`):
 | OneOS | OneiOS |
 | --- | --- |
 | `gzName`, `gzBytes`, `gzSha256`: the download | the `.tar.zst` and its `.sha256`. Built locally, so the app cannot have its hash built in; the `.sha256` file guards the copy to the phone |
-| `rawBytes`, `rawSha256`: the unpacked `system.raw`, checked again by root | every file's `size` and `sha256` in `manifest.json`. For the three images and the trust files these are the same for everyone who builds 24A446, so the app can also pin them in its table |
+| `rawBytes`, `rawSha256`: the unpacked `system.raw`, checked again by root | every file's `size` and `sha256` in `manifest.json`. For the three images and the trust files these are the same for everyone who builds 24B156, so the app can also pin them in its table |
 | `buildId`, `sdk`, `family` | `build`, `version`, `device`, `format` |
 | stage `$STAGE/system.raw` | stage `/data/local/tmp/oneios/image/` with the set's paths |
 | ext4 magic check at byte 1080 | `NXSB` at byte 32 of each image; `format` checked against the runtime's `image_formats` |

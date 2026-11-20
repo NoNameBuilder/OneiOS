@@ -67,11 +67,11 @@ class ProfileTest(Case):
             "schema": good.replace("schema = 1", "schema = 2"),
             "role": good.replace('role = "restore"', 'role = "bogus"'),
             "crc": good.replace('crc32 = "5dc2e60e"', 'crc32 = "5dc2e60"'),
-            "aea": good.replace("aea = true\nbuildmanifest_digest = \"c4", "buildmanifest_digest = \"c4"),
+            "aea": good.replace("aea = true\nbuildmanifest_digest = \"d7", "buildmanifest_digest = \"d7"),
             "format": good.replace("format = 1", "format = 9"),
             "name": good.replace('os = "os.img"', 'os = "../os.img"'),
             "twice": good.replace('app = "app.img"', 'app = "os.img"'),
-            "uuid": good.replace("1B7DB2B7-5ECA-4FDA-98AF-55DF8632E355", "not-a-uuid"),
+            "uuid": good.replace("FB8BA685-FCF2-4528-8EA2-BDCFD1105A71", "not-a-uuid"),
             "chunk": good.replace("chunk = 1048576", "chunk = 1000"),
         }
         for name, text in cases.items():

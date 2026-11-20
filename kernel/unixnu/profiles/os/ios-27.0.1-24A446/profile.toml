@@ -40,8 +40,6 @@ kernelcache_sha256 = "f6f31ac427bed2cdcf1353a6d84e3c2897354a86b2cc708f0e330a99be
 #   early_security_init (the AMFI wrapper's address), regression_policy, abi/original-classes.json.
 # And the xnu-13432 re-pin (24B156's kernel; the [os] xnu pins above are still xnu-12377's): xnu source and
 # revision, driverkit/trustcache tags, prelink roots.
-# TO PIN from kernelcache.release.v54 of the owner's IPSW (kernel/profiles/iphone18-2-ios27.md, "Kernelcache pins"):
-#   early_security_init (the AMFI wrapper's address), regression_policy, abi/original-classes.json.
 # Until they are here the prelink step refuses this profile; the native kernel (--skip-prelink) needs none of them.
 extra_args = ["--fileset-reference", "build/xnu/fileset-reference/mach.release.bcm2837.unstripped.noctf", "--allow-missing"]
 # The iPadOS profile's roots, without the two iPad-only audio/video families checked against the iPhone kernelcache yet.
