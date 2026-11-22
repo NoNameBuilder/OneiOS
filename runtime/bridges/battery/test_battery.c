@@ -235,6 +235,73 @@ static void test_probe(const char *root)
   remove(path);
 }
 
+// The base S25 (SM-S931B), as the PA1Q dtbo names the drivers: the max77775 fuel gauge is `battery`, the cps4038
+// wireless charger is `wireless`, and `dc` is sec-direct-charger's bypass supply (not in the default list). The gauge
+// reports microamps and leaves cycle_count empty, so the cycles come from battery_cycle, as on the S24 Ultra.
+static void test_s25(const char *parent)
+{
+  char root[320];
+  snprintf(root, sizeof root, "%s/s25", parent);
+  mkdir(root, 0755);
+  static const char *const supplies[] = { "usb", "ac", "wireless", "pogo", NULL };
+  write_node(root, "battery", "capacity", "63\n");
+  write_node(root, "battery", "status", "Discharging\n");      // on the pad, the phone still runs on the battery
+  write_node(root, "battery", "present", "1\n");
+  write_node(root, "battery", "temp", "302\n");
+  write_node(root, "battery", "voltage_now", "3821000\n");
+  write_node(root, "battery", "current_now", "-612000\n");     // microamps
+  write_node(root, "battery", "charge_full", "4850000\n");
+  write_node(root, "battery", "charge_full_design", "5000000\n");
+  write_node(root, "battery", "cycle_count", "");
+  write_node(root, "battery", "battery_cycle", "87\n");
+  write_node(root, "usb", "online", "0\n");
+  write_node(root, "ac", "online", "0\n");
+  write_node(root, "wireless", "online", "1\n");               // cps4038
+  write_node(root, "pogo", "online", "0\n");
+  write_node(root, "dc", "online", "1\n");                     // sec-direct-charger's bypass, not a cable
+
+  br_battery_raw r;
+  br_battery_units u = { 0 };
+  br_battery_sample s;
+  CHECK(br_battery_read_raw(root, supplies, &r) == 0);
+  CHECK(r.capacity == 63 && r.present == 1 && r.temp == 302 && r.cycles == 87 && r.plugged);
+  br_battery_map(&r, &u, 0, &s);
+  CHECK(s.percent == 63 && s.present && s.plugged && !s.charging && !s.full);
+  CHECK(s.temp_deci_c == 302 && s.voltage_mv == 3821 && s.current_ma == -612);       // the unit was learned
+  CHECK(s.full_mah == 4850 && s.design_mah == 5000 && s.minutes == 299);
+
+  // The pad now keeps up: Charging, and the gauge's current turns positive.
+  write_node(root, "battery", "status", "Charging\n");
+  write_node(root, "battery", "capacity", "64\n");
+  write_node(root, "battery", "current_now", "1850000\n");
+  CHECK(br_battery_read_raw(root, supplies, &r) == 0 && r.plugged);
+  br_battery_map(&r, &u, 0, &s);
+  CHECK(s.percent == 64 && s.charging && s.plugged && s.current_ma == 1850 && s.minutes == 56);
+
+  // Unplugged: wireless offline and dc still online. dc is not one of the supplies the bridge reads.
+  write_node(root, "battery", "status", "Discharging\n");
+  write_node(root, "wireless", "online", "0\n");
+  CHECK(br_battery_read_raw(root, supplies, &r) == 0 && !r.plugged);
+
+  // Failure paths: a gauge with no capacity (no battery), a value that is not a number, an absent supply node, and
+  // sensors that are off or out of range.
+  write_node(root, "battery", "temp", "9999\n");
+  CHECK(br_battery_read_raw(root, supplies, &r) == 0 && r.temp == 9999);             // mapped to unknown below
+  br_battery_map(&r, &u, 0, &s);
+  CHECK(s.temp_deci_c == BR_BATTERY_UNKNOWN);
+  char path[640];
+  snprintf(path, sizeof path, "%s/battery/capacity", root);
+  remove(path);
+  CHECK(br_battery_read_raw(root, supplies, &r) == -1);                              // no battery
+  write_node(root, "battery", "capacity", "not-a-number\n");
+  CHECK(br_battery_read_raw(root, supplies, &r) == -1);
+  write_node(root, "battery", "capacity", "64\n");
+  write_node(root, "battery", "temp", "302\n");
+  snprintf(path, sizeof path, "%s/wireless/online", root);
+  remove(path);
+  CHECK(br_battery_read_raw(root, supplies, &r) == 0 && !r.plugged);                 // a missing supply is offline
+}
+
 static struct { pthread_mutex_t lock; int count; br_battery_sample last; } heard = { PTHREAD_MUTEX_INITIALIZER, 0, { 0 } };
 
 static void listener(void *ctx, const br_battery_sample *s)
@@ -416,6 +483,7 @@ int main(void)
   test_changed();
   test_sysfs(root);
   test_probe(root);
+  test_s25(root);
   br_battery_options none = { .dir = "/nonexistent/power_supply" };
   CHECK(br_battery_open(&none) == NULL);
   test_session(root);

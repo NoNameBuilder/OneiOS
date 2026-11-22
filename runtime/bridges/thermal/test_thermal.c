@@ -278,6 +278,55 @@ static void test_sysfs(void)
   CHECK(br_thermal_find(empty, &s) == -1);
 }
 
+// The base S25's PA1Q tree: five sec-thermistors (ap, cf, lp, pa, wf), the max77775's battery temp and, when the
+// charger reports it, battery/lrp. The bridge reads ap for the board, battery for the cell, and lrp for the case; the
+// other four thermistors are present but are not readings it uses. Failure paths: an off or out-of-range sensor is
+// missing, and with no ap, battery or lrp the bridge stays off.
+static void test_s25_sensors(void)
+{
+  char saved[sizeof base], root[sizeof base + 8];
+  snprintf(saved, sizeof saved, "%s", base);
+  snprintf(root, sizeof root, "%s/s25", saved);
+  snprintf(base, sizeof base, "%.*s", (int)sizeof base - 1, root);
+  mkdir(base, 0755);
+  put("/sys/class/sec/sec-ap-thermistor/temperature", "338\n");
+  put("/sys/class/sec/sec-cf-thermistor/temperature", "320\n");
+  put("/sys/class/sec/sec-lp-thermistor/temperature", "345\n");
+  put("/sys/class/sec/sec-pa-thermistor/temperature", "360\n");
+  put("/sys/class/sec/sec-wf-thermistor/temperature", "315\n");
+  put("/sys/class/power_supply/battery/temp", "305\n");
+
+  br_thermal_sensors s;
+  br_thermal_raw r;
+  CHECK(br_thermal_find(base, &s) == 0);
+  br_thermal_read(&s, &r);
+  CHECK(r.ap == 338 && r.battery == 305 && r.lrp == BR_THERMAL_UNKNOWN && r.skin == 338);
+
+  // The gauge's case sensor wins over the board thermistor, as on the S24 Ultra.
+  put("/sys/class/power_supply/battery/lrp", "347\n");
+  br_thermal_read(&s, &r);
+  CHECK(r.lrp == 347 && r.skin == 347);
+
+  // An off sensor (-273.0 C) or an out-of-range one is missing, so the skin falls back to ap.
+  put("/sys/class/power_supply/battery/lrp", "-2730\n");
+  br_thermal_read(&s, &r);
+  CHECK(r.lrp == BR_THERMAL_UNKNOWN && r.skin == 338);
+  put("/sys/class/power_supply/battery/lrp", "4000\n");
+  br_thermal_read(&s, &r);
+  CHECK(r.lrp == BR_THERMAL_UNKNOWN && r.skin == 338);
+
+  // The other thermistors do not become the case, and do not keep the bridge on without ap/battery/lrp.
+  put("/sys/class/sec/sec-lp-thermistor/temperature", "600\n");
+  put("/sys/class/sec/sec-pa-thermistor/temperature", "610\n");
+  br_thermal_read(&s, &r);
+  CHECK(r.ap == 338 && r.skin == 338);
+  put("/sys/class/sec/sec-ap-thermistor/temperature", "cold\n");
+  put("/sys/class/power_supply/battery/temp", "-2730\n");
+  CHECK(br_thermal_find(base, &s) == -1);
+
+  snprintf(base, sizeof base, "%s", saved);
+}
+
 static struct { int caps, reports; unsigned last_cap, last_level; } seen;
 static void on_cap(void *ctx, const br_thermal_state *st) { (void)ctx; __atomic_fetch_add(&seen.caps, 1, __ATOMIC_RELAXED); seen.last_cap = st->cap; }
 static void on_report(void *ctx, const br_thermal_state *st) { (void)ctx; __atomic_fetch_add(&seen.reports, 1, __ATOMIC_RELAXED); seen.last_level = st->level; }
@@ -442,6 +491,7 @@ int main(void)
   test_rules();
   test_masks();
   test_sysfs();
+  test_s25_sensors();
   test_worker();
   test_load();
   test_hal();

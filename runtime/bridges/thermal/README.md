@@ -181,7 +181,10 @@ reset stops the reports; the reads go on.
 
 `make -C runtime/bridges/thermal test` (Linux; on a Mac in the container: `runtime/host-tests.sh`, part `bridges`): the
 limits parser, each rule and its hysteresis, the steps' CPUs and pins on the S24 Ultra's topology and on a one-kind host, the
-sysfs reader on a fake tree (an off zone, no `lrp`), the worker's two listeners. 88 checks with the merge of hw-backend (79 on fix-ram-locked's own, 2026-11-15: the step at the case or the cell at 50 C only, none at "heavy" or for the SoC, its hysteresis, the worker's cap listener at 50 C).
+sysfs reader on a fake tree (an off zone, no `lrp`), the base S25's five thermistors (ap, cf, lp, pa, wf; only ap is a
+reading, `lrp` wins for the case, an off sensor is missing), the worker's two listeners. 106 checks with the merge of
+hw-backend (79 on fix-ram-locked's own, 2026-11-15: the step at the case or the cell at 50 C only, none at "heavy" or for
+the SoC, its hysteresis, the worker's cap listener at 50 C).
 
 ## On the phone
 

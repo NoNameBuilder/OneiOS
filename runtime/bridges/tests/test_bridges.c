@@ -921,6 +921,20 @@ static void test_bridge_battery(const char *tmp)
   memcpy(&state, rx[2] + 8, sizeof state);
   CHECK((state.flags & (OB_BATTERY_PLUGGED | OB_BATTERY_CHARGING)) == (OB_BATTERY_PLUGGED | OB_BATTERY_CHARGING) && state.current_ma == 500);
 
+  // The base S25 on a wireless pad: the cps4038's `wireless` supply is online, USB is not, and the pad does not keep
+  // up with the phone. Plugged stays true, charging turns false, and the current is negative again.
+  char wireless[440];
+  snprintf(wireless, sizeof wireless, "%s/wireless", root);
+  mkdir(wireless, 0755);
+  write_node(wireless, "online", "1\n");
+  write_node(usb, "online", "0\n");
+  write_node(dir, "status", "Discharging\n");
+  got = -1;
+  for (int i = 0; i < 400 && got < 0; i++) { got = reap(&g, OB_QUEUE_RX); if (got < 0) usleep(5000); }
+  CHECK(got == 8 + (int)sizeof(struct ob_battery_state));
+  memcpy(&state, rx[3] + 8, sizeof state);
+  CHECK((state.flags & OB_BATTERY_PLUGGED) && !(state.flags & OB_BATTERY_CHARGING) && state.current_ma == -500);
+
   // A reset stops the updates: the guest is gone, nothing queues for it.
   w32(&g, 0x70, 0);
   write_node(dir, "capacity", "43\n");

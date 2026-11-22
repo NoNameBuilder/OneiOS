@@ -11,7 +11,8 @@ screen (`drivers/battery/README.md`, "The charging chime"). The nodes were also 
 (`docs/hardware.md` 7c) and are a test case here; `batteryctl` below has not run there.
 
 ```sh
-make test          # 65 checks: the sysfs parse, the mapping, the change test, sessions on a fake sysfs (one on the charger)
+make test          # 96 checks: the sysfs parse, the mapping, the change test, sessions on a fake sysfs (one on the
+                   # charger), and the base S25's tree (max77775 gauge + cps4038 `wireless`, microamps, battery_cycle)
 make               # build/android/batteryctl
 ```
 
