@@ -9,8 +9,9 @@ S24 Ultra; the base S25 has not been run on a phone yet. The exact device record
 
 **Status: source-level port done and host-tested; no on-device run yet.** The S25 host row, the Oryon CPU rule, the
 Adreno 830 fence default and the PA1Q panel/touch/haptics/thermistor record are in. `runtime/host-tests.sh` passes
-9/9, and the S25 harnesses (`run-harnesses.sh`, the A830 KGSL stand-in, the bridge fixtures) pass. The phone itself
-is unavailable (adb showed a Galaxy A71, not the S25), so the probe and first session are still pending.
+9/9, and the S25 harnesses (the device checks, the A830 KGSL stand-in and the bridge fixtures, kept in the working
+copy) pass. The phone itself is unavailable (adb showed a Galaxy A71, not the S25), so the probe and first session
+are still pending.
 
 OneOS's guests are Android systems that run unchanged on One UI's Linux kernel. iOS's userland needs Apple's kernel (XNU), so OneiOS runs a source-built XNU **as a process on One UI's kernel** (`runtime/xnuhost`): iOS's processes are Linux processes whose system calls and faults go to it. How it fits together: [docs/architecture.md](docs/architecture.md).
 
