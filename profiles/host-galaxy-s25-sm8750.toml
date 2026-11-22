@@ -1,0 +1,60 @@
+# Host profile for OneiOS on the base Galaxy S25 (SM-S931B, pa1q, SM8750). Not Apple's IPSW profile.
+# A record for the port docs; no code reads it. What xnuhost does differently on this phone comes from its row in
+# runtime/bridges/hw/host_device.c (galaxy-s25, the source of truth: docs/hardware.md 7h). The guest image stays
+# profiles/ios-27.0.1-iPhone18,2.toml.
+#
+# Facts below marked [F] are read from the shipped S931BXXUCDZIF boot/vendor_boot images (2026-09-19), not from the
+# running phone; the phone probe (tools/probe/s25-probe.sh) settles everything still [U].
+
+[host]
+label = "Galaxy S25"
+model_prefix = "SM-S931"
+codename = "pa1q"
+soc = "SM8750"
+platform = "sun"  # [F] qcom,sun in the vendor_boot DT compatible list; ro.board.platform still to read
+oneos_profile_id = "s-8750"
+form = "bar"
+
+[firmware]
+# The build this record was checked against.
+build = "S931BXXUCDZIF"
+region = "EUX"
+android = "17 (OS17)"
+one_ui = "9"
+kernel = "6.6.127-android15-8-p33f4ffe-abogkiS931BXXUCDZIF-4k"
+kernel_source = "not on Samsung OSRC yet; newest published is S931BXXSBCZG3 (6.6.98)"
+
+[cpu]
+# Snapdragon 8 Elite: 8x Oryon (2 prime + 6 performance, implementer 0x51), no little cores.
+# The CPU bridge's Oryon rule (runtime/bridges/cpu/topology.c) lends the slowest cores as E vCPUs.
+nvcpu_default = 8
+note = "Re-read sysfs on device; capacities and frequencies are still [U] until cpu.txt."
+
+[gpu]
+chip_name = "Adreno 830"
+kgsl_device = "/dev/kgsl-3d0"
+path = "virtio-gpu 3D -> drm2kgsl -> KGSL (same stack as S24 Ultra)"
+status = "unverified_on_sm8750_base"
+note = "S25 Ultra measured chip 0x44050000, gpu_id 6850, 192 GiB GPU VA; the base S25 is [I] the same until gpuctl."
+
+[display]
+# [F] the fork's probe: one 1080 x 2340 panel at 120 Hz (FHD+, 6.2 in, about 416 ppi).
+native_resolution = "1080x2340"
+refresh_hz = 120
+fallback = "1080x2340@120"
+oneios_display = "oneios-display + surfaceflinger layer"
+note = "A panel that the display helper or DRM reports still wins over the fallback; the UI scale is 3 (360x780 points)."
+
+[kernel]
+page_size = 4096
+va_bits = 39
+ptr_auth = true
+mte = true
+udmabuf = true
+dmabuf_heaps = true
+binderfs = true
+selinux = true
+
+[switch]
+stage = "/data/local/tmp/oneios"
+session_abi = 1
