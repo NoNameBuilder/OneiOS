@@ -471,7 +471,11 @@ are descriptors of xnuhost and go with it at SIGKILL; drm2kgsl's fence threads a
   row by one call (64 + 8 MiB at the right offsets), 1100 pages two (1024 + 76), a blob shorter than its segments
   is bound only to its size, one longer is refused with nothing left imported, a second context imports both chunks
   and binds them at its own address on `GEM_SET_IOVA`, and at the end every chunk is unbound and freed (only the
-  VBO is left). 26 checks. It models KGSL from its source; it is not KGSL.
+  VBO is left). A third profile is the base S25's Adreno 830 (chip 0x44050000, gpu_id 6850, 12 MiB gmem, 192 GiB of
+  VA): the 256 GiB rung then leaves no import room and the renderer takes the 128 GiB one, and a GEM_SUBMIT on a queue
+  shows the default is the WAITTIMESTAMP_CTXTID path (no TIMESTAMP_EVENT) while `NCTX_NO_WAITTS` asks for
+  TIMESTAMP_EVENT(FENCE) (patch 0007's A/B switch). 36 checks in the memory scenarios (3 + 23 + 10). It models KGSL
+  from its source; it is not KGSL.
 - `tests/test_gpu_leaks.c` (`build/host/test_gpu_leaks`, LeakSanitizer on): the same renderer and stand-in through 30 cycles
   each of 72 MiB, 16 KiB and 1100-page context blobs (create, upload, attach to a second context, its own GPU address there,
   detach, unref), display blobs in two contexts, contexts destroyed with their own, others' and display resources attached,

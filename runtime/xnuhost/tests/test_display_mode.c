@@ -167,6 +167,8 @@ int main(void)
   CASE("a session takes the helper's report", "takeover", 0, 0, 0, 1440, 3120, 120, 5.0);
   report_w = 1260; report_h = 2800; report_hz = 90;                      // not the default: only the report can give this
   CASE("another panel's report is the guest's mode", "takeover", 0, 0, 0, 1260, 2800, 90, 5.0);
+  report_w = 1080; report_h = 2340; report_hz = 120;                    // the base S25's PA1 panel
+  CASE("the S25's panel report is the guest's mode", "takeover", 0, 0, 0, 1080, 2340, 120, 5.0);
   report_w = 1440; report_h = 3120; report_hz = 120;
   CASE("a configured mode wins, without waiting", "takeover", 1080, 2340, 60, 1080, 2340, 60, 1.0);
   CASE("a bench run assumes the S24 Ultra's, without waiting", "bench", 0, 0, 0, 1440, 3120, 120, 1.0);

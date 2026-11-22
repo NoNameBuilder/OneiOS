@@ -38,12 +38,21 @@ status = "unverified_on_sm8750_base"
 note = "S25 Ultra measured chip 0x44050000, gpu_id 6850, 192 GiB GPU VA; the base S25 is [I] the same until gpuctl."
 
 [display]
-# [F] the fork's probe: one 1080 x 2340 panel at 120 Hz (FHD+, 6.2 in, about 416 ppi).
+# [F] the shipped dtbo: PA1_S6E3FAE_AMB616FL03, 1080x2340, modes at 120/80/60/48/30/24/10 Hz (the fork's probe
+# found the same 1080 x 2340 panel: FHD+, 6.2 in, about 416 ppi).
 native_resolution = "1080x2340"
 refresh_hz = 120
 fallback = "1080x2340@120"
 oneios_display = "oneios-display + surfaceflinger layer"
 note = "A panel that the display helper or DRM reports still wins over the fallback; the UI scale is 3 (360x780 points)."
+
+[input]
+# [F] the shipped dtbo; the runtime device names and the touch axes are [U] until the probe (input_*.txt).
+touch = "stm,stm_ts_spi (plus samsung,ss_touch)"
+haptics = "cirrus,cs40l26a"
+thermistors = "sec-ap, sec-cf, sec-lp, sec-pa, sec-wf"
+fuel_gauge = "max77775"
+wireless_charging = "cps4038"
 
 [kernel]
 page_size = 4096

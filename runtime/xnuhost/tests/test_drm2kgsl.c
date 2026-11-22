@@ -35,6 +35,11 @@
 // ---- the stand-in -----------------------------------------------------------------------------------------------------
 #define VA_BASE 0x4000000000ull
 #define VA_END  0x8000000000ull
+// The GPU the stand-in describes. The S25's Adreno 830 reports chip 0x44050000, gpu_id 6850, 12 MiB gmem and 192 GiB
+// of GPU VA (the S25 Ultra's gpuctl); its VA range is modelled as the same base, 192 GiB long.
+typedef struct { uint32_t chip_id, gpu_id, gmem; uint64_t va_base, va_end; } kgsl_profile;
+static kgsl_profile profile = { .chip_id = 0x43051400, .gpu_id = 6770, .gmem = 3072u << 10, .va_base = VA_BASE, .va_end = VA_END };
+static void use_a830(void) { profile = (kgsl_profile){ .chip_id = 0x44050000, .gpu_id = 6850, .gmem = 12288u << 10, .va_base = VA_BASE, .va_end = VA_BASE + (192ull << 30) }; }
 typedef struct { uint32_t id; uint64_t base, size, flags; bool vbo; } object;
 static object objects[256];
 static unsigned nobjects, next_id = 1, imports, frees;
@@ -43,6 +48,8 @@ static bool no_io_coherence;
 typedef struct { uint32_t vbo, child, op; uint64_t target, length, child_offset; unsigned call; } bound;
 static bound binds[256];
 static unsigned nbinds, bind_calls;
+// GPU_COMMANDs the renderer sent and TIMESTAMP_EVENT(FENCE)s it asked for (patch 0007's two paths).
+static unsigned gpu_commands, fence_events;
 // Queues made (DRAWCTXT_CREATE's flags; queue i + 1 is id i + 1) and power constraints set (patch 0008).
 static uint32_t queue_flags[64];
 static unsigned nqueues;
@@ -58,13 +65,13 @@ static object *object_find(uint32_t id)
 
 static int object_new(uint64_t size, bool vbo, uint32_t *id)
 {
-  uint64_t at = VA_BASE;
+  uint64_t at = profile.va_base;
   for (bool moved = true; moved;) {                    // first fit
     moved = false;
     for (unsigned i = 0; i < nobjects; i++)
       if (at < objects[i].base + objects[i].size && objects[i].base < at + size) { at = objects[i].base + objects[i].size; moved = true; }
   }
-  if (!size || at + size > VA_END || nobjects == 256) { errno = ENOMEM; return -1; }
+  if (!size || at + size > profile.va_end || nobjects == 256) { errno = ENOMEM; return -1; }
   objects[nobjects++] = (object){ .id = *id = next_id++, .base = at, .size = size, .vbo = vbo };
   return 0;
 }
@@ -75,7 +82,7 @@ static int fake_kgsl(unsigned long request, void *arg)
   case IOCTL_KGSL_DEVICE_GETPROPERTY: {
     struct kgsl_device_getproperty *p = arg;
     if (p->type != KGSL_PROP_DEVICE_INFO || p->sizebytes < sizeof(struct kgsl_devinfo)) { errno = EINVAL; return -1; }
-    struct kgsl_devinfo info = { .device_id = 1, .chip_id = 0x43051400, .mmu_enabled = 1, .gpu_id = 6770, .gmem_sizebytes = 3072u << 10 };
+    struct kgsl_devinfo info = { .device_id = 1, .chip_id = profile.chip_id, .mmu_enabled = 1, .gpu_id = profile.gpu_id, .gmem_sizebytes = profile.gmem };
     memcpy(p->value, &info, sizeof info);
     return 0;
   }
@@ -144,6 +151,20 @@ static int fake_kgsl(unsigned long request, void *arg)
     return 0;
   }
   case IOCTL_KGSL_DRAWCTXT_DESTROY: return 0;
+  // The submit path (patch 0007): GPU_COMMAND always; the FENCE path then asks for a sync_file. The timestamp path
+  // asks for none, and its wait ioctl reports the timestamp passed.
+  case IOCTL_KGSL_GPU_COMMAND: gpu_commands++; return 0;
+  case IOCTL_KGSL_DEVICE_WAITTIMESTAMP_CTXTID: return 0;
+  case IOCTL_KGSL_TIMESTAMP_EVENT: {
+    struct kgsl_timestamp_event *e = arg;
+    if (e->type != KGSL_TIMESTAMP_EVENT_FENCE || !e->priv) { errno = EINVAL; return -1; }
+    struct kgsl_timestamp_event_fence *f = (void *)(uintptr_t)e->priv;
+    int fd = (int)syscall(SYS_eventfd2, 0, 0);
+    if (fd < 0) return -1;
+    f->fence_fd = fd;
+    fence_events++;
+    return 0;
+  }
   default: errno = ENOTTY; return -1;
   }
 }
@@ -432,6 +453,57 @@ static int classes(void)
   return 0;
 }
 
+// One GEM_SUBMIT on a queue: the guest's resource (bos[0].handle) as the command buffer. MSM_SUBMIT_BO_READ and
+// MSM_SUBMIT_CMD_BUF are both 1.
+static int submit_one(context *c, uint32_t queue, uint32_t res, uint32_t fence)
+{
+  // The wire layouts of drm_msm_gem_submit_bo and drm_msm_gem_submit_cmd (msm_drm.h); this file carries its own
+  // ccmd_req and msm_shmem for the same reason, so it does not include that header.
+  struct submit_bo { uint32_t flags, handle; uint64_t presumed; };
+  struct submit_cmd { uint32_t type, submit_idx, submit_offset, size, pad, nr_relocs; uint64_t relocs; };
+  struct { ccmd_req hdr; uint32_t flags, queue_id, nr_bos, nr_cmds, fence; } __attribute__((packed, aligned(4))) sub =
+    { .hdr.cmd = 7, .queue_id = queue, .nr_bos = 1, .nr_cmds = 1, .fence = fence };   // MSM_CCMD_GEM_SUBMIT
+  struct submit_bo bo = { .flags = 1, .handle = res };
+  struct submit_cmd cmd = { .type = 1, .submit_idx = 0, .size = 4 };
+  uint8_t buf[sizeof sub + sizeof bo + sizeof cmd];
+  memcpy(buf, &sub, sizeof sub);
+  memcpy(buf + sizeof sub, &bo, sizeof bo);
+  memcpy(buf + sizeof sub + sizeof bo, &cmd, sizeof cmd);
+  return ccmd(c, buf, sizeof buf);
+}
+
+// The base S25's Adreno 830: 192 GiB of GPU VA (the S25 Ultra's gpuctl). A 256 GiB VBO leaves no import room, so the
+// renderer must take the 128 GiB rung. The A830 default is WAITTIMESTAMP_CTXTID (patch 0007, the FENCE path
+// segfaulted userspace on this chip); NCTX_NO_WAITTS is the A/B switch back to TIMESTAMP_EVENT(FENCE).
+static int a830(void)
+{
+  use_a830();
+  CHECK(renderer());
+  CHECK(va_start == VA_BASE && va_size == (128ull << 30));
+  context c;
+  CHECK(context_open(&c, 1, 1));
+  uint32_t q = queue_new(&c, 0);
+  CHECK(q != 0);
+  xh_gpu_entry pages = { .addr = RAM_PHYS + (1u << 20), .length = 0x4000 };
+  CHECK(guest_buffer(&c, 2, 1, c.slice + (16u << 20), 0x4000, &pages, 1) == 0);
+  unsigned events = fence_events, commands = gpu_commands;
+  CHECK(submit_one(&c, q, 2, 1) == 0 && gpu_commands == commands + 1 && fence_events == events);
+  gpu->unref(gpu, 2);
+  gpu->ctx_destroy(gpu, 1);
+
+  setenv("NCTX_NO_WAITTS", "1", 1);
+  CHECK(context_open(&c, 2, 11));
+  q = queue_new(&c, 0);
+  CHECK(q != 0);
+  CHECK(guest_buffer(&c, 3, 2, c.slice + (16u << 20), 0x4000, &pages, 1) == 0);
+  events = fence_events; commands = gpu_commands;
+  CHECK(submit_one(&c, q, 3, 1) == 0 && gpu_commands == commands + 1 && fence_events == events + 1);
+  unsetenv("NCTX_NO_WAITTS");
+  gpu->unref(gpu, 3);
+  gpu->ctx_destroy(gpu, 2);
+  return 0;
+}
+
 // A widget renderer that the guest calls non-UI (background by its role) is not background once the render server makes a
 // blob over the same guest pages as one of its blobs (it reads the surface): its next queue is the default's, with no
 // lowest level; a later hint keeps it so. Two contexts of one process sharing pages, or a blob over other pages, change nothing.
@@ -498,6 +570,7 @@ int main(void)
   close(node);
   bool ok = scenario("a VBO over the whole address range (the phone, runtime 0.1.3)", whole_range);
   ok = scenario("a VBO that leaves room; buffers past udmabuf's limits", with_room) && ok;
+  ok = scenario("an Adreno 830: 192 GiB VA, the 128 GiB rung, the timestamp fence default (patch 0007)", a830) && ok;
   ok = scenario("each import's IO coherence read back (patch 0007)", coherence) && ok;
   ok = scenario("queue priorities by the owner's class (patch 0008)", classes) && ok;
   ok = scenario("a context whose surfaces the render server reads is not background", shown_surfaces) && ok;
