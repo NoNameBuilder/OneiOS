@@ -3,8 +3,8 @@
 # runtime/bridges/hw/host_device.c (galaxy-s25, the source of truth: docs/hardware.md). The guest image stays
 # profiles/ios-27.0.1-iPhone18,2.toml.
 #
-# Facts below marked [F] are read from the shipped S931BXXUCDZIF boot/vendor_boot images (2026-09-19), not from the
-# running phone; the phone probe (tools/probe/s25-probe.sh) settles everything still [U].
+# Facts below marked [F] are read from the shipped S931BXXUCDZIF boot/vendor_boot images (firmware 2026-09-20),
+# not from the running phone; the phone probe (tools/probe/s25-probe.sh) settles everything still [U].
 
 [host]
 label = "Galaxy S25"
