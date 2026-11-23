@@ -1332,6 +1332,14 @@ own"); the symbols come from the SDK's `.tbd`, and the shared-cache addresses st
 `hooks/<product>-<build>.json`. The deployment target follows the SDK the runner has (27.0 on Xcode 27, else the SDK's
 own). Manual run; the artifact holds the bundle, its `.gpuaddon`, the build record, the check and the log.
 
+A bundle is not per-host-phone: `roottweak` places it only when its `oneios-target` is the *guest's* `<product> <build>`
+(`tools/oneios-tool/crates/oneios-tweaks/src/tweaks.rs`), the same `iPhone18,2 24A446` for every Android phone running
+this image. So an S24 Ultra bundle is accepted on the S25 by that check; what decides whether it drives the S25's
+Adreno 830 is the Mesa pin inside its `libvulkan_freedreno.dylib`, not the host. The pin this tree builds
+(`cecc0e9`) names the 830 (chip id `0xffff44050000`, KGSL `0x44050001`, the a8xx device info), so a bundle built from
+it is; one built before that table entry is not. The check on the actual binary is `strings libvulkan_freedreno.dylib
+| grep 'Adreno (TM) 830'` beside `ios macho-check`; the hardware itself is `gpuctl` on the phone.
+
 **What it builds**, all for `arm64e-apple-ios27.0`:
 
 | Piece | Source | Notes |
