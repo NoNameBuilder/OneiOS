@@ -1019,6 +1019,17 @@ pool's first blocks are in the 4-32 MiB columns too.)
 | the kernel (`DroidVMVirtioGpu3D.cpp`) | a closed blob while the client still has fenced work made before the close ("deferred", "waiting") | at the client's next method or fence wait once that work is done (`reapPending`); every blob at the connection's close |
 | xnuhost (`virtio_gpu.rs`, `gpu3d_kgsl.rs`, drm2kgsl) | the resource, its udmabufs and KGSL's import of them | at `RESOURCE_UNREF`: detached from every context (drm2kgsl unbinds and frees the GPU object), the chunks closed |
 
+**Every blob is wired guest RAM, and the holders let go only when they hear of memory pressure (2026-11-23 22:19,
+hosted 0097).** The session's `oneios-mem` wired count (3195 of 5302 MiB) followed `oneios-gpu-memory`'s own + wired
+bytes line for line (2044 + 629 MiB at the end). That is the GPU memory of every client, not the render server's alone
+(backboardd 917+300, WebKit's GPU process 475+267, the widget renderer 179, MapKit 115 MiB, ...): about 2.0-2.7 GiB.
+About 0.5 GiB was the rest. Every holder in the table above gives its memory back at a pressure rise. XNU tells
+processes of a rise one at a time, 250 ms apart, the least important first, so the GPU clients came last in a round of
+40-75 s, and a level that fell back could end the round before them. Hosted 0097 names the wired owners every 60 s
+(`oneios-wired`), says who heard of each rise (`oneios-pressure`) and, with `oneios-pressure-big=512` (docs/switches.md),
+notifies a process of 512 MiB or more first. A 16 MiB pooled block (`METAL2VULKAN_BLOCK_MIB`) was not tried again: the
+plug-in's own note says it hung the render server's GPU context on 3 of 5 app cycles on the iPadOS guest.
+
 So "blobs +N closed +M" with N far above M (the phone, 2026-11-12 23:45: backboardd +182, closed +17 in 10 s) means the
 client has not closed them: the holder is in the process (Core Animation, NativeMetal, metal2vulkan or Turnip's cache, the
 last bounded at 112 MiB), not the kernel or the host. Two lines per client name which of its memory it is (2026-11-13; the

@@ -2033,20 +2033,61 @@ of 2026-11-23 20:23 (`out/session-logs/2026-11-23-mac-s2023/`) the top of it was
 session), with every vCPU busy. The high group runs every `thread_call_allocate()`d callout: Mach timers (`mk_timer`),
 BSD `timeout()`, IOKit power management, the kexts' own calls. Nothing named the one that used the CPU.
 
-**What.** `thread_call_thread` (`osfmk/kern/thread_call.c`) takes the thread's CPU time (`recount_current_thread_time_mach`)
-and the wall time around each callout and adds them to the callout function's slot (256, open addressing on the unslid
-address, lock-free counters; `table full` in the line when a function found no slot). The oneios-perf report prints,
+**What.** `thread_call_thread` (`osfmk/kern/thread_call.c`) takes the thread's CPU time (`recount_current_thread_time_mach`,
+read with interrupts masked: `hosted_tc_cpu_now`) and the wall time around each callout and adds them to the callout
+function's slot (256, open addressing on the unslid address, lock-free counters; `table full` in the line when a function found no slot). The oneios-perf report prints,
 after 0051's line:
 
 ```text
 oneios-perf:   thread calls: 91234 callouts, 26553870 us of CPU (88% of a vCPU), 30 functions; most: 0xfffffff007a1b2c4 81234 x 310 us (wall 320, max 9000) ...
+oneios-perf:   thread calls, more: 0xfffffff00ac32420 21 x 124 us (wall 145, max 882) ...
 ```
 
-The 8 functions with the most CPU in the period: the count, the mean CPU, the mean wall (above the CPU: the callout
+Each line stays under 240 characters (the console copies a printf through a 256-byte buffer); the functions that do not
+fit go on `thread calls, more:` lines, 2 or 3 lines in all. The 8 functions with the most CPU in the period: the count, the mean CPU, the mean wall (above the CPU: the callout
 blocks), the longest callout's CPU. Name an address with `oneios-tool sym kernel --kc kernel.kc --kernel xnu.macho
---slide 0 ADDR` (the address is unslid). Cost: two clock reads and four atomic adds per callout. Tested: `git apply
---check` on the patched tree; built and prelinked with the series (below). **Watch in its first boot:** the line every
-30 s; the function behind `thread call high #2`, then a fix of that cause.
+--slide 0 ADDR` (the address is unslid). Cost: two clock reads, two masks of interrupts (a store to the hosted CPU's
+word each, no host call) and four atomic adds per callout. **Watch in its first boot:** the line every 30 s; the
+function behind `thread call high #2`, then a fix of that cause.
+
+**The panic of its first version (fixed 2026-11-23, fix/tc-recount-ints).** The first 0095 read the CPU time right
+after `enable_ints_and_unlock()`, and `recount_current_thread_time_mach()` asserts interrupts off (recount.c:753: an
+interrupt between its read of the thread's total and of the CPU's last snapshot makes the sum wrong). The phone,
+2026-11-23 22:16 (kernel.kc `72a3e56f`, the integration build, takeover mode), 7 s after xnuhost's start, on cpu0:
+`panic(cpu 0 caller 0xfffffff00b4e2bf8): recount.c:753 Assertion failed: ml_get_interrupts_enabled() == FALSE`;
+`oneios-tool sym kernel --return` on its frames: `recount_current_thread_time_mach+0x194 (recount.c:753)` called from
+`thread_call_thread+0x210 (thread_call.c:1921)`, 0095's first read. The same kernel under qemu-aarch64 (docs/building.md
+section 5) panicked the same way 1.8 s into the boot. The fix: `hosted_tc_cpu_now()` masks, reads and restores, as
+0066's `hosted_fr_cpu_now()` does. `kernel/tests/host.sh` now refuses an added line of any hosted patch that calls one
+of recount's current-thread readers (`_time_mach`, `_times`, `_usage`, `_perf_level_usage`, `_energy_nj`) without a
+mask in the 4 lines before it or `interrupts off` written on the line; it catches the first 0095.
+
+**The second fault, behind the first.** With the read masked, the same qemu boot stopped 1.6 s in: `PAC failure from
+kernel with IA key while authing x16` at `thread_call_thread+0x288` (`hosted_tc_count`, inlined). The first 0095 took
+the function's address with `ptrauth_strip(func, ptrauth_key_function_pointer)` on the typed `thread_call_func_t`:
+clang strips it (`xpaci`), then turns the result into an integer by authenticating it with the type's discriminator
+(`autia x16` with `0x73d8`), and a stripped pointer never authenticates. The fix: `ptrauth_strip(ptrauth_nop_cast(void *,
+func), ...)`, the raw bits then a strip; one `xpaci` and no authentication (the host clang with the kernel's PAC flags
+shows both code sequences). `kernel/tests/host.sh` also refuses an added `ptrauth_strip(..., ptrauth_key_function_pointer)`
+whose argument is neither `(void *)` nor `ptrauth_nop_cast(`; it catches the first 0095 too.
+
+**The cut line.** With both fixed, the qemu boot ran 25 minutes without a panic, and 25 of its 49 `thread calls:` lines
+ended at character 255 with no newline, the next `oneios-perf:   rpc:` line run into them. The console copies a
+printf through `SERIAL_CONS_BUF_SIZE` (256 bytes, osfmk/console/serial_protos.h), and the first 0095 printed up to
+900. Now the summary and the functions go out on lines under 240 characters (`thread calls, more:` for the rest).
+
+Tested (2026-11-23, the Linux PC): `kernel/tests/host.sh` (10 passed; both new checks fail on the first 0095);
+`kernel/build-hosted.sh` with `HOSTED_OUT=tcrec ONEIOS_CRYPTO=original` (`releasable`) and `oneios-tool prelink
+build` (`stubs: 666 good, 0 bad`; `audit: f4aa58e63c554784: 2711 paired, 93 functions on the stub, 9 data unpaired; 0
+failures`). Under qemu-aarch64 (docs/building.md section 5's command, a new Data volume, 8 vCPUs, 4 GiB, the runtime
+of the integration build): kernel.kc `72a3e56f` panics at recount.c:753 1.8 s in; `39bbcfb1` (the mask only) at the
+PAC failure 1.6 s in; `863495f2` (both) runs 25 minutes with no panic, its lines cut; `f4aa58e6` (all three) runs 25
+minutes with no panic: `hello, launchd` at +186 s, SpringBoard at +217 s, 49 `thread calls:` lines and 94 `thread
+calls, more:` lines, none over 254 characters. The busiest callouts there, named with `oneios-tool sym kernel --slide
+0`: `workq_add_new_threads_call` (top in 36 of 49 periods), `IOTimerEventSource::timeoutAndRelease`,
+`delayed_event_delivery`, `filt_timerexpire`; at most 2% of a vCPU. Logs: `out/session-logs/2026-11-23-pc-tcrec/`.
+Not tested: a phone boot (the takeover mode, the high group's 88% of a vCPU). Seen and not fixed: 0051's `kernel_task:`
+line is cut at 255 characters too when its threads' names are long, and the next line (0095's) then runs onto it.
 
 ## 0096-telemetry-jobs-switch.patch (integration-switches, 2026-11-23)
 
@@ -2064,3 +2105,69 @@ is 3.5 KiB of its 4 KiB buffer; a cut list says so (`the enable list is cut at 4
 
 Tested: `git apply --check` after 0095 on the patched tree; built and prelinked with the series (docs/switches.md has
 the build). Not booted with `oneios-telemetry-jobs=1`.
+
+## 0097-wired-owners-pressure-order.patch (fix/wired-names, 2026-11-23)
+
+**Why.** The session of 2026-11-23 22:19-22:30 (integration build 74c56ef, kernel `b5f5378a`;
+`out/session-logs/2026-11-23-mac-int/live2.log`) had `oneios-mem: free 25 MiB ... wired 3195` of 5302 MiB, the pageout
+scan at 7-17 s of CPU in each 30 s, and no line naming who held the wired pages. Read from that log: the wired count
+follows the GPU's blob totals, line for line (`oneios-gpu-memory: ... own 2044 (2044 MiB), wired 629`). At 97907 s
+wired was 3133 MiB with 2172 + 370 MiB of blobs, at 98040 s 3195 with 2044 + 629. Every blob is wired guest RAM: the
+gpu archive's own pages are `prepare()`d in the client's task until the blob goes, and an imported range is wired the
+same way. So about 2.0-2.7 GiB of the 3.2 GiB was GPU memory of every client (backboardd 917+300, WebKit's GPU process
+475+267, the widget renderer 179, MapKit 115, iconservicesagent 104, SpringBoard 93, cameracaptured 88 MiB), not
+backboardd's 1.2 GiB alone. About 0.5 GiB was the rest. The same log has `memorystatus available` at 816-875 MiB, just
+above the warning line (795 MiB), and `long-idle-exit 8`: the level reached warning (the long-idle kills come only
+there) and fell back.
+
+At a rise XNU notifies one process at a time, 250 ms apart, the least important band first, the largest first within a
+band. Apple's privileged listeners go before all (`vm_pressure_select_optimal_candidate_to_notify`). The processes that
+hold the GPU memory are the most important ones, so they were last. A round over 150-300 listeners takes 40-75 s. A level
+that falls back before the round reaches them (the long-idle kills free a little) ends it there. Core Animation's pooled
+textures, metal2vulkan's kept and spare blocks (the base's 0019-0031 patches, `release_spare`) and NativeMetal's held
+imports (`watchImportPressure`) all wait for that note (docs/gpu.md, "Who keeps a blob").
+
+**What.**
+- `oneios-wired` lines every `oneios-wired-log` seconds (60; 0: never), from the free-page thread's `oneios-mem` report
+  (`vm_resident.c`). The numbers are XNU's own accounting by site, what `zprint` reads (`vm_page_diagnose`), plus the
+  gpu archive's blob totals (`droidvm_virtgpu_live`, weak):
+
+  ```text
+  oneios-wired: 3195 MiB: kernelcache 96, boot 223 (stolen 40, booter 12), zones 180 of a 512 MiB map; compressor 269 apart; GPU blobs: own 2044, imported 629 (counted with their owners too)
+  oneios-wired: owners (MiB): IOKIT 2690, ZONE 180, RESERVED 150, kext com.apple.iokit.IOSurface 120, ..., rest 40, unnamed 12
+  oneios-wired: zones in use (MiB): VM.objects 40, ...
+  ```
+
+  (The numbers in the sample are made up; the format is the build's.) "owners" are the 10 largest sites that add to the
+  wired count: a tag (`VM_KERN_MEMORY_*` without the prefix), a kext by its identifier, or a kernel site by its unslid
+  address (`oneios-tool sym kernel` names it). The hosted drivers are kernel code, so their wired pages (the GPU's blob
+  pages, the display's, the disks') come under `IOKIT`, and the GPU's own totals in the first line say how much of
+  `IOKIT` is the GPU's. "unnamed" is the wired count less every site's. "compressor ... apart": the compressor's pages
+  are not in XNU's wired count. Cost: one `vm_page_diagnose` a minute (a few hundred KiB buffer, freed again, and one
+  pass over the zones).
+- An `oneios-pressure` pair after them (`kern_memorystatus_notify.c`, `hosted_pressure_report`): the level, the
+  `memorystatus_level`, the available pages against the warning, normal-again (115%) and critical lines. Then, since the
+  last pair, the rises and falls, the notes sent by level and how many the rule below picked, the longest round (from
+  the first note at a level to the last listener that wanted it), and the newest four notes (name[pid], level W/C/N,
+  footprint, how long ago).
+- **The fix, `oneios-pressure-big=MB`** (512; `0` is XNU's order, the behaviour before 0097; one boot-arg,
+  `boot-args-add=oneios-pressure-big=0` in the image's `xnuhost.conf`, docs/switches.md). At a rise, a process whose
+  footprint is at least that many MiB and that was not yet notified at that level is picked first, the largest first.
+  So the render server and the apps that draw hear of the warning in the first 250 ms steps of the round, not after
+  150-300 smaller processes. Privileged listeners still go first, each process is still notified once per level, and
+  nothing else in the order, the delays or the levels changes. Whether a GPU client's footprint counts its blob pages
+  (they are purgeable memory the client owns) is not checked yet: the last-notes column shows the footprints.
+
+Tested: `git apply --check` after 0096 on the patched tree; built release-style (`ONEIOS_CRYPTO=original`) and
+prelinked (docs/switches.md has the build). First built with the series less 0095 (its `recount.c:753` panic was
+fixed apart); merged 2026-11-24 after the fixed 0095 and built with the whole series (`HOSTED_OUT=wired`, 182 patches,
+`xnu.macho` `32f88a27`, releasable), prelinked (`kernel.kc` `e79886d9`, audit 0 failures, stubs 666 good). Under
+qemu-aarch64 (docs/building.md section 5, a new Data volume, 8 vCPUs, 4 GiB, the integration build's runtime) it ran
+the 20 minutes of its timeout with no panic: `hello, launchd` at +209 s, SpringBoard at +247 s, 39 `thread calls:`
+lines, 20 `oneios-wired` reports (one a minute; wired 178 MiB at the start, 529 at the end: `ZONE` 136, `PTE` 120,
+`RESERVED` 87, `SECURITY` 63, IOSurface 35, `unnamed` 45; GPU blobs 0, qemu has no KGSL) and 20 `oneios-pressure`
+pairs (level normal throughout, 2804 MiB available at the end, no rise), each line under 240 characters. Logs:
+`out/session-logs/2026-11-24-pc-wiredm/`. Not tested: a pressure rise (so `big first`), a GPU client's blobs in the
+counts, a phone boot. **Watch in its first boot:** the `oneios-wired` lines (`IOKIT` near the GPU's own +
+imported, `unnamed` small), and in `oneios-pressure` a warning round whose first notes are backboardd and the other
+large GPU clients (`big first` above 0), then `oneios-gpu-memory` own bytes falling within seconds of the rise.

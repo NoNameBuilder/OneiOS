@@ -460,6 +460,13 @@
 # 26553870" us of 30 s in 0051's kernel_task line (88% of a vCPU) and nothing said which callout it ran. Two clock reads
 # per callout (recount and mach_absolute_time), counters in 256 lock-free slots by function, no allocation. README.md,
 # "0095". Applies after 0094 (thread_call.c is no other patch's; hosted_user.c after 0091's report call).
+# Fixed (fix/tc-recount-ints, 2026-11-23): the CPU read masks interrupts around recount_current_thread_time_mach()
+# (hosted_tc_cpu_now, as 0066's hosted_fr_cpu_now). It ran right after enable_ints_and_unlock(), and recount.c:753
+# asserts interrupts off: the phone (2026-11-23 22:16, kernel.kc 72a3e56f) and a qemu boot of the same kernel
+# panicked on the first callout, under 2 s into the boot. Behind it, a PAC failure in hosted_tc_count: the address
+# was ptrauth_strip(func, ...) on the typed pointer, which clang authenticates after the strip; now the raw bits
+# (ptrauth_nop_cast) then a strip. And the report printed up to 900 characters a line, which the console cuts at 255;
+# now lines under 240 ("thread calls, more:" for the rest). kernel/tests/host.sh now refuses the first two in any patch.
 0095-thread-call-cpu.patch
 # telemetry-jobs-switch (2026-11-23, integration-switches): the switch for 0093 and 0094 (docs/switches.md). Boot-arg
 # oneios-telemetry-jobs=1 (the image's xnuhost.conf: boot-args-add=oneios-telemetry-jobs=1): the disable list is 0053's
@@ -468,3 +475,11 @@
 # as they are. The telemetry labels are 0093's list after the loops (read, not copied: one list). README.md, "0096".
 # Applies after 0095 (git apply --check on the patched tree).
 0096-telemetry-jobs-switch.patch
+# fix/wired-names (2026-11-23): who holds the wired pages, and who hears of memory pressure first. The session of 22:19
+# had "wired 3195" of 5302 MiB with no line naming the owners: oneios-wired lines every oneios-wired-log seconds (60)
+# from XNU's own accounting by site (vm_page_diagnose, what zprint reads), with the GPU's blob totals, and an
+# oneios-pressure line (the level, its thresholds, the notes sent and to whom). And oneios-pressure-big=MB (512; 0:
+# XNU's order): at a rise, a process of at least that footprint is notified first, the largest first, so the render
+# server's GPU memory is asked for before 150-300 smaller processes 250 ms apart. README.md, "0097". Applies after 0096
+# (vm_resident.c after 0076, kern_memorystatus_notify.c is no other patch's; git apply --check on the patched tree).
+0097-wired-owners-pressure-order.patch

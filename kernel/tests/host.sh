@@ -1,6 +1,7 @@
 #!/bin/bash
 # Host tests of kernel/ that need no toolchain and no network: script syntax, the pin tables, the patch series
-# files, the profile and the build-record writer. Run by CI and by hand: kernel/tests/host.sh
+# files, the profile, the build-record writer, and two checks of the hosted patches (recount reads with interrupts
+# masked, function-pointer strips). Run by CI and by hand: kernel/tests/host.sh
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 cd "$ROOT"
@@ -59,6 +60,49 @@ if [ -x "$tool" ]; then
 else
   echo "skipped: patch series and profile, build record (no $tool: cargo build --release --manifest-path tools/oneios-tool/Cargo.toml)"
 fi
+# recount's readers of the current thread assert interrupts off (recount.c: recount_current_thread_time_mach, _times,
+# _usage, _perf_level_usage, _energy_nj). A patch's call of one must mask first: ml_set_interrupts_enabled(FALSE),
+# disable_ints*, hosted_irq_mask() in the 4 lines before it, or "interrupts off" written on the call's line (a caller
+# that holds them off). Found: 0095 read the thread's time right after enable_ints_and_unlock(); the phone panicked on
+# the first callout (2026-11-23 22:16, "recount.c:753 Assertion failed: ml_get_interrupts_enabled() == FALSE").
+recount_unmasked() {
+  awk '
+    { line[NR % 5] = $0 }
+    /^\+/ && !/^\+\+\+/ && /recount_current_thread_(time_mach|times|usage|perf_level_usage|energy_nj)\(/ && !/interrupts off/ {
+      ok = 0
+      for (i = 1; i <= 4; i++) if (line[(NR - i) % 5] ~ /ml_set_interrupts_enabled\(FALSE\)|disable_ints|hosted_irq_mask\(\)/) ok = 1
+      if (!ok) { print FILENAME ":" FNR ": " $0; bad = 1 }
+    }
+    END { exit bad }' "$@"
+}
+t=$(mktemp -d)
+printf '%s\n' '+		enable_ints_and_unlock(group, s);' '+		uint64_t t0 = recount_current_thread_time_mach();' > "$t/unmasked.patch"
+printf '%s\n' '+	boolean_t was = ml_set_interrupts_enabled(FALSE);' '+	uint64_t t = recount_current_thread_time_mach();' > "$t/masked.patch"
+! recount_unmasked "$t/unmasked.patch" > /dev/null || fail "recount check: took a read with interrupts on"
+recount_unmasked "$t/masked.patch" || fail "recount check: refused a masked read"
+rm -rf "$t"
+recount_unmasked kernel/patches/oneios-hosted/*.patch kernel/patches/oneios-hosted/optional/*.patch ||
+  fail "a hosted patch reads recount's current-thread time with interrupts on (above)"
+ok "hosted patches read recount's current-thread time with interrupts masked"
+# A function pointer's address without its signature: ptrauth_strip((void *)p, ...) or ptrauth_strip(ptrauth_nop_cast(
+# void *, p), ...). On the typed pointer itself, ptrauth_strip(func, ptrauth_key_function_pointer), clang converts the
+# stripped value back by authenticating it with the type's discriminator (xpaci, then autia), and that fails every time.
+# Found: 0095's first fix, a qemu boot of 2026-11-23: "PAC failure from kernel with IA key while authing x16" at
+# thread_call_thread+0x288 (hosted_tc_count), the first callout.
+fptr_strip_typed() {
+  awk '/^\+/ && !/^\+\+\+/ && /ptrauth_strip\(/ && /ptrauth_key_function_pointer/ &&
+       !/ptrauth_strip\(\(void \*\)/ && !/ptrauth_strip\(ptrauth_nop_cast\(/ { print FILENAME ":" FNR ": " $0; bad = 1 }
+       END { exit bad }' "$@"
+}
+t=$(mktemp -d)
+printf '%s\n' '+	f = (uint64_t)ptrauth_strip(func, ptrauth_key_function_pointer);' > "$t/typed.patch"
+printf '%s\n' '+	f = (uint64_t)ptrauth_strip(ptrauth_nop_cast(void *, func), ptrauth_key_function_pointer);' > "$t/raw.patch"
+! fptr_strip_typed "$t/typed.patch" > /dev/null || fail "strip check: took a typed function pointer"
+fptr_strip_typed "$t/raw.patch" || fail "strip check: refused ptrauth_nop_cast"
+rm -rf "$t"
+fptr_strip_typed kernel/patches/oneios-hosted/*.patch kernel/patches/oneios-hosted/optional/*.patch ||
+  fail "a hosted patch strips a typed function pointer (above): clang authenticates the stripped value"
+ok "hosted patches strip function pointers through (void *) or ptrauth_nop_cast"
 # The codec archive's picture helpers (kernel/patches/oneios-hosted/codec/OneiOSCodecPicture.h, which the staged
 # DroidVMVTHost.cpp includes): the NV12 copy of a tile and the HEVC SPS's conformance-window crop, built for the host
 # with the sanitizers (without them where the compiler has no sanitizer runtime: a slim Linux container); warnings

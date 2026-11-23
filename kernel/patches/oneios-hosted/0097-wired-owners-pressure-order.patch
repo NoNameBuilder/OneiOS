@@ -1,0 +1,403 @@
+diff --git a/osfmk/vm/vm_resident.c b/osfmk/vm/vm_resident.c
+--- a/osfmk/vm/vm_resident.c
++++ b/osfmk/vm/vm_resident.c
+@@ -2214,6 +2214,9 @@ hosted_fr_log(void)
+ 	    ns / NSEC_PER_MSEC, wait / NSEC_PER_MSEC, take / NSEC_PER_MSEC, hold / NSEC_PER_USEC, give / NSEC_PER_MSEC,
+ 	    put / NSEC_PER_MSEC, cpu / NSEC_PER_MSEC, mib ? ns / NSEC_PER_USEC / mib : 0, mib ? cpu / NSEC_PER_USEC / mib : 0,
+ 	    hosted_fr_stats.longest_run, hosted_fr_stats.neighbours);
++	/* 0097: who holds the wired pages, every oneios-wired-log seconds (below, after vm_page_diagnose) */
++	extern void hosted_wired_report(void);
++	hosted_wired_report();
+ }
+ 
+ static void
+@@ -12449,6 +12452,178 @@ vm_page_diagnose(mach_memory_info_t * info, unsigned int num_info, uint64_t zone
+ 	return KERN_SUCCESS;
+ }
+ 
++#if XNU_HOSTED
++/*
++ * 0097: who holds the wired pages. The session of 2026-11-23 22:19 had "wired 3195" of 5302 MiB with nothing to name
++ * the owners. Every oneios-wired-log seconds (60; 0: never), from the free-page thread's oneios-mem report, XNU's own
++ * accounting by allocation site (what zprint reads: vm_page_diagnose, the counts, the tags, the kexts' sites, the kernel's
++ * sites and the zones) and the GPU's blobs (the gpu archive's counters, weak: 0 without it):
++ *   oneios-wired: 3195 MiB: kernelcache 96, boot 223 (stolen 40, booter 12), zones 180 of a 512 MiB map; compressor 269
++ *     apart; GPU blobs: own 2044, imported 629 (counted with their owners too)
++ *   oneios-wired: owners (MiB): IOKIT 2690, ZONE 180, kext com.apple.iokit.IOSurface 120, ..., rest 40, unnamed 12
++ *   oneios-wired: zones in use (MiB): VM.objects 40, ...
++ * "owners" are the sites that add to the wired count, largest first: a tag (VM_KERN_MEMORY_*), a kext by its identifier,
++ * or a kernel site by its unslid address (oneios-tool sym kernel names it). The hosted drivers are kernel code, so their
++ * wired pages (the GPU's blob pages that prepare() wires, the display's, the disks') are under IOKIT, and the GPU's own
++ * counters say how much of it is the GPU's. "unnamed" is the wired count less every site's: pages no site was charged
++ * with. Then the pressure line (kern_memorystatus_notify.c, hosted_pressure_report).
++ */
++static TUNABLE(uint32_t, hosted_wired_log_s, "oneios-wired-log", 60);
++extern volatile uint64_t droidvm_virtgpu_live[4] __attribute__((weak));
++extern void hosted_pressure_report(void);
++
++#define HOSTED_WIRED_TOP 10
++#define HOSTED_WIRED_MIB(bytes) ((unsigned long long)((bytes) >> 20))
++
++/* the `want` largest entries of info[] whose flags have all of `with` and none of `without`, largest first */
++static unsigned int
++hosted_wired_top(const mach_memory_info_t *info, unsigned int count, uint64_t with, uint64_t without,
++    unsigned int *top, unsigned int want)
++{
++	unsigned int n = 0;
++	for (unsigned int i = 0; i < count; i++) {
++		if ((info[i].flags & with) != with || (info[i].flags & without) || info[i].size == 0) {
++			continue;
++		}
++		unsigned int at = n < want ? n : want;
++		while (at > 0 && info[top[at - 1]].size < info[i].size) {
++			at--;
++		}
++		if (at >= want) {
++			continue;
++		}
++		for (unsigned int k = (n < want ? n : want - 1); k > at; k--) {
++			top[k] = top[k - 1];
++		}
++		top[at] = i;
++		n += n < want;
++	}
++	return n;
++}
++
++/* an entry's name: the tag's without its prefix, a kext's identifier, or a kernel site's unslid address */
++static void
++hosted_wired_name(const mach_memory_info_t *e, char *name, size_t size)
++{
++	if (e->flags & VM_KERN_SITE_NAMED) {
++		const char *s = e->name;
++		if (!strncmp(s, "VM_KERN_MEMORY_", 15)) {
++			s += 15;
++		} else if (!strncmp(s, "VM_KERN_COUNT_", 14)) {
++			s += 14;
++		}
++		strlcpy(name, s, size);
++		return;
++	}
++	switch (e->flags & VM_KERN_SITE_TYPE) {
++	case VM_KERN_SITE_KMOD: {
++		char kext[64] = "";
++		lck_ticket_lock(&vm_allocation_sites_lock, &vm_page_lck_grp_bucket);
++		vm_allocation_site_t *site = e->tag < VM_MAX_TAG_VALUE ? vm_allocation_sites[e->tag] : NULL;
++		if (site && (site->flags & VM_TAG_KMOD)) {
++			(void)OSKextGetKmodIDForSite(site, kext, sizeof(kext));   /* reads the account's kext: no lock */
++		}
++		lck_ticket_unlock(&vm_allocation_sites_lock);
++		snprintf(name, size, "kext %s", kext[0] ? kext : "?");
++		return;
++	}
++	case VM_KERN_SITE_KERNEL:
++		snprintf(name, size, "kernel 0x%llx", (unsigned long long)e->site);
++		return;
++	default:
++		snprintf(name, size, "tag %u", e->tag);
++		return;
++	}
++}
++
++static void
++hosted_wired_list(const char *title, const mach_memory_info_t *info, const unsigned int *top, unsigned int n,
++    uint64_t rest, uint64_t unnamed, bool tail)
++{
++	/* one line of at most ~240 characters: the console cuts a line past about 256 */
++	char line[240];
++	size_t used = (size_t)snprintf(line, sizeof(line), "oneios-wired: %s (MiB):", title);
++	for (unsigned int i = 0; i < n && used < sizeof(line) - 1; i++) {
++		char name[56];
++		hosted_wired_name(&info[top[i]], name, sizeof(name));
++		int w = snprintf(line + used, sizeof(line) - used, "%s %.40s %llu", i ? "," : "", name,
++		    HOSTED_WIRED_MIB(info[top[i]].size));
++		used = w > 0 ? MIN(used + (size_t)w, sizeof(line) - 1) : used;
++	}
++	if (tail && used < sizeof(line) - 1) {
++		snprintf(line + used, sizeof(line) - used, ", rest %llu, unnamed %llu", HOSTED_WIRED_MIB(rest),
++		    HOSTED_WIRED_MIB(unnamed));
++	}
++	printf("%s\n", line);
++}
++
++void hosted_wired_report(void);
++void
++hosted_wired_report(void)
++{
++	static uint64_t last;
++	uint64_t now = mach_absolute_time(), every = 0;
++	if (hosted_wired_log_s == 0) {
++		return;
++	}
++	/* the oneios-mem report comes every oneios-free-report-log seconds (30): a report a second early is due */
++	nanoseconds_to_absolutetime((uint64_t)(hosted_wired_log_s > 1 ? hosted_wired_log_s - 1 : 1) * NSEC_PER_SEC, &every);
++	if (last && now - last < every) {
++		return;
++	}
++	last = now;
++
++	unsigned int num = vm_page_diagnose_estimate();
++	mach_memory_info_t *info = kalloc_data((vm_size_t)num * sizeof(*info), Z_WAITOK | Z_ZERO);
++	if (info == NULL || vm_page_diagnose(info, num, 0, false) != KERN_SUCCESS) {
++		kfree_data(info, (vm_size_t)num * sizeof(*info));
++		printf("oneios-wired: no accounting this time (%u entries)\n", num);
++		return;
++	}
++	const mach_memory_info_t *counts = &info[num - VM_KERN_COUNTER_COUNT];
++	const uint64_t wired = counts[VM_KERN_COUNT_WIRED].size;
++	uint64_t named = 0;
++	for (unsigned int i = 0; i < num; i++) {
++		if ((info[i].flags & VM_KERN_SITE_WIRED) && !(info[i].flags & VM_KERN_SITE_HIDE)) {
++			named += info[i].size;
++		}
++	}
++	/* the zone tag is hidden from the wired sum (process_account): its pages are the zones' */
++	uint64_t zones = info[VM_KERN_MEMORY_ZONE].size, gpu_own = 0, gpu_imported = 0;
++	named += zones;
++	if (&droidvm_virtgpu_live[0] != NULL) {
++		gpu_own = droidvm_virtgpu_live[0];
++		gpu_imported = droidvm_virtgpu_live[1];
++	}
++	printf("oneios-wired: %llu MiB: kernelcache %llu, boot %llu (stolen %llu, booter %llu), zones %llu of a %llu MiB map; "
++	    "compressor %llu apart; GPU blobs: own %llu, imported %llu (counted with their owners too)\n",
++	    HOSTED_WIRED_MIB(wired), HOSTED_WIRED_MIB(counts[VM_KERN_COUNT_WIRED_STATIC_KERNELCACHE].size),
++	    HOSTED_WIRED_MIB(counts[VM_KERN_COUNT_WIRED_BOOT].size), HOSTED_WIRED_MIB(counts[VM_KERN_COUNT_STOLEN].size),
++	    HOSTED_WIRED_MIB(counts[VM_KERN_COUNT_BOOT_STOLEN].size), HOSTED_WIRED_MIB(zones),
++	    HOSTED_WIRED_MIB(counts[VM_KERN_COUNT_MAP_ZONE].size), HOSTED_WIRED_MIB(ptoa_64(VM_PAGE_COMPRESSOR_COUNT)),
++	    HOSTED_WIRED_MIB(gpu_own), HOSTED_WIRED_MIB(gpu_imported));
++
++	/* the owners: every site and count that adds to the wired sum, and the zone tag */
++	unsigned int top[HOSTED_WIRED_TOP];
++	mach_memory_info_t zone_tag = info[VM_KERN_MEMORY_ZONE];
++	info[VM_KERN_MEMORY_ZONE].flags = (zone_tag.flags | VM_KERN_SITE_WIRED) & ~(uint64_t)VM_KERN_SITE_HIDE;
++	unsigned int n = hosted_wired_top(info, num, VM_KERN_SITE_WIRED, VM_KERN_SITE_HIDE, top, HOSTED_WIRED_TOP);
++	uint64_t listed = 0;
++	for (unsigned int i = 0; i < n; i++) {
++		listed += info[top[i]].size;
++	}
++	hosted_wired_list("owners", info, top, n, named > listed ? named - listed : 0, wired > named ? wired - named : 0, true);
++	info[VM_KERN_MEMORY_ZONE] = zone_tag;
++
++	/* the zones' bytes in use, by view (what zprint lists per zone) */
++	n = hosted_wired_top(info, num, VM_KERN_SITE_ZONE_VIEW, 0, top, HOSTED_WIRED_TOP);
++	hosted_wired_list("zones in use", info, top, n, 0, 0, false);
++	kfree_data(info, (vm_size_t)num * sizeof(*info));
++
++	hosted_pressure_report();
++}
++#endif /* XNU_HOSTED */
++
+ #if DEBUG || DEVELOPMENT
+ 
+ kern_return_t
+diff --git a/bsd/kern/kern_memorystatus_notify.c b/bsd/kern/kern_memorystatus_notify.c
+--- a/bsd/kern/kern_memorystatus_notify.c
++++ b/bsd/kern/kern_memorystatus_notify.c
+@@ -1073,6 +1073,134 @@ vm_dispatch_memory_pressure(void)
+ 	memorystatus_update_vm_pressure(FALSE);
+ }
+ 
++#if XNU_HOSTED
++/*
++ * 0097: who hears of memory pressure, and when.
++ *
++ * At a rise XNU notifies one process at a time, 250 ms apart (INTER_NOTIFICATION_DELAY), the least important first and the
++ * largest within a band (vm_pressure_select_optimal_candidate_to_notify), privileged listeners before all. On this guest
++ * nearly all of the RAM iOS can give back at a rise is the GPU memory of the render server and the apps that draw
++ * (backboardd held 917 MiB of GPU blobs, WebKit's GPU process 475, the session of 2026-11-23 22:19; every blob is wired
++ * guest RAM), and those are the most important processes, so they came last: a round over 150-300 listeners takes 40-75 s,
++ * and a level that falls back to normal before the round reaches them (the long-idle kills at the warning free a little)
++ * ends it there. oneios-pressure-big=MB (512; 0: XNU's order, the behaviour before 0097): at a rise, a process whose
++ * footprint is at least that many MiB is notified first, the largest first, as a privileged listener would be (Apple's
++ * privileged listeners still go before them). Each one is notified once per level, as every process is; nothing else in
++ * the order or the delays changes.
++ *
++ * The line, from the oneios-wired report (vm_resident.c, every oneios-wired-log seconds), two lines:
++ *   oneios-pressure: level warning (memorystatus_level 15%, available 875 MiB; warning below 795, normal above 914,
++ *     critical below 212 MiB); big first at 512 MiB
++ *   oneios-pressure: 60 s: rises +2, falls +1; notes +40 (warning 38, critical 2, normal 0; big first 2); longest round
++ *     9100 ms; last: backboardd[64] W 1214M 31 s, ...
++ * A round runs from the first note at a level to the last process that wanted that level. The last notes are the newest
++ * four, with the level (W warning, C critical, N normal), the footprint and how long ago.
++ */
++static TUNABLE(uint32_t, hosted_pressure_big_mb, "oneios-pressure-big", 512);
++extern unsigned int memorystatus_level;
++static bool hosted_pressure_picked_big;        /* the last candidate came from the rule above (the pressure thread only) */
++static struct {
++	uint32_t rises, falls, notes[3], big;
++	uint64_t round_start, longest_round;
++	vm_pressure_level_t seen;
++	struct { char name[20]; int pid; uint8_t level; uint32_t mb; uint64_t at; } last[4];
++	unsigned int next;
++} hosted_pressure;                              /* written by the pressure thread with the klist lock held */
++
++static void
++hosted_pressure_noted(proc_t p, task_t task, vm_pressure_level_t level)
++{
++	unsigned int i = hosted_pressure.next++ % 4;
++	strlcpy(hosted_pressure.last[i].name, proc_best_name(p), sizeof(hosted_pressure.last[i].name));
++	hosted_pressure.last[i].pid = proc_getpid(p);
++	hosted_pressure.last[i].level = (uint8_t)level;
++	hosted_pressure.last[i].mb = (uint32_t)MIN(UINT32_MAX, get_task_phys_footprint(task) >> 20);
++	hosted_pressure.last[i].at = mach_absolute_time();
++	hosted_pressure.notes[level == kVMPressureCritical ? 1 : level == kVMPressureNormal ? 2 : 0]++;
++	hosted_pressure.big += hosted_pressure_picked_big;
++}
++
++/* the level as the notify loop sees it: rises, falls and where a round starts */
++static void
++hosted_pressure_level(vm_pressure_level_t level)
++{
++	if (level == hosted_pressure.seen) {
++		return;
++	}
++	if (level > hosted_pressure.seen) {
++		hosted_pressure.rises++;
++	} else {
++		hosted_pressure.falls++;
++	}
++	hosted_pressure.seen = level;
++	hosted_pressure.round_start = mach_absolute_time();
++}
++
++static void
++hosted_pressure_round_done(void)
++{
++	if (hosted_pressure.round_start) {
++		uint64_t ns = 0;
++		absolutetime_to_nanoseconds(mach_absolute_time() - hosted_pressure.round_start, &ns);
++		hosted_pressure.longest_round = MAX(hosted_pressure.longest_round, ns);
++		hosted_pressure.round_start = 0;
++	}
++}
++
++void hosted_pressure_report(void);
++void
++hosted_pressure_report(void)
++{
++	static uint64_t last;
++	static uint32_t shown_rises, shown_falls, shown_notes[3], shown_big;
++	const char *names[] = { "normal", "warning", "urgent", "critical" };
++	vm_pressure_level_t level = memorystatus_vm_pressure_level;
++	uint64_t now = mach_absolute_time(), span = 0;
++#if CONFIG_JETSAM
++	uint64_t soft = ptoa_64(memorystatus_get_soft_memlimit_page_shortage_threshold());
++	uint64_t critical = ptoa_64(memorystatus_get_critical_page_shortage_threshold());
++#else
++	uint64_t soft = 0, critical = 0;
++#endif
++	printf("oneios-pressure: level %s (memorystatus_level %u%%, available %llu MiB; warning below %llu, normal above %llu, "
++	    "critical below %llu MiB); big first at %u MiB\n", (unsigned)level < 4 ? names[level] : "?", memorystatus_level,
++	    (unsigned long long)(ptoa_64(memorystatus_get_available_page_count()) >> 20), (unsigned long long)(soft >> 20),
++	    (unsigned long long)((soft * 115 / 100) >> 20), (unsigned long long)(critical >> 20), hosted_pressure_big_mb);
++
++	char line[240];
++	memorystatus_klist_lock();
++	absolutetime_to_nanoseconds(last ? now - last : 0, &span);
++	size_t used = (size_t)snprintf(line, sizeof(line), "oneios-pressure: %llu s: rises +%u, falls +%u; notes +%u (warning %u, "
++	    "critical %u, normal %u; big first %u); longest round %llu ms; last:", (unsigned long long)(span / NSEC_PER_SEC),
++	    hosted_pressure.rises - shown_rises, hosted_pressure.falls - shown_falls,
++	    (hosted_pressure.notes[0] - shown_notes[0]) + (hosted_pressure.notes[1] - shown_notes[1]) +
++	    (hosted_pressure.notes[2] - shown_notes[2]), hosted_pressure.notes[0] - shown_notes[0],
++	    hosted_pressure.notes[1] - shown_notes[1], hosted_pressure.notes[2] - shown_notes[2], hosted_pressure.big - shown_big,
++	    (unsigned long long)(hosted_pressure.longest_round / NSEC_PER_MSEC));
++	for (unsigned int k = 1; k <= 4 && used < sizeof(line) - 1; k++) {
++		unsigned int i = (hosted_pressure.next - k) % 4;
++		if (hosted_pressure.next < k || !hosted_pressure.last[i].at) {
++			break;
++		}
++		uint64_t ago = 0;
++		absolutetime_to_nanoseconds(now - hosted_pressure.last[i].at, &ago);
++		int w = snprintf(line + used, sizeof(line) - used, "%s %s[%d] %c %uM %llu s", k > 1 ? "," : "",
++		    hosted_pressure.last[i].name, hosted_pressure.last[i].pid,
++		    hosted_pressure.last[i].level == kVMPressureCritical ? 'C' : hosted_pressure.last[i].level == kVMPressureNormal ? 'N' : 'W',
++		    hosted_pressure.last[i].mb, (unsigned long long)(ago / NSEC_PER_SEC));
++		used = w > 0 ? MIN(used + (size_t)w, sizeof(line) - 1) : used;
++	}
++	shown_rises = hosted_pressure.rises;
++	shown_falls = hosted_pressure.falls;
++	memcpy(shown_notes, hosted_pressure.notes, sizeof(shown_notes));
++	shown_big = hosted_pressure.big;
++	hosted_pressure.longest_round = 0;
++	memorystatus_klist_unlock();
++	last = now;
++	printf("%s%s\n", line, hosted_pressure.next ? "" : " none");
++}
++#endif /* XNU_HOSTED */
++
+ static struct knote *
+ vm_pressure_select_optimal_candidate_to_notify(struct klist *candidate_list, int level, boolean_t target_foreground_process, uint64_t *next_telemetry_update)
+ {
+@@ -1080,9 +1208,16 @@ vm_pressure_select_optimal_candidate_to_notify(struct klist *candidate_list, int
+ 	uint64_t    resident_max = 0;/* MB */
+ 	int        selected_task_importance = 0;
+ 	static int    pressure_snapshot = -1;
++#if XNU_HOSTED
++	struct knote    *hosted_big = NULL;     /* 0097: the largest process past oneios-pressure-big not yet notified */
++	uint64_t        hosted_big_mb = 0;
++#endif
+ 	boolean_t    pressure_increase = FALSE;
+ 	uint64_t     curr_ts = mach_absolute_time();
+ 	*next_telemetry_update = UINT64_MAX;
++#if XNU_HOSTED
++	hosted_pressure_picked_big = false;
++#endif
+ 
+ 	if (pressure_snapshot == -1) {
+ 		/*
+@@ -1169,6 +1304,15 @@ vm_pressure_select_optimal_candidate_to_notify(struct klist *candidate_list, int
+ 		 */
+ 		if (level > 0) {
+ 			if (task_has_been_notified(t, level) == FALSE) {
++#if XNU_HOSTED
++				if (pressure_increase && hosted_pressure_big_mb != 0) {
++					uint64_t mb = get_task_phys_footprint(t) / (1024 * 1024ULL);
++					if (mb >= hosted_pressure_big_mb && mb > hosted_big_mb) {
++						hosted_big = kn;
++						hosted_big_mb = mb;
++					}
++				}
++#endif
+ 				/*
+ 				 * Is this a privileged listener?
+ 				 */
+@@ -1253,6 +1397,13 @@ vm_pressure_select_optimal_candidate_to_notify(struct klist *candidate_list, int
+ 		proc_rele(p);
+ 	}
+ 
++#if XNU_HOSTED
++	if (hosted_big != NULL) {
++		kn_max = hosted_big;
++		resident_max = hosted_big_mb;
++		hosted_pressure_picked_big = true;
++	}
++#endif
+ done_scanning:
+ 	if (kn_max) {
+ 		VM_DEBUG_CONSTANT_EVENT(vm_pressure_event, DBG_VM_PRESSURE_EVENT, DBG_FUNC_NONE, proc_getpid(knote_get_kq(kn_max)->kq_p), resident_max, 0, 0);
+@@ -1626,9 +1777,15 @@ memorystatus_update_vm_pressure(boolean_t target_foreground_process)
+ 			memstat_pressure_interval_update(level_snapshot);
+ 		}
+ 
++#if XNU_HOSTED
++		hosted_pressure_level(level_snapshot);
++#endif
+ 		kn_max = vm_pressure_select_optimal_candidate_to_notify(&memorystatus_klist, level_snapshot, target_foreground_process, &next_telemetry_update);
+ 
+ 		if (kn_max == NULL) {
++#if XNU_HOSTED
++			hosted_pressure_round_done();
++#endif
+ 			memorystatus_klist_unlock();
+ 
+ 			/*
+@@ -1721,6 +1878,9 @@ memorystatus_update_vm_pressure(boolean_t target_foreground_process)
+ 			    num_notifications);
+ 			memstat_cur_interval.num_notifs++;
+ 		}
++#if XNU_HOSTED
++		hosted_pressure_noted(target_proc, task, level_snapshot);
++#endif
+ 
+ 		KNOTE(&dispatch_klist, (level_snapshot != kVMPressureNormal) ? kMemorystatusPressure : kMemorystatusNoPressure);
+ 

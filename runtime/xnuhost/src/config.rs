@@ -2102,6 +2102,7 @@ impl Config {
             ("oneios-wifi-rssi", arg("oneios-wifi-rssi", "1"), "1"),
             ("oneios-telemetry-jobs", arg("oneios-telemetry-jobs", "0"), "0"),
             ("oneios-pool-cut", arg("oneios-pool-cut", "1"), "1"),
+            ("oneios-pressure-big", arg("oneios-pressure-big", "512"), "512"),
         ];
         let changed: Vec<&str> = all.iter().filter(|(_, v, d)| v != d).map(|(k, _, _)| *k).collect();
         let words: Vec<String> = all.iter().map(|(k, v, _)| format!("{k}={v}")).collect();

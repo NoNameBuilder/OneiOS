@@ -1,7 +1,7 @@
 diff --git a/osfmk/kern/thread_call.c b/osfmk/kern/thread_call.c
 --- a/osfmk/kern/thread_call.c
 +++ b/osfmk/kern/thread_call.c
-@@ -53,6 +53,120 @@
+@@ -53,6 +53,157 @@
  #endif
  #include <machine/machine_routines.h>
  
@@ -19,6 +19,7 @@ diff --git a/osfmk/kern/thread_call.c b/osfmk/kern/thread_call.c
 + * and the longest one:
 + *   oneios-perf:   thread calls: 91234 callouts, 26553870 us of CPU (88% of a vCPU), 30 functions; most:
 + *     0xfffffff007a1b2c4 81234 x 310 us (wall 320, max 9000) ...
++ *   oneios-perf:   thread calls, more: 0x... (the rest of the 8, each line under 240 characters)
 + * Two clock reads per callout; no lock, no allocation.
 + */
 +#include <kern/recount.h>
@@ -32,12 +33,36 @@ diff --git a/osfmk/kern/thread_call.c b/osfmk/kern/thread_call.c
 +} hosted_tc[HOSTED_TC_SLOTS];
 +static uint64_t hosted_tc_full;
 +
++/*
++ * The thread's own CPU time so far (mach time). recount_current_thread_time_mach() asserts interrupts off
++ * (recount.c:753): an interrupt between its two reads moves the CPU's snapshot, and the sum is then wrong.
++ * thread_call_thread runs the callout with interrupts on, so the read masks around itself (as 0066's
++ * hosted_fr_cpu_now). On the phone, 2026-11-23 22:16 (kernel.kc 72a3e56f): "recount.c:753 Assertion failed:
++ * ml_get_interrupts_enabled() == FALSE" from thread_call_thread+0x210 (thread_call.c:1921), the first callout,
++ * 7 s into the boot. Masking is one store to the hosted CPU's word (hosted.h), no host call.
++ */
++static uint64_t
++hosted_tc_cpu_now(void)
++{
++	boolean_t was = ml_set_interrupts_enabled(FALSE);
++	uint64_t t = recount_current_thread_time_mach();
++	ml_set_interrupts_enabled(was);
++	return t;
++}
++
 +static void
 +hosted_tc_count(thread_call_func_t func, uint64_t cpu, uint64_t wall)
 +{
-+	uint64_t f = (uint64_t)func;
++	/*
++	 * The function's address without its signature. Not ptrauth_strip(func, ...) on the typed pointer: clang then
++	 * converts the stripped value to an integer by authenticating it with the type's discriminator, which fails on
++	 * every callout (a PAC failure, "authing x16" at thread_call_thread+0x288, qemu boot of 2026-11-23). The raw
++	 * bits (ptrauth_nop_cast), then a strip: no authentication.
++	 */
 +#if __has_feature(ptrauth_calls)
-+	f = (uint64_t)ptrauth_strip(func, ptrauth_key_function_pointer);
++	uint64_t f = (uint64_t)ptrauth_strip(ptrauth_nop_cast(void *, func), ptrauth_key_function_pointer);
++#else
++	uint64_t f = (uint64_t)func;
 +#endif
 +	unsigned h = (unsigned)(((f >> 2) * 0x9e3779b97f4a7c15ull) >> 56);
 +	for (unsigned i = 0; i < 32; i++) {
@@ -105,15 +130,27 @@ diff --git a/osfmk/kern/thread_call.c b/osfmk/kern/thread_call.c
 +			top[k].max = max;
 +		}
 +	}
-+	char line[900];
++	/*
++	 * Lines under 240 characters: the console copies a printf through a 256-byte buffer (SERIAL_CONS_BUF_SIZE) and
++	 * xnuhost's log loses the rest of a longer one with its newline (the first 0095 printed up to 900: a qemu boot of
++	 * 2026-11-23 cut every such line at 255 and ran the next oneios-perf line into it). The summary, then the
++	 * functions on "thread calls, more:" lines.
++	 */
++	char line[240];
 +	unsigned used = (unsigned)snprintf(line, sizeof(line), "thread calls: %llu callouts, %llu us of CPU (%llu%% of a vCPU), "
 +	    "%u functions%s; most:", total_n, to_us(total_cpu), to_us(total_cpu) * 100 / (wall_us ? wall_us : 1), funcs,
 +	    full != last_full ? " (table full: some not counted)" : "");
 +	last_full = full;
-+	for (unsigned k = 0; k < 8 && top[k].n != 0 && used < sizeof(line) - 90; k++) {
-+		used += (unsigned)snprintf(line + used, sizeof(line) - used, " 0x%llx %llu x %llu us (wall %llu, max %llu)",
++	for (unsigned k = 0; k < 8 && top[k].n != 0; k++) {
++		char item[96];
++		unsigned len = (unsigned)snprintf(item, sizeof(item), " 0x%llx %llu x %llu us (wall %llu, max %llu)",
 +		    (uint64_t)VM_KERNEL_UNSLIDE(top[k].func), top[k].n, to_us(top[k].cpu) / top[k].n,
 +		    to_us(top[k].wall) / top[k].n, to_us(top[k].max));
++		if (used + len >= sizeof(line)) {
++			printf("oneios-perf:   %s\n", line);
++			used = (unsigned)strlcpy(line, "thread calls, more:", sizeof(line));
++		}
++		used += (unsigned)strlcpy(line + used, item, sizeof(line) - used);
 +	}
 +	printf("oneios-perf:   %s\n", line);
 +}
@@ -122,19 +159,19 @@ diff --git a/osfmk/kern/thread_call.c b/osfmk/kern/thread_call.c
  static KALLOC_TYPE_DEFINE(thread_call_zone, thread_call_data_t,
      KT_PRIV_ACCT | KT_NOEARLY);
  
-@@ -1803,10 +1917,18 @@
+@@ -1803,10 +1954,18 @@
  
  		enable_ints_and_unlock(group, s);
  
 +#if XNU_HOSTED
-+		uint64_t hosted_tc_cpu0 = recount_current_thread_time_mach();      /* 0095 */
++		uint64_t hosted_tc_cpu0 = hosted_tc_cpu_now();      /* 0095 */
 +#endif
  		thc_state.thc_call_start = mach_absolute_time();
  
  		thread_call_invoke(func, param0, param1, call);
  
 +#if XNU_HOSTED
-+		hosted_tc_count(func, recount_current_thread_time_mach() - hosted_tc_cpu0,      /* 0095 */
++		hosted_tc_count(func, hosted_tc_cpu_now() - hosted_tc_cpu0,      /* 0095 */
 +		    mach_absolute_time() - thc_state.thc_call_start);
 +#endif
 +

@@ -1471,17 +1471,20 @@ fn the_switches() {
     ] {
         assert!(c.set(k, v).is_err(), "{k}={v} refused");
     }
-    c.boot_args = "-v oneios-wifi-rssi=0 oneios-telemetry-jobs=1 oneios-pool-cut=0".into();
+    c.boot_args = "-v oneios-wifi-rssi=0 oneios-telemetry-jobs=1 oneios-pool-cut=0 oneios-pressure-big=0".into();
     let line = c.switches_line();
     assert!(line.contains(" wifi-joined-scan=plain ") && line.contains(" gpu-blob-entries=16384 "), "{line}");
     assert!(
-        line.contains(" oneios-wifi-rssi=0 oneios-telemetry-jobs=1 oneios-pool-cut=0 (docs/switches.md)"),
+        line.contains(
+            " oneios-wifi-rssi=0 oneios-telemetry-jobs=1 oneios-pool-cut=0 oneios-pressure-big=0 (docs/switches.md)"
+        ),
         "{line}"
     );
     assert!(
         line.ends_with(
             "not at the default: stop-loop uclamp-rule gpu-down gpu-blob-entries wifi-ring-wait wifi-send-wait wifi-buffers \
-             wifi-joined-scan encoder-10bit encoder-warmup oneios-wifi-rssi oneios-telemetry-jobs oneios-pool-cut"
+             wifi-joined-scan encoder-10bit encoder-warmup oneios-wifi-rssi oneios-telemetry-jobs oneios-pool-cut \
+             oneios-pressure-big"
         ),
         "{line}"
     );
