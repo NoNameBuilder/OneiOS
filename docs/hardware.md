@@ -1192,8 +1192,9 @@ join enabled requested by "..." enabled 1`). The Settings switch off and on, or 
   `hci_aidl::probe()` asks servicemanager for the instance, checks its descriptor, and returns 20 (the A56 fork's
   number); xnuhost tries `hci_hidl::probe_quiet()` first, so the S24 Ultra is unchanged, then `hci_aidl::probe()`.
   `ONEIOS_BINDER` names another binder device (the PC test). `tests/test_bt_aidl.rs`: a fake servicemanager and
-  AIDL HAL on a binderfs (initialize, the callback's descriptor/version, initializationComplete, an event and ACL
-  data, a command, close). Not run on an S25 yet; the vendor HAL's own `initialize` is the open question.
+  AIDL HAL on a binderfs that refuses 'SYST' as a vendor libbinder does (so the 'VNDR' retry and the header of the
+  later calls are exercised): initialize, the callback's descriptor/version, initializationComplete, an event and
+  ACL data, a command, close. Not run on an S25 yet; the vendor HAL's own `initialize` is the open question.
 - `devices/bridge_dev.rs`: an `OB_HCI_OPEN` while the controller is failed (the HAL died or never finished) closes it and
   opens it again, so a new bluetoothd client starts over.
 - `hidl_parcel.rs` (on `hal/hidl.rs`, `hal/binder.rs`): the parcels (interface token, `hidl_string`, `hidl_vec<uint8_t>` as scatter-gather buffer

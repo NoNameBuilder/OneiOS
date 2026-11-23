@@ -2,13 +2,14 @@
 //! The AIDL Bluetooth HAL client (`bt::hci_aidl`) against a real binder driver: a private binderfs on the build host
 //! (the test runs itself in a user namespace with one: hal::binderfs). A child process plays servicemanager (the
 //! context manager) and android.hardware.bluetooth.IBluetoothHci/default: it checks the client's callback object
-//! (descriptor, version), answers initialize with initializationComplete(SUCCESS), an HCI event and ACL data, records
-//! the client's command and its close.
+//! (descriptor, version), refuses the 'SYST' token as a vendor HAL's libbinder does (so the client's 'VNDR' retry
+//! runs), answers initialize with initializationComplete(SUCCESS), an HCI event and ACL data, and records the client's
+//! command and its close, both with the accepted 'VNDR' header.
 //!
-//! Scenarios: the probe finds the AIDL service (20); initialize's callback object and its token; the state reaches
-//! on; frames both ways keep their H4 type; close. Both ends use hal::aidl, so what this proves is the kernel
-//! protocol and this client's parcels; the real vendor HAL is `bridgectl bt` on the phone. C: the C build had no
-//! AIDL test (the A56 fork's client was untested: docs/forks.md).
+//! Scenarios: the probe finds the AIDL service (20); a vendor HAL refuses 'SYST' and accepts 'VNDR'; initialize's
+//! callback object and its token; the state reaches on; frames both ways keep their H4 type; close. Both ends use
+//! hal::aidl, so what this proves is the kernel protocol and this client's parcels; the real vendor HAL is
+//! `bridgectl bt` on the phone. C: the C build had no AIDL test (the A56 fork's client was untested: docs/forks.md).
 
 mod common;
 
@@ -26,6 +27,19 @@ const OBJ_HCI: u64 = 1;
 struct Fake {
     log: i32, // what the client did, a line each, for the parent
     closed: bool,
+}
+
+/// A vendor HAL is built with the VNDK, whose libbinder expects 'VNDR' in the token and refuses 'SYST' before the
+/// method runs (`Parcel::enforceInterface` compares the header to its own `kHeader`): the client's first
+/// `initialize` fails and it must retry with 'VNDR'. The same header must then go with every later call.
+const HEADER_VNDR: i32 = 0x564e_4452;
+
+/// The token as a vendor libbinder checks it: strict mode policy, work source, header, descriptor.
+fn check_token(r: &mut Reader<'_>, want_header: i32) -> bool {
+    let _policy = r.i32();
+    let _work_source = r.i32();
+    let header = r.i32();
+    r.string(127).as_deref() == Some(hci_aidl::AIDL_HCI) && header == want_header
 }
 
 static FAKE: OnceLock<Connection> = OnceLock::new();
@@ -81,11 +95,13 @@ fn fake_incoming(object: u64, code: u32, _one_way: bool, r: &mut Reader<'_>) -> 
         if let Some(answer) = aidl::standard(code, hci_aidl::AIDL_HCI, hci_aidl::AIDL_VERSION, "") {
             return Ok(answer);
         }
-        if !r.token(hci_aidl::AIDL_HCI) {
-            return Err(aidl::BAD_TYPE);
-        }
         match code {
             hci_aidl::BT_INITIALIZE => {
+                // The vendor header check comes first: a 'SYST' token is refused and noted, then the client retries.
+                if !check_token(r, HEADER_VNDR) {
+                    note("initialize syst refused");
+                    return Err(aidl::BAD_TYPE);
+                }
                 let cb = match r.binder() {
                     Object::Handle(h) => h,
                     _ => 0,
@@ -116,11 +132,17 @@ fn fake_incoming(object: u64, code: u32, _one_way: bool, r: &mut Reader<'_>) -> 
                 reply.put_ok();
             }
             hci_aidl::BT_SEND_COMMAND | hci_aidl::BT_SEND_ACL | hci_aidl::BT_SEND_SCO | hci_aidl::BT_SEND_ISO => {
+                if !check_token(r, HEADER_VNDR) {
+                    return Err(aidl::BAD_TYPE);
+                }
                 let bytes = r.bytes().ok_or(aidl::UNKNOWN_TRANSACTION)?.to_vec();
                 note(&format!("send {code}: {}", hex(&bytes)));
                 reply.put_ok();
             }
             hci_aidl::BT_CLOSE => {
+                if !check_token(r, HEADER_VNDR) {
+                    return Err(aidl::BAD_TYPE);
+                }
                 scheck!(!with(|s| s.closed));
                 with(|s| s.closed = true);
                 note("close");
@@ -263,7 +285,7 @@ fn main() {
     drop(h);
 
     let text = stop_fake(pid, log);
-    for want in ["getService", "initialize", "callbacks", "send 4: 03 0c 00", "close"] {
+    for want in ["getService", "initialize syst refused", "initialize", "callbacks", "send 4: 03 0c 00", "close"] {
         check!(text.contains(want));
         if !text.contains(want) {
             println!("  missing after the last match: {want}  the fake's log:\n{text}");
