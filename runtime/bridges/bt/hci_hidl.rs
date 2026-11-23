@@ -159,18 +159,29 @@ impl HidlBt {
 
     /// The hwbinder, with its failure logged.
     fn open_binder() -> Option<Arc<Binder>> {
+        HidlBt::open_binder_logging(true)
+    }
+
+    fn open_binder_logging(log: bool) -> Option<Arc<Binder>> {
         let path = hwbinder_path();
         match Binder::open(Path::new(&path)) {
             Ok(b) => Some(Arc::new(b)),
             Err(OpenError::Open(e)) => {
-                crate::br_error!("bluetooth: off: {path}: {}", binder::strerror(e.raw_os_error().unwrap_or(libc::EIO)));
+                if log {
+                    crate::br_error!(
+                        "bluetooth: off: {path}: {}",
+                        binder::strerror(e.raw_os_error().unwrap_or(libc::EIO))
+                    );
+                }
                 None
             }
             Err(e @ OpenError::Setup { protocol, .. }) => {
-                crate::br_error!(
-                    "bluetooth: off: hwbinder setup (protocol {protocol}): {}",
-                    binder::strerror(e.errno())
-                );
+                if log {
+                    crate::br_error!(
+                        "bluetooth: off: hwbinder setup (protocol {protocol}): {}",
+                        binder::strerror(e.errno())
+                    );
+                }
                 None
             }
         }
@@ -440,7 +451,17 @@ pub fn open_hidl(rx: RxFn, state: StateFn) -> Option<Arc<Hci>> {
 /// Asks hwservicemanager for the HAL once and lets it go: 11 (1.1) or 10 (1.0) when it is registered and this
 /// domain may find it, else -errno (-ENODEV: no binder device). Logs why when it is not found.
 pub fn probe() -> i32 {
-    let Some(binder) = HidlBt::open_binder() else { return -libc::ENODEV };
+    probe_logging(true)
+}
+
+/// [`probe`] without the "not found" lines: the caller then tries the AIDL HAL, so a phone without the HIDL one is
+/// not an error to report.
+pub fn probe_quiet() -> i32 {
+    probe_logging(false)
+}
+
+fn probe_logging(log: bool) -> i32 {
+    let Some(binder) = HidlBt::open_binder_logging(log) else { return -libc::ENODEV };
     let bt = HidlBt {
         binder,
         hci: Weak::new(),
@@ -455,11 +476,13 @@ pub fn probe() -> i32 {
         Ok(()) if bt.v1_1.load(Ordering::Relaxed) => 11,
         Ok(()) => 10,
         Err(rc) => {
-            crate::br_error!(
-                "bluetooth: no android.hardware.bluetooth@1.x::IBluetoothHci/default from hwservicemanager: {}{}",
-                why(rc),
-                not_found_hint(rc)
-            );
+            if log {
+                crate::br_error!(
+                    "bluetooth: no android.hardware.bluetooth@1.x::IBluetoothHci/default from hwservicemanager: {}{}",
+                    why(rc),
+                    not_found_hint(rc)
+                );
+            }
             rc
         }
     };

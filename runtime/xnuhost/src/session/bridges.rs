@@ -10,7 +10,7 @@ use std::time::Duration;
 use onebridges::audio::{AudioBackend, AudioHelper, NullAudio};
 use onebridges::battery::{self, Battery};
 use onebridges::brightness::{self, Bright};
-use onebridges::bt::{hci, hci_hidl, hci_sim};
+use onebridges::bt::{hci, hci_aidl, hci_hidl, hci_sim};
 use onebridges::cpu::{self as bcpu, CpuPlan, Cpufreq, Topology};
 use onebridges::devices::{self, bridge_dev, virtio_net, virtio_snd, BridgeConfig};
 use onebridges::haptics::{self, Haptic};
@@ -544,15 +544,18 @@ impl Bridges {
         pen_ic: bool,
         encoder_sim: bool,
     ) {
-        // Bluetooth: the phone's controller through its HAL (hidl), or none (virtual). auto: hidl when the HAL is
-        // registered; the HAL itself is opened only when bluetoothd connects.
+        // Bluetooth: the phone's controller through its HAL (HIDL on the S24 Ultra, stable AIDL on the S25 and S25
+        // Ultra), or none (virtual). auto: the HAL when it is registered; the HAL itself is opened only when
+        // bluetoothd connects.
         let sim = config.bluetooth == Bluetooth::Sim;
-        let mut hidl = config.bluetooth == Bluetooth::Hidl;
         let mut hal = 0;
-        if config.bluetooth == Bluetooth::Auto {
-            hal = hci_hidl::probe();
-            hidl = hal > 0;
+        if matches!(config.bluetooth, Bluetooth::Auto | Bluetooth::Hidl) {
+            hal = if config.bluetooth == Bluetooth::Hidl { hci_hidl::probe() } else { hci_hidl::probe_quiet() };
+            if hal <= 0 {
+                hal = hci_aidl::probe();
+            }
         }
+        let phone_hal = config.bluetooth == Bluetooth::Hidl || (config.bluetooth == Bluetooth::Auto && hal > 0);
         // Haptics: the phone's force-feedback device (auto), none (off), or the stand-in actuator (sim).
         // haptics-native-impacts (config.rs checked treble, no fallback, and put oneios_native_impacts=1 in the boot
         // arguments): the bridge asks the HAL for its presets and offers OB_HAPTIC_IMPACT only when TICK, CLICK and
@@ -587,7 +590,9 @@ impl Bridges {
         if let Some(t) = &self.thermal {
             t.on_cap(Some(Arc::new(thermal_step)));
         }
-        let factory: Option<devices::HciFactory> = if hidl {
+        let factory: Option<devices::HciFactory> = if hal == 20 {
+            Some(Box::new(hci_aidl::open_aidl))
+        } else if phone_hal {
             Some(Box::new(hci_hidl::open_hidl))
         } else if sim {
             Some(Box::new(hci_sim::open_sim))
@@ -607,7 +612,7 @@ impl Bridges {
             bt_sim_on(machine);
         } else if sim {
             logi!("bluetooth: off: no bridge device for the stand-in controller's packets");
-        } else if hidl && have_bridge {
+        } else if phone_hal && have_bridge {
             // The phone's controller, H4 over the bridge. bluetoothd's encodings (24A446, read from the binary): 1 H4,
             // 2 H4DS, 3 H4BC, 10 virtual. Plain H4 is the one UniXNU carries to this bluetoothd over the same Skywalk
             // UART pipe (drivers/bluetooth/oneios_bt_sk.c); the boot argument bt-transport-override=N tries another.
@@ -620,12 +625,13 @@ impl Bridges {
                 match hal {
                     11 => " 1.1",
                     10 => " 1.0",
+                    20 => " (AIDL)",
                     _ => "",
                 },
                 mac_text(&machine.bt_mac),
                 if address.is_some() { "" } else { " (made up: /mnt/vendor/efs/bluetooth/bt_addr not read)" }
             );
-        } else if hidl {
+        } else if phone_hal {
             logi!("bluetooth: off: no bridge device for the controller's packets");
         } else {
             logi!(

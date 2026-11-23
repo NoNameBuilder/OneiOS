@@ -201,9 +201,10 @@ named!(
     GpuLevel { Deadline = "deadline", Hold = "hold", Governor = "governor" }
 );
 named!(
-    /// bluetooth=: auto (hidl when the bridges are on and the phone's HAL is registered, else virtual), virtual (no
-    /// controller, transport 10), hidl (the phone's controller, transport 1, H4) or sim (a stand-in controller,
-    /// bridges/bt's hci_sim, transport 1: a boot with no phone; works with the bridges off).
+    /// bluetooth=: auto (the phone's HAL when it is registered: HIDL 1.0/1.1 on the S24 Ultra, stable AIDL on the
+    /// S25/S25 Ultra, else virtual), virtual (no controller, transport 10), hidl (the phone's controller, whichever
+    /// HAL form it has, transport 1, H4) or sim (a stand-in controller, bridges/bt's hci_sim, transport 1: a boot with
+    /// no phone; works with the bridges off).
     Bluetooth { Auto = "auto", Virtual = "virtual", Hidl = "hidl", Sim = "sim" }
 );
 named!(

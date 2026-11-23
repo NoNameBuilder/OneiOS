@@ -27,7 +27,7 @@ for Android, and the kernel-side drivers compile and link-check against the kern
 | CPU | `droidvm-amp.patch` + `DroidVMCpufreq.c` (UniXNU-droidvm, unchanged) | `runtime/bridges/cpu`: topology, vCPU plan, thread placement, the cpufreq device | host built and tested; kernel side waits for release-kernel (series, archive) and booter (device tree, placement calls) |
 | GPU | UniXNU-droidvm's virtio-gpu 3D + NativeAdreno user client (unchanged) | booter's `runtime/xnuhost/src/virtio_gpu.rs` + drm2kgsl | booter's; not owned here (section 2) |
 | Wi-Fi / network | `kernel/patches/oneios-hosted/net`: `IO80211Controller`/`IO80211Interface` under the collection's `IOEthernetController`/`IOEthernetInterface`, a station that asks the host, UniXNU-droidvm's virtio-net transport (section 3) | `runtime/bridges/wifi`: wlan0 is iOS's for the session: frames by AF_PACKET, scans by nl80211, joins by the vendor's supplicant (AIDL V2 over `/dev/binder`); `wifictl`; the old tap/NAT route only with `wifi=tap` | both built; host tested (132 + 35 checks, the binder client on a real binder driver); on the phone beside One UI: the supplicant's service and an nl80211 scan (53 networks) answer our client; **not yet run in a session** (wifid, a join, DHCP) |
-| Bluetooth | `drivers/bluetooth` (port of iOSPlus10's transport) on `drivers/bridge` | `runtime/bridges/bt`: the HAL over `/dev/hwbinder` | both built; on by default in a session since 2026-11-11; the HAL (HIDL 1.1) is found in every session, but until 2026-11-23 bluetoothd never powered on (in a VM it powers on only with transport 10). Fixed 2026-11-23 (section 4, "Bluetooth powers on"): the nub's transport-encoding 10 and `BT_HCI_TRANSPORT=H4:POSIX` in bluetoothd's environment (hosted 0087); host-tested and built, not yet booted |
+| Bluetooth | `drivers/bluetooth` (port of iOSPlus10's transport) on `drivers/bridge` | `runtime/bridges/bt`: the phone's HAL over `/dev/hwbinder` (HIDL, S24 Ultra) or `/dev/binder` (stable AIDL, S25/S25 Ultra) | both built; on by default in a session since 2026-11-11; the HAL (HIDL 1.1 on the S24 Ultra) is found in every session, but until 2026-11-23 bluetoothd never powered on (in a VM it powers on only with transport 10). Fixed 2026-11-23 (section 4, "Bluetooth powers on"): the nub's transport-encoding 10 and `BT_HCI_TRANSPORT=H4:POSIX` in bluetoothd's environment (hosted 0087); host-tested and built, not yet booted. The S25's AIDL client is written and host-tested against a fake AIDL HAL, not run on a phone |
 | AirDrop | none: the guest's Wi-Fi driver refuses wifip2pd's `VIRTUAL_IF_*` and `AWDL_*` requests, so iOS has no `awdl0` | `wifictl p2p` (read only): every radio's peer-to-peer paths and Google's Wonder radio (its subcommands, who holds it); `wifictl wonder`: a session on Wonder's raw path beside wlan0, AWDL's frames counted, everything closed after it and wlan0's link checked (`oneios-tool phone wifi p2p\|wonder`) | does not work: iOS has no `awdl0`; Bluetooth (sharingd needs it: the toggle could not switch) was off in every session until the fix of 2026-11-23 (section 4, not yet booted). The radio path exists: One UI's driver has Google's open Wonder raw 802.11 path (PASSTHRU vdev, nl80211 vendor commands under `00:1a:11`, source in Samsung's `S928BXXU5DZDP` release); Google's AWDL engine is closed, so ours must be OWL or our own. The Wonder tools are built and host-tested, not run on the phone (section 4a) |
 | Haptics | `drivers/haptics` (port of iOSPlus10's LaurelVibrator and haptic node) and, since 2026-11-12, the Actuator IOAudio2Device of the audio archive (UI and keyboard taps) | `runtime/bridges/haptics`: evdev force feedback | both built; host tested with a fake actuator; the `vibrator` path ran in sessions (alerts), the Actuator path: Core Haptics' server gave up at its start for want of a preset, fixed by hosted 0078; then the Actuator ran I/O in silence for want of its DSP chain, hosted 0086, not yet on the phone (section 5) |
 | Audio | `DroidVMVirtioSnd.c` + `DroidVMAudio.cpp`: the hosted kernel's audio archive since 2026-11-12 (before: not built, no device in iOS) | `devices/virtio_snd.rs`, `audio/aaudio_helper.rs` (`oneios-audio`) | helper run on the phone beside One UI (plays and records, 0 underruns, about 130 ms); host-tested against a fake AAudio; in sessions iOS's I/O thread failed for large buffers (system sounds 3 s late or lost): hosted 0052, not yet run; no volume (audiomxd threw at every volume set: no hardware volume control on the Speaker) and the host at One UI's media volume: the control and the host at full scale, 2026-11-22, not yet on the phone (section 6, "Volume") |
@@ -1136,6 +1136,15 @@ join enabled requested by "..." enabled 1`). The Settings switch off and on, or 
   (`vendor/bin/hw/android.hardware.bluetooth@1.1-service-qti`,
   [android_device_samsung_sm8650-common@48c66f6](https://github.com/samsung-sm8650/android_device_samsung_sm8650-common/blob/48c66f6543b31784fce4e7d23ea855897f18ce6e/proprietary-files.txt)
   line 126; running on the owner's phone). Not the AIDL HAL. It owns power, the UART and the firmware download.
+- The base Galaxy S25 (SM-S931B) has the **AIDL** form instead [F, `S931BXXUACZF1`'s vendor image]: its VINTF
+  manifest `/vendor/etc/vintf/manifest/bluetooth_hci.xml` (from
+  `vendor/qcom/proprietary/bluetooth/hidl_transport/bt/aidl/default/bluetooth_hci.xml`) declares
+  `android.hardware.bluetooth.IBluetoothHci/default` with `format="aidl"`, and
+  `/vendor/bin/hw/android.hardware.bluetooth@aidl-service-qti` is started as `vendor.bluetooth-aidl-qti`
+  (`/vendor/etc/init/android.hardware.bluetooth@aidl-service-qti.rc`). The S25 Ultra (same SM8750 vendor image
+  family) was measured AIDL-only on One UI 9 (section "Galaxy S25 Ultra", `docs/s25.md`). `S931BXXUCDZIF` is the
+  same family but its vendor partition has not been unpacked here: the phone's `service list` / `bt_hal.txt`
+  still settles that build [I].
 - Its only client is Android's Bluetooth app, a zygote child: gone in a session, so the HAL is free [I: the HAL
   closes the controller when its client dies].
 - Checked on the phone 2026-11-12: `lshal` lists `android.hardware.bluetooth@1.0::IBluetoothHci/default` and
@@ -1174,6 +1183,17 @@ join enabled requested by "..." enabled 1`). The Settings switch off and on, or 
   `sendHciCommand` returns is answered at once. No `initializationComplete` within 15 s
   (`ONEIOS_BT_INIT_TIMEOUT_MS`) is a failure with a line naming SELinux. `hci_hidl::probe()` asks for the
   service once at xnuhost's start. `ONEIOS_HWBINDER` names another binder device (the PC test).
+- `hci_aidl.rs`: the same client for the **stable AIDL** HAL (`android.hardware.bluetooth.IBluetoothHci/default`,
+  frozen version 1) on `/dev/binder`, through `hal::aidl`: `IServiceManager.getService`,
+  `initialize(IBluetoothHciCallbacks)` (token header 'SYST', then 'VNDR' if refused), `sendHciCommand`, `sendAclData`,
+  `sendScoData`, `sendIsoData`, `close`, and a callback object answering `aclDataReceived`, `hciEventReceived`,
+  `initializationComplete`, `isoDataReceived`, `scoDataReceived` and the stable-AIDL base methods (descriptor,
+  version). The same two threads, 15 s init timeout, death notification and 512-packet queue as the HIDL client.
+  `hci_aidl::probe()` asks servicemanager for the instance, checks its descriptor, and returns 20 (the A56 fork's
+  number); xnuhost tries `hci_hidl::probe_quiet()` first, so the S24 Ultra is unchanged, then `hci_aidl::probe()`.
+  `ONEIOS_BINDER` names another binder device (the PC test). `tests/test_bt_aidl.rs`: a fake servicemanager and
+  AIDL HAL on a binderfs (initialize, the callback's descriptor/version, initializationComplete, an event and ACL
+  data, a command, close). Not run on an S25 yet; the vendor HAL's own `initialize` is the open question.
 - `devices/bridge_dev.rs`: an `OB_HCI_OPEN` while the controller is failed (the HAL died or never finished) closes it and
   opens it again, so a new bluetoothd client starts over.
 - `hidl_parcel.rs` (on `hal/hidl.rs`, `hal/binder.rs`): the parcels (interface token, `hidl_string`, `hidl_vec<uint8_t>` as scatter-gather buffer
@@ -1476,15 +1496,22 @@ stack (for example `Filter Accept List add error`, `BT VSC init failed`).
 
 ### Missing, unknown
 
-- [U] **SELinux**: hwservicemanager checks `find` for the caller's context, and the HAL's domain must be allowed to
-  call back into ours (`binder { call transfer }`). KernelSU's domain is allowed most things; if the callback is
-  denied, a `ksud sepolicy` rule is needed. `bridgectl bt` shows which step fails.
+- [U] **SELinux**: hwservicemanager (HIDL) or servicemanager (AIDL) checks `find` for the caller's context, and the
+  HAL's domain must be allowed to call back into ours (`binder { call transfer }`). KernelSU's domain is allowed most
+  things; if the callback is denied, a `ksud sepolicy` rule is needed. `bridgectl bt` shows which step fails. The
+  AIDL client also needs the vendor HAL to accept a call from our context at all.
 - [U] the transaction codes and the callback handshake against the real libhwbinder and the QTI HAL. Tested on the PC
   (the C's `make -C runtime/bridges test-binder`, 2026-11-11; now `cargo test -p onebridges --test test_hidl_binder`): a fake hwservicemanager and IBluetoothHci 1.1 and 1.0 on a
   real binder driver (binderfs in a user namespace) that read every parcel with libhwbinder's checks (tokens,
   `readBuffer`/`readEmbeddedBuffer` parent links), call back two-way from their own thread, `interfaceChain` on our
   callback, Reset and Read BD_ADDR answered, ACL echoed, close; no HAL registered; no `initializationComplete`; a
   HAL that dies. First phone test: `bridgectl bt` must print two Command Complete events (`runtime/bridges/README.md`).
+- [U] the same for the **AIDL** HAL: the frozen version-1 transaction codes (from AOSP's `IBluetoothHci.aidl`: close
+  1, initialize 2, sendAclData 3, sendHciCommand 4, sendIsoData 5, sendScoData 6; callbacks 1-5), the 'SYST'/'VNDR'
+  token headers and the callback handshake against the QTI service. Tested on the PC
+  (`cargo test -p onebridges --test test_bt_aidl`): a fake servicemanager (`getService`, descriptor, version 1) and
+  AIDL HAL on a binderfs that checks our callback's descriptor and version, calls `initializationComplete(SUCCESS)`,
+  an event and ACL data back two-way, records `sendHciCommand` and `close`; no phone yet.
 - booter: the tree's node. `runtime/loader/src/machine.rs` publishes `/bluetooth` with `transport-encoding` 10 (the
   virtual transport of Apple's VMs) or, with the HAL (`bluetooth=hidl`, or `auto` when the HAL is registered, the
   default since 2026-11-11), `transport-encoding` 1 (H4; it was 3, H4BC, until 2026-11-12), `transport-speed` 3000000 and the phone's

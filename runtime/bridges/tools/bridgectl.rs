@@ -26,7 +26,7 @@
 //! Each prints what it found and ends with "ok" or the reason it failed.
 
 use onebridges::audio::{AudioBackend, AudioHelper};
-use onebridges::bt::{hci, hci_hidl};
+use onebridges::bt::{hci, hci_aidl, hci_hidl};
 use onebridges::cpu::{CpuPlan, Topology};
 use onebridges::hal::{self, aidl, Hal};
 use onebridges::haptics::Haptic;
@@ -435,12 +435,23 @@ fn bt() -> i32 {
     if let Some(a) = hci::bt_address("/mnt/vendor/efs/bluetooth/bt_addr") {
         println!("address file: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}", a[0], a[1], a[2], a[3], a[4], a[5]);
     }
-    let hal = hci_hidl::probe();
+    let mut hal = hci_hidl::probe_quiet();
+    if hal <= 0 {
+        hal = hci_aidl::probe();
+    }
     if hal < 0 {
         println!("no Bluetooth HAL found ({hal})");
         return 1;
     }
-    println!("HAL {} registered", if hal == 11 { "1.1" } else { "1.0" });
+    println!(
+        "HAL {} registered",
+        match hal {
+            11 => "1.1",
+            10 => "1.0",
+            20 => "AIDL",
+            _ => "",
+        }
+    );
     let state = Arc::new(AtomicI32::new(-1));
     let events = Arc::new(AtomicU32::new(0));
     let rx: hci::RxFn = {
@@ -458,7 +469,9 @@ fn bt() -> i32 {
             println!("  state {}", s as i32);
         })
     };
-    let Some(h) = hci_hidl::open_hidl(rx, changed) else { return 1 };
+    let Some(h) = (if hal == 20 { hci_aidl::open_aidl } else { hci_hidl::open_hidl })(rx, changed) else {
+        return 1;
+    };
     if h.open().is_err() {
         return 1;
     }
