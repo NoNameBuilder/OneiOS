@@ -707,6 +707,14 @@ tests pass with drm2kgsl and in the 2D-only build); the numbers of checks below 
 
 Not tested on the PC: anything the GPU does (submits, fences), and KGSL itself. That is `gpuctl`.
 
+The translator's own tests on the PC (2026-11-23, `cargo test -p metal2vulkan` at the pin `624bab3`, x86_64 Linux):
+3231 passed, 2 failed, 18 ignored, 740 s. Both failures are the host's arithmetic and count, in the translator's
+internal tests, and the pin is unmodified here: `engine_arith::a_division_without_arcp_is_the_devices_quotient`
+(0/0's NaN payload: the x86 host gives `0xffc00000`, the ARM device `0x7fc00000`, because the arithmetic ran on the
+host CPU) and `relocated_once::a_run_of_sibling_creations_relocates_once_a_stage` (the first two-stage creation
+counted 3 relocations where the test expects 2; the assert fires before the siblings' count is taken). What settles
+either is the guest's arm64e, and a qemu boot has no 3D context to do it.
+
 ## 4. `gpuctl`: the check on the phone
 
 Built by `runtime/build.sh STAGE` as `STAGE/bin/gpuctl` (static; the bin `gpuctl` of the crate `xnuhost`,
@@ -1331,6 +1339,24 @@ runner, so it links against Xcode's iPhoneOS SDK instead of `out/ios27-tbd` (`bu
 own"); the symbols come from the SDK's `.tbd`, and the shared-cache addresses still come from
 `hooks/<product>-<build>.json`. The deployment target follows the SDK the runner has (27.0 on Xcode 27, else the SDK's
 own). Manual run; the artifact holds the bundle, its `.gpuaddon`, the build record, the check and the log.
+
+**On a Linux PC without the guest's shared cache** (2026-11-23): `out/ios27-tbd` (`ios tbds`) needs the guest's
+`dyld_shared_cache_arm64e`, which this PC does not have (no 24A446 IPSW and no OS image). The build ran with `IOS_SDK`
+at the public iPhoneOS 27.0 SDK mirror (`xybp888/iOS-SDKs`: `SDKSettings.json` version 27.0, 3082 private frameworks,
+3192 `.tbd`) and `IOS_TBD` at a folder of the SDK's own `.tbd` (the SDK's `usr/` and `System/` linked into it), so
+every link is against the SDK's stubs; the shared-cache addresses still come from `hooks/iPhone18,2-24A446.json`,
+which is the guest's (`ios metal-stage-edit` rewrote the six address groups and printed each). The bundle that came
+out passes `ios macho-check` (NativeAdrenoMetal's 417 undefined symbols and libvulkan_freedreno's 5890, each bound to
+a library whose stub exports it or weak and looked up dynamically), carries `oneios-target` `iPhone18,2 24A446`, and
+`strings libvulkan_freedreno.dylib` has `Adreno (TM) 830`. Not made on this path: `build/prime-list.txt`. What it
+cannot be is the guest's own stub set: a symbol the cache exports and Apple's SDK does not would fail the link here
+rather than at load, which is the safe direction.
+
+The bundle from that build: SDK 27.0, clang 23.1.5, ld64 956.6, rustc 1.98.0; `NativeAdrenoMetal` 19,108,320 bytes,
+CDHash `4baf7dbb…`; `libvulkan_freedreno.dylib` 16,738,144 bytes, CDHash `1936cc1b…`; sources NativeMetal `b0d6a07`,
+metal2vulkan `624bab3`, mesa-droidvm `cecc0e9`, Turnip 17,285,584 bytes. The addon with `userland/camera/build.sh`'s
+`H9ISP.mediacapture` (CDHash `33247c78…`) is 12,319,120 bytes, 6 files, 3 CDHashes; the Metal-only sidecar is
+12,288,032 bytes, 5 files, 2 CDHashes.
 
 A bundle is not per-host-phone: `roottweak` places it only when its `oneios-target` is the *guest's* `<product> <build>`
 (`tools/oneios-tool/crates/oneios-tweaks/src/tweaks.rs`), the same `iPhone18,2 24A446` for every Android phone running
