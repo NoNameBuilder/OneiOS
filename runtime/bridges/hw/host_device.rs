@@ -141,7 +141,14 @@ static TABLE: [HostDevice; 5] = [
         devices: &["pa1q"],
         socs: &["SM8750"],
         platforms: &["sun"],
-        config: &["panel-fallback=1080x2340@120"],
+        config: &[
+            "panel-fallback=1080x2340@120",
+            // The side keys and the power key reached the guest's HID device and iOS did nothing with them: backboardd
+            // had the buttons for an external keyboard (docs/hardware.md 5, the PC boot of 2026-11-14), and the
+            // documented answers are these two switches (Boot B and Boot E there). Only this phone's row: the S24
+            // Ultra's buttons are its own.
+            "boot-args-add=oneios-hid-buttons-builtin=1 oneios-button-haptics=1",
+        ],
         env: &["ONEIOS_THERMAL_SOC_TRIPS=1", "ONEIOS_THERMAL_SOC_SAMPLES=3"],
         takeover: false,
     },

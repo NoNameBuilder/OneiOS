@@ -1155,13 +1155,30 @@ fn host_device() {
     assert!(c.host_line.contains("; defaults: ONEIOS_THERMAL_SOC_TRIPS=1, ONEIOS_THERMAL_SOC_SAMPLES=3"));
     assert!(std::env::var_os("ONEIOS_THERMAL_SOC_TRIPS").is_none());
     assert_eq!(host_clear(c), off);
-    // The S25: its 1080x2340 panel as the fallback mode only (a panel that is read still wins); nothing else changes.
+    // The S25: its 1080x2340 panel as the fallback mode only (a panel that is read still wins), and the buttons'
+    // documented switches (oneios-hid-buttons-builtin, oneios-button-haptics: docs/hardware.md 5, Boot B and E) added
+    // to the guest's boot arguments; nothing else changes.
     let props = host_props(&dir, "s25", "SM-S931B", "SM8750");
     let c = rig.finish(Some(&props), None, None).unwrap();
     assert!(c.host == find("galaxy-s25") && c.panel_fallback == Some(PanelMode { width: 1080, height: 2340, hz: 120 }));
     assert!(c.host_line.contains(
-        "; defaults: panel-fallback=1080x2340@120, ONEIOS_THERMAL_SOC_TRIPS=1, ONEIOS_THERMAL_SOC_SAMPLES=3"
+        "; defaults: panel-fallback=1080x2340@120, boot-args-add=oneios-hid-buttons-builtin=1 \
+         oneios-button-haptics=1, ONEIOS_THERMAL_SOC_TRIPS=1, ONEIOS_THERMAL_SOC_SAMPLES=3"
     ));
+    assert!(
+        c.boot_args.contains(" oneios-hid-buttons-builtin=1 ")
+            && c.boot_args.ends_with(" oneios-button-haptics=1"),
+        "{}",
+        c.boot_args
+    );
+    // The phone's words come before the image set's and the command line's, and are added, never replaced.
+    let c2 = rig.finish(Some(&props), None, Some("boot-args-add=sheng-vsync=60")).unwrap();
+    assert_eq!(c2.boot_args_add, "oneios-hid-buttons-builtin=1 oneios-button-haptics=1 sheng-vsync=60");
+    assert!(c2.boot_args.contains(" sheng-vsync=60"), "{}", c2.boot_args);
+    // The S24 Ultra adds nothing: its boot arguments are the default's, byte for byte.
+    let props24 = host_props(&dir, "s24u", "SM-S928B", "SM8650");
+    let c24 = rig.finish(Some(&props24), None, None).unwrap();
+    assert!(c24.boot_args_add.is_empty() && c24.boot_args == DEFAULT_BOOT_ARGS);
     let read_panel = PanelMode { width: 1440, height: 3120, hz: 120 };
     assert!(c.display_mode(Some(&read_panel)).width == 1440 && c.display_mode(None).width == 1080);
     let c2 = rig.finish(Some(&props), None, Some("panel-fallback=1260x2800")).unwrap();
@@ -1169,6 +1186,9 @@ fn host_device() {
         c2.panel_fallback.unwrap().width == 1260 && c2.host_line.contains("panel-fallback=1080x2340@120 not taken")
     );
     let mut c = host_clear(c);
+    // The row's additions are the S25's boot arguments too; clear them to compare with today's config.
+    c.boot_args_add.clear();
+    c.boot_args = DEFAULT_BOOT_ARGS.to_owned();
     c.panel_fallback = None;
     assert_eq!(c, off);
     // The S26 Ultra: its brightness cap is an environment default (the session sets it); the config is today's.

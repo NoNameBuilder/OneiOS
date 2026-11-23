@@ -1314,6 +1314,13 @@ same command on both; every link is against this guest's own iOS 27 stubs (`out/
 scripts/bg.sh metal userland/metal/build.sh      # stage, turnip, plugin, finish, addon (each also runs alone)
 ```
 
+**On GitHub's macOS runners** (`.github/workflows/metal-plugin.yml`, 2026-11-23): the same build without a Mac at hand —
+`kernel/fetch.sh Droid-VM-UniXNU`, the six references, then `userland/metal/build.sh all`. There is no image set on a
+runner, so it links against Xcode's iPhoneOS SDK instead of `out/ios27-tbd` (`build.sh` prints "stubs none: the SDK's
+own"); the symbols come from the SDK's `.tbd`, and the shared-cache addresses still come from
+`hooks/<product>-<build>.json`. The deployment target follows the SDK the runner has (27.0 on Xcode 27, else the SDK's
+own). Manual run; the artifact holds the bundle, its `.gpuaddon`, the build record, the check and the log.
+
 **What it builds**, all for `arm64e-apple-ios27.0`:
 
 | Piece | Source | Notes |

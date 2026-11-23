@@ -501,7 +501,8 @@ pub struct Config {
     pub identity: String,
     pub boot_args: String,
     /// boot-args-add: boot arguments added to boot_args, whichever gave those (the command line, the image set, the
-    /// default), each unless boot_args names it already; the command line's boot-args-add wins over the image set's.
+    /// default), each unless boot_args names it already. The host phone's own additions come first, then the image
+    /// set's, then the command line's; the command line's wins over the image set's when both are given.
     pub boot_args_add: String,
     pub ncpu: u32,
     /// ram=SIZE or ram=auto (0, the default). The finish resolves auto from ram_meminfo: ram_bytes is then the guest's
@@ -1371,6 +1372,17 @@ impl Config {
         if self.boot_args_add.is_empty() {
             self.boot_args_add = image.boot_args_add.clone();
         }
+        // The host phone's own additions come first: they are defaults for that phone (the S25's buttons), and the
+        // image set's and the command line's follow them. add_boot_args leaves out a word the boot arguments name
+        // already, so a key given twice keeps the first value.
+        if !device.boot_args_add.is_empty() {
+            let mut both = device.boot_args_add.clone();
+            if !self.boot_args_add.is_empty() {
+                both.push(' ');
+                both.push_str(&self.boot_args_add);
+            }
+            self.boot_args_add = both;
+        }
         let add = self.boot_args_add.clone();
         if add_boot_args(&mut self.boot_args, BOOT_ARGS_SIZE, &add).is_err() {
             return Err(ConfigError::new(format!(
@@ -1690,6 +1702,8 @@ impl Config {
         match key {
             "gpu" => self.given("gpu") || image.given("gpu"),
             "panel-fallback" => self.panel_fallback.is_some() || image.panel_fallback.is_some(),
+            // Added, not replaced: the table's words come before the image set's and the command line's.
+            "boot-args-add" => false,
             _ => {
                 let mut one = HwSettings::default();
                 if one.setting(key, value).is_err() {
@@ -1744,7 +1758,7 @@ sched_preemption_disable_debug_mode=0 wdt=-1 native-source-storage=1 vgpu-3d=1 d
 
 /// The keys a host table entry may give as device defaults.
 fn device_key(key: &str) -> bool {
-    key == "gpu" || key == "panel-fallback" || key.starts_with("hw-backend")
+    matches!(key, "gpu" | "panel-fallback" | "boot-args-add") || key.starts_with("hw-backend")
 }
 
 /// `<dir>/<name>` when it is a regular file.

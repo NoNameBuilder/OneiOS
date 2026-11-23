@@ -53,7 +53,13 @@ fn host_device() {
         assert!(std::ptr::eq(host_find(e.name).unwrap(), e));
         assert!(t[..i].iter().all(|o| !o.name.eq_ignore_ascii_case(e.name)));
         for c in e.config {
-            assert!(c.starts_with("gpu=") || c.starts_with("panel-fallback=") || c.starts_with("hw-backend"), "{c}");
+            assert!(
+                c.starts_with("gpu=")
+                    || c.starts_with("panel-fallback=")
+                    || c.starts_with("boot-args-add=")
+                    || c.starts_with("hw-backend"),
+                "{c}"
+            );
         }
         for v in e.env {
             assert!(
