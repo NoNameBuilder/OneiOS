@@ -34,8 +34,19 @@ note = "Re-read sysfs on device; capacities and frequencies are still [U] until 
 chip_name = "Adreno 830"
 kgsl_device = "/dev/kgsl-3d0"
 path = "virtio-gpu 3D -> drm2kgsl -> KGSL (same stack as S24 Ultra)"
+chip_id = "0x44050000"  # [I] the S25 Ultra's gpuctl (same SM8750); the base S25's gpuctl still to read
+gpu_id = 6850           # [I] same source
+gmem_kib = 12288        # [I] same source
+gpu_va = "0x4000000000 + 192 GiB"  # [I]; the renderer takes the 128 GiB rung (host test a830)
 status = "unverified_on_sm8750_base"
-note = "S25 Ultra measured chip 0x44050000, gpu_id 6850, 192 GiB GPU VA; the base S25 is [I] the same until gpuctl."
+note = "The A830 shape is in the host test (runtime/xnuhost/src/gpu3d_kgsl/tests.rs, a830: 192 GiB VA, the 128 GiB rung, the 0007 wait-timestamp default); the S25 Ultra fork ran the same stack in sessions 4-7."
+
+[wifi]
+chip = "Qualcomm WCN785x / FastConnect 7800 (kiwi)"  # [F] firmware/kiwi, qca_cld3_kiwi_v2 and cnss in S931BXXUACZF1's vendor image
+interface = "wlan0"
+hal = "AIDL android.hardware.wifi.supplicant.ISupplicant/default version 3"  # [F] the vendor manifest; the S24 Ultra serves v2
+path = "runtime/bridges/wifi: nl80211 scans and link, ISupplicant joins, AF_PACKET frames on wlan0"
+note = "The client uses the v2 calls on both images (v3 appended its methods); start the chip in One UI before the switch, since the bridge does not call IWifi start."
 
 [display]
 # [F] the shipped dtbo: PA1_S6E3FAE_AMB616FL03, 1080x2340, modes at 120/80/60/48/30/24/10 Hz (the fork's probe

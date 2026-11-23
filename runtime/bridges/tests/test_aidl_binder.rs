@@ -4,7 +4,8 @@
 //! (the context manager) and android.hardware.wifi.supplicant.ISupplicant/default with one station interface and its
 //! networks, and calls back as wpa_supplicant's AIDL service does: the descriptor and the interface version of the
 //! callback asked for inside registerCallback (a call back into the client before its call is answered), the state
-//! changes one-way.
+//! changes one-way. The service reports interface version 3, as the base S25's image does; the client's version 2
+//! codes are version 3's (version 3 appended its methods and callbacks after version 2's).
 //!
 //! Scenarios: a service that is not registered at first (a lazy service: the lookup is tried again); no station
 //! interface (added, and removed at the close); One UI's networks removed; a WPA2 join that completes, with what the
@@ -176,6 +177,12 @@ fn fake_incoming(object: u64, code: u32, r: &mut Reader<'_>) -> Result<Parcel, i
             return Err(aidl::BAD_TYPE);
         }
         match code {
+            aidl::GET_VERSION => {
+                // The base S25's image serves version 3; the calls the client makes are version 2's and v3 kept them.
+                reply.put_ok();
+                reply.put_i32(3);
+                return Ok(reply);
+            }
             SUP_GET_STA_INTERFACE | SUP_ADD_STA_INTERFACE => {
                 let text = r.string(95);
                 scheck!(text.as_deref() == Some("wlan0"));
@@ -459,6 +466,7 @@ fn main() {
         stop_fake(pid, log);
         std::process::exit(common::finish("aidl binder"));
     };
+    check!(s.version() == 3); // the base S25's service; the client still uses the v2 codes
     let mut ies = [0u8; 64];
     ies[..28].copy_from_slice(&[
         0, 4, b'h', b'o', b'm', b'e', 48, 20, 1, 0, 0x00, 0x0f, 0xac, 4, 1, 0, 0x00, 0x0f, 0xac, 4, 1, 0, 0x00, 0x0f,
@@ -533,6 +541,7 @@ fn main() {
     let (pid, log) = start_fake(true);
     let look = Supplicant::open("wlan0", 3000, None);
     check!(look.is_some());
+    check!(look.as_ref().is_some_and(|look| look.version() == 3));
     if let Some(look) = look {
         let st = look.status(8);
         check!(st.is_ok_and(|st| st.networks == [0, 1]));

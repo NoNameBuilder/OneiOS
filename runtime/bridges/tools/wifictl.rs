@@ -111,7 +111,8 @@ fn status(args: &[String]) -> i32 {
         Ok(st) => {
             let m = st.mac;
             print!(
-                "supplicant: service {SUP_SERVICE}, station interface {ifname}, address {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}, {} network(s):",
+                "supplicant: service {SUP_SERVICE} (v{}), station interface {ifname}, address {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}, {} network(s):",
+                s.version(),
                 m[0],
                 m[1],
                 m[2],
