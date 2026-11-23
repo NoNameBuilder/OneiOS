@@ -79,6 +79,7 @@ macro_rules! wire_struct {
 
         impl $crate::proto::wire::Wire for $name {
             const SIZE: usize = 0 $(+ <$t as $crate::proto::wire::Le>::SIZE)*;
+            #[allow(clippy::vec_init_then_push)] // each field's offset is its predecessor's plus its size
             fn layout() -> ::std::vec::Vec<(&'static str, usize, usize)> {
                 let mut at = 0;
                 let mut out = ::std::vec::Vec::new();

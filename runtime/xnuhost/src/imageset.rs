@@ -503,6 +503,13 @@ impl ImageSet {
     /// xh_imageset_trustcaches: DarwinBoot's sidecar (u32 count, u32 offsets[count], version 2 modules) from the set's
     /// three IM4P trust caches and, when overlay/userland/owner-trust.json lists CDHashes, one owner module.
     pub fn trustcaches(&self) -> Result<Vec<u8>, Error> {
+        self.trustcaches_trusting(&[])
+    }
+
+    /// [`trustcaches`](Self::trustcaches) with CDHashes beside the image's own: the runtime's boot addon
+    /// (`kernel/gpuaddon`, addon.rs) has code the set's `owner-trust.json` need not name — an image built without the
+    /// plug-in has no such list at all — and this boot's trust cache is the only place that can carry it.
+    pub fn trustcaches_trusting(&self, extra: &[[u8; 20]]) -> Result<Vec<u8>, Error> {
         const NAMES: [&str; 3] = ["trust/static.trustcache", "trust/system.trustcache", "trust/app.trustcache"];
         let mut modules: Vec<Vec<u8>> = Vec::new();
         for (i, name) in NAMES.iter().enumerate() {
@@ -525,7 +532,7 @@ impl ImageSet {
             }
             modules.push(module.to_vec());
         }
-        if let Some(owner) = self.owner_module()? {
+        if let Some(owner) = self.owner_module(extra)? {
             modules.push(owner);
         }
         let mut out = Vec::new();
@@ -545,22 +552,27 @@ impl ImageSet {
     }
 
     /// The owner module: version 2, a UUID derived from its content, the CDHashes of overlay/userland/owner-trust.json
-    /// sorted, each as a SHA-256 hash (type 2) with no flags. None for a set without the userland overlay or with no
-    /// CDHashes.
-    fn owner_module(&self) -> Result<Option<Vec<u8>>, Error> {
+    /// and of `extra` (the runtime's boot addon) sorted, each as a SHA-256 hash (type 2) with no flags. None for a set
+    /// without the userland overlay and with no CDHashes to add.
+    fn owner_module(&self, extra: &[[u8; 20]]) -> Result<Option<Vec<u8>>, Error> {
         const OWNER: &str = "overlay/userland/owner-trust.json";
-        if self.find(OWNER).is_none() {
-            return Ok(None); // a set without the userland overlay
-        }
-        let json = self.listed(OWNER, 4 << 20)?;
-        let j = Json(&json);
         let mut entries: Vec<[u8; 24]> = Vec::new();
-        for e in j.elements(j.get(Some(0), "cdhashes")) {
-            let mut entry = [0u8; 24];
-            let text = j.str(Some(e), 48);
-            if !text.is_some_and(|t| hex_bytes(&t, &mut entry[..20])) {
-                return Err("owner-trust.json: a CDHash is not 40 hex digits");
+        if self.find(OWNER).is_some() {
+            let json = self.listed(OWNER, 4 << 20)?;
+            let j = Json(&json);
+            for e in j.elements(j.get(Some(0), "cdhashes")) {
+                let mut entry = [0u8; 24];
+                let text = j.str(Some(e), 48);
+                if !text.is_some_and(|t| hex_bytes(&t, &mut entry[..20])) {
+                    return Err("owner-trust.json: a CDHash is not 40 hex digits");
+                }
+                entry[20] = 2;
+                entries.push(entry);
             }
+        }
+        for hash in extra {
+            let mut entry = [0u8; 24];
+            entry[..20].copy_from_slice(hash);
             entry[20] = 2;
             entries.push(entry);
         }

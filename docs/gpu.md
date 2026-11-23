@@ -900,7 +900,16 @@ no `AGX*` user-client call from backboardd). Now:
   `kernel.kc.gpuaddon` beside the kernel (`userland/metal/build.sh addon` makes it as
   `out/userland/NativeAdrenoMetal.gpuaddon`, xnuhost passes it on, `native_ram_block_gpu_addon` in `gpu/OneiOSAdreno.cpp`
   finds it). The kernel writes its files into Data first, so a rebuilt plug-in needs no new seed. Its CDHashes must still be in
-  the image's `overlay/userland/owner-trust.json`.
+  the image's `overlay/userland/owner-trust.json`, unless the addon comes from the runtime (next bullet).
+- **A runtime can carry the addon (2026-11-24).** `ONEIOS_GPUADDON=FILE runtime/package.sh VERSION` packs `FILE` and
+  `FILE.cdhashes` as `kernel/gpuaddon` and `kernel/gpuaddon.cdhashes`. xnuhost uses them when the image set has no
+  `kernel.kc.gpuaddon` of its own (`runtime/xnuhost/src/addon.rs`; the image's sidecar wins), and adds their CDHashes to
+  the trust cache it builds for that boot (`ImageSet::trustcaches_trusting`), whether or not the image has an
+  `owner-trust.json`: an image the app built on the phone has none (`trust caches: 3 modules from the image set`), so
+  this is how a rebuilt plug-in reaches a phone with the runtime alone — no adb, no new image, no new seed. Log lines:
+  `gpuaddon: /data/runtime/kernel/gpuaddon: 12319120 bytes, 3 CDHashes trusted (the runtime's; the image set has no
+  kernel.kc.gpuaddon)` and `trust caches: 4 modules from the image set, ...`. The image's own sidecar keeps its CDHashes
+  in `owner-trust.json` and needs none here.
 - The grant was not the gate for `backboardd`: `grantedProcesses` always names it. The other Metal clients are granted by default too (table below). Naming them was not enough: with both class chains adopted the sandbox decides the open, and the iPhone's profiles refused `iconservicesagent` every open (`0xe00002e2`, the home screen without icons). `0033-gpu-grant-decides.patch`: the grant decides for the processes it names; the rest are the sandbox's, as before.
 
 Log lines (always on):

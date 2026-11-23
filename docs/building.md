@@ -258,6 +258,13 @@ runtime/build.sh --test           # the same as runtime/host-tests.sh
 runtime/tests/host.sh             # what CI runs for the runtime: cargo test, fmt, clippy, check-arm64.sh smoke check
 ```
 
+`KERNEL_DIR=DIR ONEIOS_GPUADDON=FILE runtime/package.sh V` also packs a boot addon: `FILE` and `FILE.cdhashes` (the
+`NGPUADD2` sidecar `oneios-tool ios addon` writes: the Metal plug-in under `addons/`, the capture plug-in under
+`camera/`) become `kernel/gpuaddon` and `kernel/gpuaddon.cdhashes` in the package. xnuhost hands it to the kernel when
+the image set has no `kernel.kc.gpuaddon` of its own and adds its CDHashes to that boot's trust cache
+(`runtime/xnuhost/src/addon.rs`, [booter.md](booter.md), [gpu.md](gpu.md) section 7); it needs a kernel in the package,
+and `runtime/package/test.sh` checks the packing and the refusals. Without it the runtime carries no addon.
+
 `runtime/build.sh STAGE` runs `cargo build --release --locked --target aarch64-linux-android` twice: the static programs
 (`crt-static`; target dir `runtime/target/android-static`: `xnuhost` and `gpuctl` of the `xnuhost` crate; `bridgectl`,
 `wifictl`, `brightctl`, `batteryctl`, `thermalctl` of `onebridges`) and the dynamic ones that call Android's libraries

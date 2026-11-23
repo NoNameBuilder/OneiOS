@@ -1166,8 +1166,7 @@ fn host_device() {
          oneios-button-haptics=1, ONEIOS_THERMAL_SOC_TRIPS=1, ONEIOS_THERMAL_SOC_SAMPLES=3"
     ));
     assert!(
-        c.boot_args.contains(" oneios-hid-buttons-builtin=1 ")
-            && c.boot_args.ends_with(" oneios-button-haptics=1"),
+        c.boot_args.contains(" oneios-hid-buttons-builtin=1 ") && c.boot_args.ends_with(" oneios-button-haptics=1"),
         "{}",
         c.boot_args
     );

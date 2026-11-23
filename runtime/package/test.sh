@@ -148,4 +148,36 @@ zstd -dc "$P" | tar -xO runtime.json > "$T/m.json"
 [ "$("${J[@]}" get "$T/m.json" kernel.build_id)/$("${J[@]}" get "$T/m.json" kernel.path)" = test-1/kernel/xnu.macho ] || fail "kernel not in the manifest"
 zstd -dc "$P" | tar -xO NOTICE | grep -q 'Apple Public Source License' || fail "no APSL notice"
 ok "own kernel accepted, APSL notice present"
+
+# 5. The boot addon: ONEIOS_GPUADDON's pair (an `ios addon` sidecar and its .cdhashes) is packed as kernel/gpuaddon
+#    beside the kernel, listed in runtime.json; a file that is no boot addon and a list with no CDHash are refused.
+rm -rf "$OUT_DIR" "$T/a"; mkdir -p "$T/a"
+addon() { # PATH: the NGPUADD2 header as `ios addon` writes it (no files; the packager checks the magic, the kernel the entries)
+  printf 'NGPUADD2\000\000\000\000\000\000\000\000\030\000\000\000\000\000\000\000' > "$1"
+}
+addon "$T/a/plug.gpuaddon"
+printf '4baf7dbb8b7faf1312e87d5b81ea830b5578b3fd addons/NativeAdrenoMetal.bundle/NativeAdrenoMetal\n' > "$T/a/plug.gpuaddon.cdhashes"
+KERNEL_DIR=$T/k ONEIOS_GPUADDON=$T/a/plug.gpuaddon "$ROOT/runtime/package.sh" $V > "$T/log" 2>&1 ||
+  { cat "$T/log"; fail "package with a boot addon"; }
+zstd -dc "$P" | tar -xO runtime.json > "$T/m.json"
+[ "$("${J[@]}" get "$T/m.json" "files[path=kernel/gpuaddon].mode")" = 0644 ] || fail "kernel/gpuaddon is not in runtime.json (0644)"
+[ "$("${J[@]}" get "$T/m.json" "files[path=kernel/gpuaddon.cdhashes].size")" = "$(wc -c < "$T/a/plug.gpuaddon.cdhashes" | tr -d ' ')" ] || fail "kernel/gpuaddon.cdhashes is not in runtime.json"
+zstd -dc "$P" | tar -xO kernel/gpuaddon | cmp -s - "$T/a/plug.gpuaddon" || fail "kernel/gpuaddon is not the addon"
+zstd -dc "$P" | tar -xO kernel/gpuaddon.cdhashes | cmp -s - "$T/a/plug.gpuaddon.cdhashes" || fail "the list is not the addon's"
+grep -q '^package: boot addon 24 bytes, 1 CDHashes (kernel/gpuaddon)$' "$T/log" || { cat "$T/log"; fail "the addon line"; }
+ok "boot addon packed as kernel/gpuaddon with its CDHashes"
+addon_refuse() { # NAME EXPECTED: ONEIOS_GPUADDON set by the caller; exit 1, that refusal, and no package
+  local name=$1 expected=$2 rc=0
+  rm -rf "$OUT_DIR"
+  KERNEL_DIR=$T/k ONEIOS_GPUADDON=$T/a/plug.gpuaddon "$ROOT/runtime/package.sh" $V > "$T/log" 2>&1 || rc=$?
+  [ "$rc" = 1 ] || { cat "$T/log"; fail "$name: exit $rc, expected 1"; }
+  [ ! -e "$OUT_DIR/oneios-runtime-$V-arm64.tar.zst" ] || fail "$name: a package was written"
+  grep -q "^package: .*$expected" "$T/log" || { cat "$T/log"; fail "$name: the refusal does not say '$expected'"; }
+  ok "refused: $name ($(grep -m1 "^package: .*$expected" "$T/log" | cut -c1-100))"
+}
+printf 'not an addon' > "$T/a/plug.gpuaddon"
+addon_refuse "a file that is no boot addon" "is not a boot addon (NGPUADD2)"
+addon "$T/a/plug.gpuaddon"
+printf '# no CDHash here\n' > "$T/a/plug.gpuaddon.cdhashes"
+addon_refuse "a CDHash list with no CDHash" "lists no CDHash"
 echo "all $pass tests passed"

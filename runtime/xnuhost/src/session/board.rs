@@ -557,19 +557,31 @@ impl Session {
         }
         let ramdisk = sidecar(&config.kernel, "ramdisk", 1 << 30);
         let mut trust = sidecar(&config.kernel, "trustcache", 16 << 20);
-        let addon = sidecar(&config.kernel, "gpuaddon", 64 << 20);
+        // The boot addon: the one staged beside the image's kernel, else the runtime's own (addon.rs). The image's is
+        // the phone's choice and its CDHashes sit in the set's owner-trust.json; the runtime's brings its CDHashes for
+        // this boot's trust cache.
+        let addon = match sidecar(&config.kernel, "gpuaddon", 64 << 20) {
+            Some(blob) => Some(crate::addon::Addon { blob, cdhashes: Vec::new() }),
+            None => crate::addon::runtime_addon(&config.runtime),
+        };
         let policies = sidecar(&config.kernel, "vroot", 128 << 20);
         // Apple's trust caches of the set (IM4P) and the owner module, as the sidecar the kernel takes, unless one is
         // shipped.
         if let Some(set) =
             self.image_set.as_ref().filter(|s| trust.is_none() && s.find("trust/static.trustcache").is_some())
         {
-            let blob = set.trustcaches().map_err(|e| {
+            let extra: &[[u8; 20]] = addon.as_ref().map_or(&[], |a| &a.cdhashes);
+            let blob = set.trustcaches_trusting(extra).map_err(|e| {
                 loge!("trust caches of {}: {}", config.image, e);
                 BootFailed
             })?;
             logi!("trust caches: {} modules from the image set, {} bytes", blob[0], blob.len());
             trust = Some(blob);
+        } else if trust.is_some() && addon.as_ref().is_some_and(|a| !a.cdhashes.is_empty()) {
+            loge!(
+                "gpuaddon: the image set ships a kernel.kc.trustcache: the addon's {} CDHashes are not added to it",
+                addon.as_ref().map_or(0, |a| a.cdhashes.len())
+            );
         }
         // The root: the OS volume, matched by its APFS volume UUID.
         machine.root_volume_uuid = self
@@ -646,7 +658,7 @@ impl Session {
             legacy_boot_args: config.legacy_boot_args,
             ramdisk: ramdisk.as_deref(),
             trustcache: trust.as_deref(),
-            gpu_addon: addon.as_deref(),
+            gpu_addon: addon.as_ref().map(|a| a.blob.as_slice()),
             root_policies: policies.as_deref(),
         };
         // SAFETY: the kernel's window, `window` bytes mapped at m.host (mem::map), is the guest's RAM; no vCPU runs yet

@@ -177,6 +177,28 @@ fn image_set() {
     trust[1][last] ^= 1;
     rig.put("trust/system.trustcache", &trust[1]);
     assert_eq!(set.trustcaches(), Err("a file of the image set is not the one manifest.json lists"));
+    trust[1][last] ^= 1;
+    rig.put("trust/system.trustcache", &trust[1]);
+
+    // The runtime's boot addon (addon.rs): trustcaches_trusting puts its CDHashes in the owner module, sorted with the
+    // set's and once even when both name one. An image built without the plug-in has no owner-trust.json at all; its
+    // CDHashes still make the module.
+    let mut repeated = [0u8; 20];
+    repeated[0] = 0xff;
+    repeated[19] = 0xaa;
+    let extra = [[0x42u8; 20], repeated, [0x42u8; 20]];
+    let owner = set.owner_module(&extra).unwrap().unwrap();
+    assert!(owner[0] == 2 && le::u32(&owner, 20) == 3);
+    assert!(owner[24] == 0x01 && owner[48] == 0x42 && owner[72] == 0xff);
+    let blob = set.trustcaches_trusting(&extra).unwrap();
+    assert!(xnuloader::boot::trustcaches_valid(&blob));
+    assert!(blob[0] == 4 && blob.len() == 4 + 16 + (24 + 72) + (24 + 48) + (24 + 24) + (24 + 72));
+    let mut bare = set.clone();
+    bare.files.retain(|f| f.path != "overlay/userland/owner-trust.json");
+    let owner = bare.owner_module(&extra).unwrap().unwrap();
+    assert!(le::u32(&owner, 20) == 2 && owner[24] == 0x42 && owner[48] == 0xff);
+    assert_eq!(bare.trustcaches_trusting(&[]).unwrap()[0], 3);
+    assert_eq!(bare.trustcaches_trusting(&extra).unwrap()[0], 4);
 
     // the device tree properties
     let mut node = Node::new("virtio-mmio-0");

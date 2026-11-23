@@ -25,7 +25,8 @@
 # (ONEIOS_TOOL_ANDROID=PATH names a phone oneios-tool built elsewhere; CARGO_TARGET_DIR is honoured).
 # Env: ANDROID_NDK_ROOT (default $HOME/Android/Sdk/ndk/28.2.13676358, on macOS $HOME/Library/Android/sdk/ndk/...;
 #      the revision is checked; runtime/build.sh gets it as NDK unless NDK is set), ANDROID_API (35),
-#      KERNEL_DIR, OUT_DIR (out/release), SOURCE_DATE_EPOCH (default: the commit time),
+#      KERNEL_DIR, ONEIOS_GPUADDON (an `ios addon` boot addon + its .cdhashes, packed as kernel/gpuaddon),
+#      OUT_DIR (out/release), SOURCE_DATE_EPOCH (default: the commit time),
 #      PACKAGE_EXTRA_DIR (a folder copied into the package as it is; used by the tests).
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -158,6 +159,37 @@ elif [ -f "$KERNEL_DIR/xnu.macho" ]; then
   echo "package: kernel $(sed -n 's/.*"build_id": *"\([^"]*\)".*/\1/p' "$STAGE/kernel/xnu.macho.build.json")"
 else
   echo "package: no kernel at $KERNEL_DIR (runtime only)"
+fi
+
+# 3b. The boot addon the runtime carries (ONEIOS_GPUADDON=FILE and FILE.cdhashes): `ios addon`'s NGPUADD2 sidecar — the
+# Metal plug-in under addons/, the capture plug-in under camera/ — as kernel/gpuaddon beside the kernel it was built
+# with. xnuhost hands it to the kernel when the image set has no kernel.kc.gpuaddon of its own (addon.rs), and its
+# CDHashes join that boot's trust cache, so a phone needs neither adb nor a new image to get a rebuilt plug-in.
+if [ -n "${ONEIOS_GPUADDON:-}" ]; then
+  addon=$ONEIOS_GPUADDON
+  [ "$HAVE_KERNEL" = 1 ] ||
+    { echo "package: ONEIOS_GPUADDON needs a kernel in the package (kernel/gpuaddon is its sidecar)" >&2; exit 1; }
+  [ -f "$addon" ] && [ -f "$addon.cdhashes" ] ||
+    { echo "package: $addon and $addon.cdhashes (the pair oneios-tool ios addon writes) are needed" >&2; exit 1; }
+  [ "$(head -c 8 "$addon")" = NGPUADD2 ] ||
+    { echo "package: $addon is not a boot addon (NGPUADD2): make one with oneios-tool ios addon" >&2; exit 1; }
+  addon_bytes=$(wc -c < "$addon" | tr -d ' ')
+  [ "$addon_bytes" -le $((64 << 20)) ] ||
+    { echo "package: $addon is $addon_bytes bytes, over xnuhost's 64 MiB limit for the boot addon" >&2; exit 1; }
+  addon_hashes=0
+  while IFS= read -r line; do
+    case "$line" in ''|'#'*) continue ;; esac
+    word=${line%%[[:space:]]*}
+    [ "${#word}" = 40 ] && [ -z "$(printf '%s' "$word" | tr -d '0123456789abcdefABCDEF')" ] ||
+      { echo "package: $addon.cdhashes: ${line%% *} is not a 40-digit CDHash" >&2; exit 1; }
+    addon_hashes=$((addon_hashes + 1))
+  done < "$addon.cdhashes"
+  [ "$addon_hashes" -gt 0 ] ||
+    { echo "package: $addon.cdhashes lists no CDHash: the plug-in's code would not be trusted" >&2; exit 1; }
+  cp "$addon" "$STAGE/kernel/gpuaddon"
+  cp "$addon.cdhashes" "$STAGE/kernel/gpuaddon.cdhashes"
+  chmod 0644 "$STAGE/kernel/gpuaddon" "$STAGE/kernel/gpuaddon.cdhashes"
+  echo "package: boot addon $addon_bytes bytes, $addon_hashes CDHashes (kernel/gpuaddon)"
 fi
 
 # 4. Notices.

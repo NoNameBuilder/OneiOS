@@ -37,6 +37,7 @@ window) around a ustar archive of regular files, `runtime.json` first, no top fo
 | `lib/profiles/*.toml` | this repository's IPSW profiles (`profiles/`: the members' names, sizes and hashes, no Apple file), and its host records (`profiles/host-*.toml`: what is known of each host phone, read by no code; the S24 Ultra's names every model number, the SM-S928W too), for the phone's `oneios-tool serve` `fetch`: the OneOS app's Make iOS image fetches the IPSW's members with `$STAGE/runtime/lib/profiles/ios-27.0.1-iPhone18-2.toml`, and on a Galaxy A56 with `ios-16.5-a56.toml` (iOS 16.5 20F66, Apple's pins since 2026-11-23; docs/a56.md; `runtime/package/test.sh` checks it is packed) (a package path has no comma; `runtime/package.sh` step 1c) |
 | `scripts/*` | `runtime/scripts/*`, when there are any |
 | `kernel/xnu.macho`, `kernel/xnu.macho.build.json` | the XNU that `kernel/` builds from Apple's open source, and its build record. Only when a kernel was built |
+| `kernel/gpuaddon`, `kernel/gpuaddon.cdhashes` | the boot addon `ONEIOS_GPUADDON` packs (`oneios-tool ios addon`'s `NGPUADD2` sidecar: the Metal plug-in under `addons/`, the capture plug-in under `camera/`) and the CDHashes of its files. Only with a kernel, and only when the packager is given one. xnuhost hands it to the kernel when the image set has no `kernel.kc.gpuaddon` of its own, and adds its CDHashes to that boot's trust cache ([booter.md](booter.md), [gpu.md](gpu.md)) |
 | `NOTICE`, `LICENSE` | licences; with a kernel, the APSL notice (`kernel/NOTICE.kernel`) |
 
 ## What is never in a release
@@ -59,8 +60,8 @@ enforces this on every package, and `runtime/package/test.sh` tests it:
 
 A refusal ends with exit code 3 and no package. CI also refuses firmware-like names, Mach-O files and files over
 5 MiB in git (`.github/scripts/check-tracked-files.sh`), and a package with a member outside `runtime.json`,
-`NOTICE`, `LICENSE`, `bin/`, `lib/`, `scripts/` and `kernel/xnu.macho` with its record (the runtime job, which never
-checks out the fork's tree `app/`).
+`NOTICE`, `LICENSE`, `bin/`, `lib/`, `scripts/` and `kernel/xnu.macho` with its record (and `kernel/gpuaddon` with
+its CDHashes; the runtime job, which never checks out the fork's tree `app/`).
 
 **The APK** carries no package set, no system image and no firmware: nothing of Apple's, Samsung's, Google's or
 OPPO's. The build packs the Android package sets only with `-Poneos.packSets=true`, which CI never passes; the app
