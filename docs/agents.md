@@ -185,7 +185,8 @@ Ask the owner of a file before changing it; tell the lead when you land somethin
     - **Nothing under `/sys/power`** (`state`, `wake_lock`, `wake_unlock`, `autosleep`), no `reboot(2)`, no `sys.powerctl`,
       no PMIC reset setting. A guest shutdown or restart is an exit code; a guest "Back to One UI" is `XH_HALT_RETURN`.
     - **`/data/control`, `/data/bin` and `/data/oneios_*.sh` are read-only in the namespace** (the way back's state and
-      scripts). `/data/session` stays yours; the fork reads only `ready` and `return.request` from it, so you may clean it.
+      scripts; a kernel that takes no single file read-only, Samsung's, leaves the two scripts writable and the switch
+      says so: `docs/s25.md`). `/data/session` stays yours; the fork reads only `ready` and `return.request` from it, so you may clean it.
     - **SIGKILL must be enough.** After 20 s of SIGTERM everything is killed. Nothing may need a clean exit to give the GPU
       or the panel back: no helper outside the cgroup, no state left in a HAL that outlives the process. KGSL contexts and
       DRM handles go with the process; the return restarts One UI's composer and surfaceflinger every time and reboots if
@@ -268,7 +269,8 @@ Ask the owner of a file before changing it; tell the lead when you land somethin
     composer and surfaceflinger are restarted, then audioserver, cameraserver, media, wificond and netd (zygote's restart
     list): a bridge that drives another HAL directly must tell oneos which init service to restart.
   - In the namespace: `/data/control`, `/data/bin`, `/data/oneios_switch.sh`, `/data/oneios_return.sh` read-only (as
-    `/data/runtime`, `/data/image`); xnuhost in cgroup `/sys/fs/cgroup/oneios_session`, `oom_score_adj` 500.
+    `/data/runtime`, `/data/image`; the two scripts where the kernel takes a single file read-only, `docs/s25.md`);
+    xnuhost in cgroup `/sys/fs/cgroup/oneios_session`, `oom_score_adj` 500.
 
 ## Notes and requests between agents
 
