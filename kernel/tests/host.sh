@@ -134,6 +134,37 @@ if command -v "${CC:-cc}" > /dev/null; then
 else
   echo "skipped: 0098's rename (no ${CC:-cc})"
 fi
+# Hosted 0103's rewrite of iOS 27 digitizer events into iOS 16.5's layout (the A56's touch): hosted_hid16_element and
+# its helpers as the patch adds them (its + lines from "static int hosted_hid16" to the queue walk, which needs the
+# kernel's types), built with an element made like the fork's dumped touch entry (kernel/patches/oneios-hosted/tests).
+if command -v "${CC:-cc}" > /dev/null; then
+  t=$(mktemp -d)
+  awk '/^\+static int hosted_hid16 = -1;/ { on = 1 } /^\+\/\* The unread elements/ { exit } on { print }' \
+    kernel/patches/oneios-hosted/0103-hid-digitizer-ios16.patch | sed 's/^+//' > "$t/hid16.c"
+  grep -qF 'hosted_hid16_element(uint8_t *p, uint32_t len)' "$t/hid16.c" || fail "0103: hosted_hid16_element not found in the patch"
+  "${CC:-cc}" -std=c11 -Wall -Wextra -Wno-unused-variable -I "$t" kernel/patches/oneios-hosted/tests/test_hid16.c -o "$t/test" || fail "0103: build"
+  "$t/test" || fail "0103: digitizer rewrite"
+  rm -rf "$t"
+  ok "0103: iOS 27 digitizer events rewritten in iOS 16.5's layout"
+else
+  echo "skipped: 0103's rewrite (no ${CC:-cc})"
+fi
+# The GPU archive's choice of accelerator (a56-gpu, 2026-11-24; kernel/patches/oneios-hosted/gpu/OneiOSGpuChoice.h, as
+# OneiOSAdreno.cpp includes it): an MSM capset (or none read) without oneios-gpu-amd keeps the rule of every boot before
+# (the S24 Ultra), an AMDGPU capset never gets the Adreno accelerator, oneios-gpu-amd=1 on it gets the A56's whatever
+# oneios-gpu-metal says; and the A56 accelerator's CPU-composition list, discovery keys and open types. With the
+# sanitizers where the compiler has them; warnings are errors with clang (gpu/tests/test_choice.c).
+if command -v "${CC:-cc}" > /dev/null; then
+  t=$(mktemp -d)
+  werror=; "${CC:-cc}" --version 2>/dev/null | grep -q clang && werror=-Werror
+  choice=(-std=c11 -O1 -g -Wall -Wextra $werror kernel/patches/oneios-hosted/gpu/tests/test_choice.c -o "$t/test_choice")
+  "${CC:-cc}" -fsanitize=address,undefined "${choice[@]}" 2> /dev/null || "${CC:-cc}" "${choice[@]}" || fail "gpu choice: build"
+  "$t/test_choice" || fail "gpu choice"
+  rm -rf "$t"
+  ok "gpu: the accelerator's choice by capset and boot argument, the A56 accelerator's CPU list and open types"
+else
+  echo "skipped: gpu choice (no ${CC:-cc})"
+fi
 # The arm64e kernel's compiler line (kernel/linux/clang-wrapper): the PAC ABI (signed calls, returns, the intrinsics)
 # and function-pointer type discrimination reach cc1 whatever the host clang implies for the triple by itself.
 # A clang that refuses the kernel's own driver flags (CI's Ubuntu clang: an older release) builds no kernel either, and

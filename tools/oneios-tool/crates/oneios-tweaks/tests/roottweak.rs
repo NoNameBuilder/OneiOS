@@ -858,7 +858,9 @@ fn sealed_20f66_gets_the_16_userland_boot_args() {
         "oneios-gpu-metal=0",
         "oneios-legacy-bootstrap-replies=1",
         "oneios-legacy-registered-ports=1",
-        "oneios-mac-exec-skip=mediaserverd,TVRemoteConnectionService\n",
+        "oneios-mac-exec-skip=mediaserverd,TVRemoteConnectionService oneios-hid16=1 ",
+        " oneios-grant=configd:com.apple.networking.ionetworkstack.user-client oneios-ls-keep=3 oneios-disable-jobs=",
+        ",com.apple.tailspind\n",
         "text-fixup=dyld_shared_cache_arm64.03,15e4684,e8279f1a,28008052",
     ] {
         assert!(conf.contains(part), "{part}");

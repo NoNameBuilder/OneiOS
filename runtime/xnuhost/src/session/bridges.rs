@@ -631,6 +631,7 @@ impl Bridges {
                 match hal {
                     11 => " 1.1",
                     10 => " 1.0",
+                    hci_hidl::PROBE_AIDL => " (AIDL)",
                     _ => "",
                 },
                 mac_text(&machine.bt_mac),

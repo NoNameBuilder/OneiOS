@@ -9,6 +9,14 @@ use std::path::{Path, PathBuf};
 
 /// The name of the main cache file in the cache's folder.
 pub const MAIN_NAME: &str = "dyld_shared_cache_arm64e";
+/// The main file's names: arm64e (iOS 27 of the iPhone18,2) first, then arm64 (iOS 16.5 of the iPhone X: the Galaxy A56's
+/// image, docs/a56-gpu.md).
+pub const MAIN_NAMES: [&str; 2] = [MAIN_NAME, "dyld_shared_cache_arm64"];
+
+/// The main file's name in `dir`: the first of MAIN_NAMES that is there (MAIN_NAME when none is).
+pub fn main_name(dir: &Path) -> &'static str {
+    MAIN_NAMES.iter().copied().find(|n| dir.join(n).is_file()).unwrap_or(MAIN_NAME)
+}
 
 /// dsc.py's `is_call`: bl, blr, or an authenticated blr (blraaz, blrabz, blraa, blrab).
 #[inline]
@@ -36,7 +44,7 @@ pub fn cstr_at(data: &[u8], off: usize) -> &[u8] {
 /// The UUID of a cache: 16 bytes at 0x58 of the main file's header. Reads only the header.
 pub fn read_uuid(dir: &Path) -> Result<[u8; 16]> {
     use std::io::Read;
-    let path = dir.join(MAIN_NAME);
+    let path = dir.join(main_name(dir));
     let mut head = [0u8; 0x68];
     let mut file = std::fs::File::open(&path).with_context(|| format!("{}", path.display()))?;
     file.read_exact(&mut head).with_context(|| format!("{}: the header", path.display()))?;
@@ -70,6 +78,8 @@ pub struct TextRange {
 
 pub struct Cache {
     pub dir: PathBuf,
+    /// MAIN_NAMES[0] or [1]: which the folder has.
+    pub main_name: &'static str,
     /// File 0 is the main file; the subcaches follow in the header's order.
     pub files: Vec<Map>,
     pub file_names: Vec<String>,
@@ -86,7 +96,8 @@ pub struct Cache {
 
 impl Cache {
     pub fn open(dir: &Path) -> Result<Cache> {
-        let main_path = dir.join(MAIN_NAME);
+        let main_name = main_name(dir);
+        let main_path = dir.join(main_name);
         let main = Map::open(&main_path)?;
         let bad = || anyhow!("{}: the header is cut", main_path.display());
         if main.get(..7) != Some(b"dyld_v1".as_slice()) {
@@ -102,11 +113,11 @@ impl Cache {
         let img_off = u32_at(&main, 0x1C0).ok_or_else(bad)? as usize;
         let img_count = u32_at(&main, 0x1C4).ok_or_else(bad)? as usize;
 
-        let mut names = vec![MAIN_NAME.to_string()];
+        let mut names = vec![main_name.to_string()];
         for i in 0..sub_count {
             let entry = main.get(sub_off + 56 * i..sub_off + 56 * (i + 1)).ok_or_else(bad)?;
             let suffix = String::from_utf8_lossy(cstr_at(&entry[24..], 0)).into_owned();
-            names.push(format!("{MAIN_NAME}{suffix}"));
+            names.push(format!("{main_name}{suffix}"));
         }
         let mut images = Vec::with_capacity(img_count);
         for i in 0..img_count {
@@ -137,9 +148,9 @@ impl Cache {
             }
         }
         maps.sort_by_key(|m| m.addr);
-        let symbols_path = dir.join(format!("{MAIN_NAME}.symbols"));
+        let symbols_path = dir.join(format!("{main_name}.symbols"));
         let symbols_file = if symbols_path.exists() { Some(Map::open(&symbols_path)?) } else { None };
-        Ok(Cache { dir: dir.to_path_buf(), files, file_names: names, uuid, base, size, max_slide, maps, images, symbols_file })
+        Ok(Cache { dir: dir.to_path_buf(), main_name, files, file_names: names, uuid, base, size, max_slide, maps, images, symbols_file })
     }
 
     /// dsc.py's `where`: the last mapping that starts at or below `va`, when `va` is inside it.
@@ -262,8 +273,8 @@ impl Cache {
         let sym: &[u8] = self
             .symbols_file
             .as_ref()
-            .ok_or_else(|| anyhow!("{}: no {MAIN_NAME}.symbols file", self.dir.display()))?;
-        let cut = || anyhow!("{MAIN_NAME}.symbols: the local symbols are cut");
+            .ok_or_else(|| anyhow!("{}: no {}.symbols file", self.dir.display(), self.main_name))?;
+        let cut = || anyhow!("{}.symbols: the local symbols are cut", self.main_name);
         let local_off = usize::try_from(u64_at(sym, 0x48).ok_or_else(cut)?).map_err(|_| cut())?;
         let field = |i: usize| u32_at(sym, local_off + 4 * i).map(|v| v as usize).ok_or_else(cut);
         let (nlist_off, str_off, ent_off, ent_count) = (field(0)?, field(2)?, field(4)?, field(5)?);
@@ -293,6 +304,55 @@ impl Cache {
         let mut out: Vec<(u64, Cow<str>)> =
             self.raw_symbols(index)?.into_iter().map(|(v, n)| (v, String::from_utf8_lossy(n))).collect();
         out.sort();
+        Ok(out)
+    }
+}
+
+/// The target of a `b` or `bl` at `va`: (target, true for bl), None for any other instruction.
+pub fn branch_target(word: u32, va: u64) -> Option<(u64, bool)> {
+    let link = match word & 0xfc00_0000 {
+        0x9400_0000 => true,
+        0x1400_0000 => false,
+        _ => return None,
+    };
+    let imm = ((word & 0x03ff_ffff) << 6) as i32 >> 6; // sign-extended imm26
+    Some((va.wrapping_add_signed(i64::from(imm) * 4), link))
+}
+
+impl Cache {
+    /// Every `b` and `bl` in an image's `__TEXT` whose target is one of `targets` (unslid): (site, target, bl?),
+    /// sorted by site. `sym callers`.
+    pub fn callers(&self, targets: &[u64]) -> Result<Vec<(u64, u64, bool)>> {
+        use rayon::prelude::*;
+        let want: std::collections::HashSet<u64> = targets.iter().copied().collect();
+        let ranges = self.text_ranges()?;
+        let mut out: Vec<(u64, u64, bool)> = ranges
+            .par_iter()
+            .flat_map_iter(|r| {
+                let mut found = Vec::new();
+                let mut va = r.start & !3;
+                while va < r.end {
+                    // Read the range one mapping piece at a time (a range never needs more than its file holds).
+                    let Some(bytes) = self.read(va, (r.end - va).min(1 << 20) as usize) else { break };
+                    if bytes.len() < 4 {
+                        break;
+                    }
+                    for (k, w) in bytes.chunks_exact(4).enumerate() {
+                        let site = va + 4 * k as u64;
+                        let word = u32::from_le_bytes([w[0], w[1], w[2], w[3]]);
+                        if let Some((t, link)) = branch_target(word, site) {
+                            if want.contains(&t) {
+                                found.push((site, t, link));
+                            }
+                        }
+                    }
+                    va += (bytes.len() & !3) as u64;
+                }
+                found
+            })
+            .collect();
+        out.sort();
+        out.dedup();
         Ok(out)
     }
 }

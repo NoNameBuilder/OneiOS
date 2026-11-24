@@ -76,7 +76,7 @@ check "status: host S24 Ultra SM-S928W (Canada, the US vendor model)" 0 "^host: 
 printf '[ro.product.model]: [SM-S948B]\n[ro.soc.model]: [SM8850]\n' > "$P/.fake/props"
 check "status: host S26 Ultra" 0 "^host: galaxy-s26-ultra .*matched by ro.product.model=SM-S948B; defaults: ONEIOS_BRIGHT_MAX=2300$" hs
 printf '[ro.product.model]: [SM-A566E]\n[ro.product.device]: [a56x]\n[ro.soc.model]: [s5e8855]\n' > "$P/.fake/props"
-check "status: host A56" 0 "^host: galaxy-a56 .*matched by ro.product.model=SM-A566E; defaults: gpu=2d, panel-fallback=1080x2340@120$" hs
+check "status: host A56" 0 "^host: galaxy-a56 .*matched by ro.product.model=SM-A566E; defaults: gpu=auto, panel-fallback=1080x2340@120, width=720, height=1560, scale=2, hz=60, return-graceful-ms=4000, hw-backend-haptics=treble, hw-backend-fallback=1$" hs
 printf '[ro.product.model]: [SM-S938B]\n' > "$P/.fake/props"
 check "status: host S25 Ultra" 0 "^host: galaxy-s25-ultra .*defaults: ONEIOS_THERMAL_SOC_TRIPS=1, ONEIOS_THERMAL_SOC_SAMPLES=3$" hs
 printf '[ro.product.model]: [Pixel 11 Pro]\n[ro.soc.model]: [Tensor G5]\n' > "$P/.fake/props"

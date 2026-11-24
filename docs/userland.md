@@ -59,7 +59,10 @@ run instead of being written over. A root that is not iOS 27.0.1 is refused (`--
 (20F66), the Galaxy A56's userland (docs/a56.md, 2026-11-23): its tweaks apply with a line that says so, and its
 `xnuhost.conf` carries the 16.5 boot arguments (the 16.5 shims, `oneios-gpu-metal=0`, and since 2026-11-23
 `oneios-mac-exec-skip=mediaserverd,TVRemoteConnectionService`, kernel 0073), the keybagd fixup (only for 20F66's own
-`keybagd`, by its SHA-256) and the QuartzCore vsync fixup. On the 20F66 root of 2026-11-23 the report says 6 launchd jobs
+`keybagd`, by its SHA-256) and the QuartzCore vsync fixup. Since 2026-11-24 its boot arguments also carry hosted 0103-0105's switches
+(`oneios-hid16=1`, configd's `oneios-grant`, `oneios-ls-keep=3`) and `oneios-disable-jobs` with the other A56 fork's idle
+jobs (suggestd, spotlightknowledged, corespotlightservice, siriknowledged, tipsd, gamed, followupd, tailspind) beside
+0053's three; xnuhost adds the same words to an older 20F66 image ([booter.md](booter.md), "iOS 16.5's kernel switches"). On the 20F66 root of 2026-11-23 the report says 6 launchd jobs
 disabled (most of the policy's labels are not in 16.5) and no jetsam properties for V54 (the root has D22's).
 
 ## 2. Layouts
@@ -270,6 +273,39 @@ argument `oneios-mg-cache=2`: removed at every boot (the old way, the A/B switch
 after a change has `cache kept` and no `Could not open .../com.apple.MobileGestalt.plist` line in iOS's log. Not run
 on the phone yet. A new Data seed carries no cache (the root tweaks remove it) and no marker.
 
+**The iOS 16.5 identity (fix/a56-ios16-faults, 2026-11-24; the Galaxy A56, OneiOS issue 73).** iOS 16.5's
+MobileGestalt (20F66, read in `libMobileGestalt.dylib` of its cache on the build laptop) does not take the product
+from the root's `model`: `MGGetProductType` and `MGIsDeviceOfType` copy `IODeviceTree:/product product-id` (a 20-byte
+value) and look it up in a table of 363 products (20 bytes, flags, the product type). The tree xnuhost made for
+iOS 27 has no `product-id` (24A446 does not read it), so on 20F66 the product type was -1:
+
+- bluetoothd (`/usr/sbin/bluetoothd` of 20F66) picks its chip in one function (0x10029aa14) by `getenv("BT_CHIP")`
+  (only `ACI BT`) and then dozens of `MGIsDeviceOneOfType` lists of these ids; none matched, it logged "Unknown
+  platform", left the chip null, and its caller read `[chip + 0x260]` (`ldr w23, [x0, #0x260]` at 0x100274cf0): `trap
+  ... far 0x260 ... pc ...cf0 lr ...cf0` and `Process[N] crashed: bluetoothd` every 10 s, 29 times. Its xnuhost log
+  had the lookup: `oneios-iokit: bluetoothd[N] property "product-id" (no plane) of IOPlatformDevice "product" -> not
+  found`. The iPhone X's id is in one of the factory's lists (at 0x10029b110, chip 15) and in two other functions' (0x1002dcafc, 0x1002fbe74): with it the factory makes chip 15.
+- Settings > General > About had no Model Name. [I] MobileGestalt reads the marketing name from `/product
+  product-name` (and `product-description`), but only once it knows the product.
+- The Serial Number was N/A: MobileGestalt answers it from `IOPlatformExpertDevice`'s `IOPlatformSerialNumber`, which
+  XNU publishes from the root's `serial-number` (`IOPlatformExpert::publishPlatformUUIDAndSerial`). Our tree had
+  none, for iOS 27 too.
+
+What xnuhost gives a 20F66 image set now (the runtime alone, no image remake; `runtime/xnuhost/src/config.rs`
+`IOS16_PRODUCT_ID`, `IOS16_SERIAL`, the loader's `Machine::product_id` and `serial_number`, docs/booter.md):
+`/product product-id` = the iPhone X's (`fd079b298144a7deb4d7c87fef3eb474d8f0e7eb`, from `DeviceTree.d22ap` of the
+same restore file, `oneios-tool remotezip get` + `image im4p` + `xnuloader-inspect adt`; entry 36 of the table),
+`/product product-description` = `product-name` = "OneiOS guest" (ours), and the root's `serial-number` for the
+made-up serial `ONEIOS16A56` (never an Apple serial; 11 characters, laid out as XNU's IODTPlatformExpert reads them:
+ArmDTPlatform is one). The root's `model` (iPhone18,2) and `target-type` (V54) stay as they are, so the jetsam
+properties and every per-board table follow what they followed before; whether 16.5 wants D22's there too is open.
+The tree changes, so `/chosen oneios-identity` changes and MobileGestalt's cache is made again once (hosted 0084).
+iOS 27 (any other build): no `product-id`, no `product-description`, no `serial-number`; its tree is the same bytes.
+**The proof on the A56** (not booted here): xnuhost's `ios16: /product product-id fd079b29... serial-number
+ONEIOS16A56`; `oneios-iokit: bluetoothd[N] property "product-id" ... -> found`; no `trap ... far 0x260` and no
+`crashed: bluetoothd`; About shows a Model Name and Serial Number `ONEIOS16A56`. What bluetoothd does after the chip
+(its BlueTool chip boot, the transport) is docs/hardware.md section 4.
+
 **Layout risks. None of this has been seen: no frame of SpringBoard's has been rendered at any size.**
 
 Both scales:
@@ -400,6 +436,55 @@ gives CoreBrightness's `-[BrightnessSystemInternal initBLControl:]` mode 1 (BLCo
 (VMBLControl, which never reaches the backlight service). It runs because the plug-in loads on backboardd's main thread
 before that thread instantiates BrightnessSystem; a session without the plug-in keeps VMBLControl. `oneios-bl-mode=0`
 in the kernel's boot arguments turns it off. Why and what to look for: `drivers/brightness/README.md`.
+
+### 7.2 The Galaxy A56's guest Mesa (`userland/metal-amd`, iOS 16.5)
+
+For the A56 only (20F66, arm64; nothing of it is in an S24 Ultra or iOS 27 image). `userland/metal-amd/build.sh`
+builds Mesa's radeonsi (ACO, no LLVM) over the amdgpu virtio native context and a Darwin vdrm backend that speaks to
+the guest kernel's accelerator user client (open type 0x4149, `DroidVMVirtgpuABI.h`), into `out/metal-amd/ios`:
+
+- `liboneios_radeonsi.dylib`: exports `oneios_radeonsi_screen_create(why, why_size)` alone (the radeonsi
+  `pipe_screen`, K3 of [a56-gpu.md](a56-gpu.md)); install name `@loader_path/`. The A56's Metal plug-in does not load it: its
+  `libOneiOSRadeonAir.dylib` compiles the same target's sources in (section 4 of a56-gpu.md), so the bundle carries
+  one library with radeonsi in it.
+- `oneios-amdgpu-probe`: a lasting command-line tool for a root shell on the A56: the device, the capset's GPU facts,
+  a guest BO, a GFX NOP IB and its fence, one `PASS`/`FAIL` line each; `--screen` adds the radeonsi screen and a
+  clear read back.
+
+Both are arm64, minos 16.5, signed by `oneios-tool ios sign`, checked against the 20F66 stubs. Every process that
+opens the GPU logs `vdrm-darwin: connected: ...` to iOS's unified log, and every screen `oneios-radeonsi: screen
+"..."`. **Not placed in any image yet and not run in iOS**: the image hook does not know them; the Metal stage places
+the dylib with its bundle. Where they come from, what is stubbed and the host tests: [a56-gpu.md](a56-gpu.md)
+section 3; the build: [building.md](building.md) section 9, "The A56's guest Mesa".
+
+### 7.3 The Galaxy A56's Metal plug-in (`userland/metal-amd`, iOS 16.5)
+
+`OneiOSRadeonMetal.bundle`: Jesvi-iOS a13e406's Metal device and AIR Metal layer (MIT; `userland/metal-amd/NOTICE`
+lists every file taken and changed) for the A56's 20F66 image, built by `userland/metal-amd/air/build.sh plugin`
+([building.md](building.md) section 9). The bundle holds `Info.plist` (`CFBundleExecutable` OneiOSRadeonMetal,
+`NSPrincipalClass` OneiOSRadeonMetalDevice), `OneiOSRadeonMetal` (the Objective-C device, arm64, iOS 16.5),
+`libOneiOSRadeonAir.dylib` (the AIR frontend, Mesa's Gallium and, from the guest Mesa stage's build, radeonsi; loaded
+with `dlopen` from beside the executable) and `oneios-target` (`iPhone10,3 20F66`). Metal finds it through the
+accelerator the kernel publishes on an amdgpu host (`MetalPluginName` OneiOSRadeonMetal,
+`MetalPluginClassName` OneiOSRadeonMetalDevice: [a56-gpu.md](a56-gpu.md) section 5).
+
+Which processes get a device (the plug-in decides, in `-initWithAcceleratorPort:`; a process it declines gets nil, no
+device, and keeps the road it has without one, as with NativeAdrenoMetal): every process but `backboardd`,
+`mediaserverd`, `PosterBoard`, `AegirPoster` and `WeatherPoster` (Jesvi-iOS's own list of processes kept off this
+Metal: [a56-gpu.md](a56-gpu.md) section 4 says why backboardd is). `OneiOSRadeonMetal.clients` beside the bundle (one
+process name a line, `*` for all), when it exists, decides instead. `oneios-radeon-backboardd=1` in the boot
+arguments gives backboardd the device (a test of the render server on this layer; not shown to work).
+`oneios-metal-profile=N` sets the feature profile (Jesvi's `metal_profile=`; default 1).
+
+Its log: os_log subsystem `com.oneios.radeonmetal` (`oneios-tool phone pull-log`), and for its errors, the device's
+start and the first two pipelines a kernel text row in `xnuhost.log`: `oneios-gpu-text: PROCESS[PID] RM ...` (hosted
+0039's rows; the accelerator's class must start with `AGX` for the kernel to log them).
+
+**Not placed yet.** The image hook (`oneios-tool image tweaks`) places `NativeAdrenoMetal.bundle` for the S24 Ultra
+image; no tool places this bundle in the 20F66 image, and the kernel mounts the addon as for the Adreno bundle (hosted 0031), and since hosted 0108 names the
+A56 bundle in its lines (`oneios-gpu-addon: .../OneiOSRadeonMetal.bundle/Info.plist ...: visible`, the dyld lines of
+`OneiOSRadeon*` files, the clients file named after the published plug-in; a56-gpu.md section 5). `oneios-tool ios gpuaddon` already keeps its name
+(`addons/OneiOSRadeonMetal.bundle/...`, `addons/OneiOSRadeonMetal.publish`).
 
 ## 8. What launchd, backboardd and SpringBoard need
 

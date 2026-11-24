@@ -1,5 +1,7 @@
 # GPU: virtio-gpu 3D on the phone's Adreno
 
+> **The Galaxy A56 (Xclipse 540, iOS 16.5)** has its own GPU port, Metal on Mesa radeonsi without Vulkan: [a56-gpu.md](a56-gpu.md) (2026-11-24).
+
 Owner: fable-gpu. Date: 2026-11-10. The Metal path of OneiOS, as Droid-VM runs it on the same SoC: the guest's
 Metal plug-in runs Turnip, Turnip speaks the drm/msm protocol over virtio-gpu's DRM native context, and the host
 serves that protocol on `/dev/kgsl-3d0` with Droid-VM's `drm2kgsl`.
@@ -50,6 +52,7 @@ line and test case was kept ([runtime/RUST.md](../runtime/RUST.md)); the Rust GP
 | `drm2kgsl/glue/oneios_sys.c`, `.h` | Host builds only: every `open` and `ioctl` of the renderer through a table the tests set (the stand-in KGSL), instead of the C tests' `-Wl,--wrap` |
 | `drm2kgsl/glue/oneios_kgsl_layout.c` | Host builds only: the sizes and offsets of drm2kgsl's `msm_kgsl.h` that the tests' stand-in KGSL mirrors in Rust (`src/gpu3d_kgsl/tests/kgsl.rs`), checked by `layout_matches_msm_kgsl_h` |
 | `drm2kgsl/host_c11.h` | Only for the host build of those sources (mesa's C11 threads shim beside a new glibc) |
+| `src/gpu3d_amdgpu.rs`, `src/gpu3d_amdgpu/` | The Galaxy A56's renderer: the amdgpu native context (Mesa's protocol) on an amdgpu render node by raw ioctls, its self-test, and the choice between it, KGSL's and 2D (a host with `/dev/kgsl-3d0` keeps this path unchanged): [a56-gpu.md](a56-gpu.md) 2 |
 | `tools/gpuctl.rs` | The renderer alone, for the phone (section 4); the bin `gpuctl` |
 
 **drm2kgsl is linked in, statically. There is no helper process.** `runtime/xnuhost/drm2kgsl/build.rs` compiles
@@ -543,7 +546,8 @@ pages without one (the PC). What the 3D path still needs from the display is lis
 
 **Options.** `--gpu auto` (default: 3D when `/dev/kgsl-3d0`, `/dev/udmabuf` and `/dev/dma_heap/system` open and
 KGSL takes the probe), `--gpu 3d` (or do not start), `--gpu 2d`. The reason for 2D is in the log (`gpu: 2D only: ...`).
-The default is the host phone's when its table entry has one (`docs/hardware.md` 7h: the Galaxy A56, which has no KGSL,
+The default is the host phone's when its table entry has one (`docs/hardware.md` 7h: the Galaxy A56, which has no KGSL and no
+Xclipse 3D path here (`docs/a56.md`, "The Xclipse host half": the other fork's AMDGPU renderer left iOS's UI black),
 is `2d`); the command line and the image set's `gpu=` win over it.
 drm2kgsl's own switches are environment variables it reads (`DRM2KGSL_PRIORITIES`, `CROSVM_DRM2KGSL_DIAG=1`).
 
@@ -784,7 +788,9 @@ adb shell su -c '/data/local/tmp/gpuctl routes'                                 
 adb shell su -c '/data/local/tmp/gpuctl submit -v'                                # with drm2kgsl's own log lines
 ```
 
-The fork's Hardware checks screen runs it with no argument. The steps:
+The fork's Hardware checks screen runs it with no argument. On the Galaxy A56 (no KGSL) `gpuctl amdgpu [NODE] [-v]`
+runs the amdgpu renderer's self-test instead (not part of the run of all): the steps and lines of
+[a56-gpu.md](a56-gpu.md) section 2, last line `ok` or `FAILED at: ...`. The steps:
 
 - `gpuctl nodes` opens the three device nodes, prints udmabuf's limits and the limits xnuhost splits by.
 - `gpuctl routes` asks KGSL directly, by raw ioctls and without drm2kgsl, in processes of its own. First each way
@@ -904,9 +910,9 @@ compiles it; `build/oneios-gpu/adreno/status.json` says which). No kernel patch 
 |---|---|---|
 | `NativeAdrenoPublish`, `NativeAdrenoUserClient`, `NativeAdrenoSubmit`, `NativeAdrenoMemory`, `NativeAdrenoCpu`, `AdrenoPM4.kit` | `external/NativeAdreno`, `external/AdrenoPM4`, built by Droid-VM's `build-droidvm-gpu.py` run up to its accelerator step (its edits to Publish and Memory included) | `AGXDeviceUserClient` (the user client), the published `NativeAdrenoGpu` service, execbuf and memory |
 | `DroidVMGpu` | `external/UniXNU-droidvm/package/DroidVMGpu.cpp`, from a staged copy with four changes (`staged/gpu.rs` of `oneios-tool kernel gen gpu`) | NativeAdreno's hardware classes never attached; the publish; the accelerator's registration |
-| `NativeAdrenoAccelerator.late` | `external/NativeAdreno/NativeAdrenoAccelerator.cpp` with `external/NativeMetal/OriginalAcceleratorABI.h` | `AGXAccelerator`, a subclass of the collection's `IOAcceleratorES`; its static initializer is out of `__mod_init_func` and runs after IOGPUFamily has loaded |
+| `NativeAdrenoAccelerator.late` | `external/NativeAdreno/NativeAdrenoAccelerator.cpp` with `external/NativeMetal/OriginalAcceleratorABI.h`, staged since a56-gpu (2026-11-24, `staged/gpu.rs` `ACCELERATOR`: the A56 accelerator's open types and CPU-composition filter, hooks that answer false for the Adreno one) | `AGXAccelerator`, a subclass of the collection's `IOAcceleratorES`; its static initializer is out of `__mod_init_func` and runs after IOGPUFamily has loaded |
 | `IOAcceleratorES-bindings`, `IOAcceleratorES-originals` | generated from `gpu/IOAcceleratorES-24A446-v54.json` | the parent's constructor and base destructor as stubs `bti c; b <name>.original`, its metaclass as an absolute symbol |
-| `OneiOSAdreno` | `gpu/OneiOSAdreno.cpp` | the start, the bound-parent check, the superclass slide, the self-test, weak stand-ins for sheng's display hand-off and log export |
+| `OneiOSAdreno` | `gpu/OneiOSAdreno.cpp`, `gpu/OneiOSGpuChoice.h` | the start (since a56-gpu, 2026-11-24: which accelerator, from the DRM capset's context type and `oneios-gpu-amd`: [a56-gpu.md](a56-gpu.md) 5), the bound-parent check, the superclass slide, the self-test, weak stand-ins for sheng's display hand-off and log export |
 
 **The binding.** Apple's `AGXG18P` is not in the collection, so the names `AGXAccelerator` and `AGXDeviceUserClient`
 are free. The parent is `IOAcceleratorES` of `com.apple.iokit.IOGPUFamily` (a root of `kernel.kc`), read from the
@@ -936,12 +942,14 @@ thread; none was seen.) Boot arguments:
 
 | Argument | |
 |---|---|
-| `oneios-gpu-metal=0` / `=1` | never / always publish. Not given: published when the host's virtio GPU offers 3D (`oneios_gpu3d_state` 3), so not on the PC. Droid-VM's `droidvm-gpu-metal` is read when this one is absent. iOS 16.5 (20F66) sessions pass `=0` (docs/a56.md): that build's stock Metal opens the accelerator as an IOGPU device client (type 1), which NativeAdreno refuses (`0xe00002c7`), and backboardd had a Metal device that could not draw. Without the accelerator the panel is still black for another reason: iOS 27's IOMobileGraphicsFamily refuses 20F66's swap record (kernel 0072) |
+| `oneios-gpu-metal=0` / `=1` | never / always publish (the Adreno accelerator). Not given: published when the host's virtio GPU offers 3D (`oneios_gpu3d_state` 3), so not on the PC. Since a56-gpu (2026-11-24) the start reads the DRM capset's context type: one that is read and is not MSM (the A56's AMDGPU) never gets this accelerator, whatever this argument says (`oneios-adreno: no Metal accelerator: the host's DRM context type is 2 (AMDGPU), not MSM; ...`), nor does a boot with `oneios-gpu-amd=1`; on an MSM capset the rule is unchanged. Droid-VM's `droidvm-gpu-metal` is read when this one is absent. iOS 16.5 (20F66) sessions pass `=0` (docs/a56.md): that build's stock Metal opens the accelerator as an IOGPU device client (type 1), which NativeAdreno refuses (`0xe00002c7`), and backboardd had a Metal device that could not draw. Without the accelerator the panel is still black for another reason: iOS 27's IOMobileGraphicsFamily refuses 20F66's swap record (kernel 0072) |
 | `droidvm-gpu-clients=a,b,...` or `*` | the processes besides `backboardd` that get a Metal device: the grant of the user client (DroidVMGpu.cpp `grantedProcesses`) and, since `0039`, the plug-in's `NativeAdrenoMetal.clients`, which the kernel writes beside the bundle at every boot from the same list (`oneios_gpu_client_list` in `gpu/OneiOSAdreno.cpp`). Forms: a name, `X*`, `*X*`, `@apps`, `*`. Not given: `*`, every process (since 2026-11-12, the owner's decision; before: `WidgetRenderer_Default,*Poster*,iconservicesagent,SBRendererService`, and SpringBoard, the apps, the keyboard and WebKit drew on the CPU). The default is in the kernel, not in xnuhost's boot arguments: the image's `overlay/userland/xnuhost.conf` carries its own `boot-args`, which replace xnuhost's default, so only a kernel default reaches every image without a new image or seed; empty: `backboardd` alone |
 | `oneios-gpu-plugin-clients=...` | a test: the plug-in's list alone (the processes it names ask for a device; the grant decides for the names it holds, the sandbox for the rest). Not given: the list above |
 | `vgpu-3d=1` | what `GETPARAM(DEFAULT_3D)` answers the plug-in (DroidVMVirtioGpu3D.cpp reads it with default 0; `vgpu-3d=0` also turns the driver off) |
 | `oneios-gpu-read-wait=1` | a test switch (widgets, 2026-11-13; off by default): the render server's command buffers wait, as they name the IOSurfaces they sample, for other processes' GPU work begun before them that writes those surfaces (the driver's own `awaitWriters`, at most 100 ms: what a newer plug-in asks for and this pin does not). One line at the render server's first surface ticket: `oneios-gpu-read-wait: on ...` or `off`; its waits are `oneios-gpu-sync`'s "reads that waited for writers" |
 | `oneios-adreno-selftest=1` | after the publish: IOKit's match of `IOAcceleratorES`, an in-kernel open with type `0x4149`, `GETPARAM(ABI_VERSION)` through the tunnel; two `oneios-adreno: selftest:` lines |
+| `oneios-gpu-amd=1` | (a56-gpu, 2026-11-24; xnuhost adds it when, and only when, it picks its amdgpu renderer) with 3D and an AMDGPU DRM capset: the Galaxy A56's accelerator instead of the Adreno one: the same `AGXAccelerator` with `MetalPluginName` `OneiOSRadeonMetal`, `MetalPluginClassName` `OneiOSRadeonMetalDevice`, `OneiOSDrmContext` `amdgpu`, serving open type `0x4149` (and the plug-in's markers) alone; published whatever `oneios-gpu-metal` says (20F66's `=0` is against the Adreno accelerator only). With anything else (no 3D, an MSM capset): nothing, never the Adreno accelerator. Not given or `=0`: the rule above. [a56-gpu.md](a56-gpu.md) 5, `gpu/OneiOSGpuChoice.h` |
+| `oneios-gpu-amd-cpu=a,b,...` | the processes that keep CPU composition on the A56's accelerator: its five discovery keys (`MetalPluginName`, `MetalPluginClassName`, `IOGLESBundleName`, `IOGLESMetalBundleName`, `IOGLESDefaultUseMetal`) read as absent there, as Jesvi-iOS's kernel does for its "incompatible core renderers". Not given: `backboardd,SpringBoard,mediaserverd,PosterBoard,CollectionsPoster,WeatherPoster,SBRendererService,MobileSlideShow`; empty: none (the test of backboardd on that Metal); `X*` a prefix, `*` every process. One `oneios-gpu-amd: NAME[PID] keeps CPU composition: KEY hidden` line for each of the first 32 processes. No effect on the Adreno accelerator |
 
 **How iOS finds the plug-in (`0031-gpu-addon-mount.patch`).** Metal loads
 `/System/Library/Extensions/<MetalPluginName>.bundle`. That folder is on the sealed system volume, so UniXNU's
@@ -1426,6 +1434,47 @@ then built from scratch and not booted. **Not tested:** anything past `GETPARAM`
 mapping of `0024` (no pool property without a renderer); an open from a user process (the sandbox's verdict, the
 grant, the user client's method filter); the accelerator's destructor path; anything on the phone. The static
 member `AGXAccelerator::superClass` keeps the parent's unslid link address (nothing read it in this boot).
+
+### 5.2 iOS 16.5 without a Metal device: CoreImage's OpenGL ES fallback (fix/a56-ios16-faults, 2026-11-24)
+
+**The fault (the Galaxy A56, OneiOS issue 73, boot of 2026-11-24 21:47, v0.1.24):** after the user turned Bold Text on
+(Settings > Accessibility > Display & Text Size; iOS restarts SpringBoard for it), SpringBoard died at every start, 9
+times: `trap kind 2 signal 11 far 0x0 esr 0x82000005 access 4; pc 0x0 lr 0x1c261c58c ... x0 0x0 x1 0xb71`, status 0xb.
+Read in 20F66's `dyld_shared_cache_arm64` on the build laptop (`out/ios16-cache`; the shared region's slide 0x2db08000,
+from the `oneios-srprot` lines' `vm_protect 0x203478000-0x208960000`, which is the `.27.dylddata` mapping
+0x1d5970000 + 0x54e8000, slid; `oneios-tool sym --slide 0x2db08000`, `sym find`, `sym callers`, `ipsw dyld a2s`):
+
+- lr = `CI::GLContext::init() + 0xcc`: `blr x8` with `x8` = the GL dispatch table's glDisable and `w1` = 0xb71
+  (`GL_DEPTH_TEST`). The table comes from `GetMacroContext` -> `wrapGetMacroContext`, which zeroes 712 bytes and fills
+  them only when `-[EAGLContext getMacroContextPrivate]` answers; there was no EAGL context, so the table stayed zero.
+- How it got there: `-[CIContext initWithOptions:]` (0x19497ef1c unslid) makes a Metal context when
+  `CIMetalCopyDefaultDevice` has a device, and otherwise calls `+[CIContext internalGLContextWithOptions:]`
+  (0x1949bd62c), which tail-calls `internalContextWithEAGLContext:nil options:` -> `CI::GLContext(ShareContextInfo,
+  ...)` -> `init`. `kCIContextUseSoftwareRenderer` (`software_renderer`) does not avoid it, `CIGLIsUsable` is
+  `mov w0, #1` (`wrapGLIsUsable`), and iOS 16's CoreImage has no CPU renderer. The A56 has no Metal device on iOS
+  16.5 (`oneios-adreno: no Metal accelerator ...`, gpu=2d) and no OpenGL ES driver of any kind.
+- Who asked: with Bold Text, UIKit's styled images, `+[CUIShapeEffectStack sharedCIContext]` -> `contextWithOptions:`
+  (the owner's iOSPlus10 port found the same fault on 20H392, its `docs/boldtext-crash.md`, with a whole backtrace:
+  the same `CI::GLContext::init() + 204`). Any app that reaches a CIContext without Metal can die the same way.
+
+**The fix:** a text fixup xnuhost adds for an image set of build 20F66 (`config::ios16_fixups`,
+`runtime/xnuhost/src/config.rs`): `dyld_shared_cache_arm64.07,a162c,e30302aa88512490,000080d2c0035fd6`, the first two
+instructions of `internalGLContextWithOptions:` (`mov x3, x2; adrp x8, ...`) become `mov x0, #0; ret`. The GL
+fallback answers no context, `initWithOptions:` returns nil (its own path when the GL context is NULL), and CoreUI's
+`_newFlattenedImageFromShapeCGImage:...` sends `render:toBitmap:...` to nil: the styled image is a blank bitmap instead
+of a crash [I: read in the code, not seen]. A Metal device is taken before the fallback, so the A56's Metal plug-in
+(docs/a56-gpu.md) is not affected when it is there, and no other caller of the fallback exists in the cache (`sym
+callers`). `--set ios16-fixup=0` leaves it out (the A/B switch). The runtime alone: no image remake, no kernel.
+
+**What it does not do:** draw. With Bold Text on, glyphs or symbols that UIKit styles through CoreUI may show blank
+[I]. The full fix is a GL that works without a GPU or a Metal device: iOSPlus10's `userland/negronigl` (EAGL on
+Mesa: freedreno, or softpipe on the CPU, with the GLI dispatch slots CoreImage reads) is that, written for 20H392
+(its GLI table offsets are 20H392's, its route for apps untested on a phone there): a port to 20F66 and to the A56
+(softpipe, or radeonsi with the Metal work) is a separate job, not done. iOSPlus10's other stop-gap, Bold Text kept
+off in the root, is not taken: a fresh 20F66 Data store has the switch off already, and the user's own choice stays.
+**The proof on the A56:** `ios16: 1 text fixup(s) added: ...` and `text fixups: 3 for /chosen text-fixups`, the kernel's
+`text-fixup: dyld_shared_cache_arm64.07+0xa162c (8 bytes) applied`, and with Bold Text on no `trap ... pc 0x0 lr
+0x1c261c58c` (the lr moves with the slide: `CI::GLContext::init + 0xcc`) and no `crashed: SpringBoard`.
 
 ## 6. Not done
 

@@ -18,6 +18,9 @@ pub const TYPE_BINDER: u32 = binder::uapi::TYPE_BINDER;
 pub const TYPE_HANDLE: u32 = binder::uapi::TYPE_HANDLE;
 /// 'SYST': the interface token's marker of a system libbinder.
 pub const HEADER_SYST: u32 = 0x5359_5354;
+/// 'VNDR': the marker of the vendor copy of libbinder (Parcel.cpp's kHeader under __ANDROID_VNDK__). A stable-AIDL
+/// HAL on libbinder_ndk (an LLNDK library: the system's libbinder in a vendor process) expects 'SYST'.
+pub const HEADER_VNDR: u32 = 0x564e_4452;
 /// The stability a vendor process may call.
 pub const STABILITY_VINTF: i32 = 0x3f;
 /// Our objects' flags: accepts descriptors, SCHED_NORMAL at nice 19 or better: never realtime.
@@ -69,13 +72,14 @@ impl FlatObject {
     }
 }
 
-/// An outgoing parcel: at most [`PARCEL_DATA`] bytes and [`PARCEL_OBJECTS`] objects; what does not fit sets
-/// `overflow` and the parcel is never sent.
+/// An outgoing parcel: at most [`PARCEL_DATA`] bytes (or the limit [`Parcel::set_limit`] gave) and
+/// [`PARCEL_OBJECTS`] objects; what does not fit sets `overflow` and the parcel is never sent.
 #[derive(Clone, Default)]
 pub struct Parcel {
     data: Vec<u8>,
     offsets: Vec<u64>,
     overflow: bool,
+    limit: usize, // 0: PARCEL_DATA
 }
 
 impl std::fmt::Debug for Parcel {
@@ -128,7 +132,7 @@ impl Parcel {
     /// Room for `length` bytes, padded to 4 and zeroed: its start, None (and overflow) when it does not fit.
     fn room(&mut self, length: usize) -> Option<usize> {
         let padded = (length + 3) & !3;
-        if self.overflow || padded > PARCEL_DATA - self.data.len() {
+        if self.overflow || padded > self.limit() - self.data.len() {
             self.overflow = true;
             return None;
         }
@@ -172,10 +176,27 @@ impl Parcel {
     }
     /// writeInterfaceToken: strict mode policy (none, penalties gathered), no work source, 'SYST', the descriptor.
     pub fn put_token(&mut self, descriptor: &str) {
+        self.put_token_header(descriptor, HEADER_SYST);
+    }
+    /// writeInterfaceToken with another libbinder's marker: [`HEADER_VNDR`] for a service built on the vendor copy
+    /// of libbinder, whose enforceInterface refuses any other header.
+    pub fn put_token_header(&mut self, descriptor: &str, header: u32) {
         self.put_u32(0x8000_0000);
         self.put_i32(-1);
-        self.put_u32(HEADER_SYST);
+        self.put_u32(header);
         self.put_str(descriptor);
+    }
+    /// A parcel that may grow past [`PARCEL_DATA`] to `bytes` (a Bluetooth packet's byte[]: up to 64 KiB). Kept by
+    /// [`Parcel::clear`].
+    pub fn set_limit(&mut self, bytes: usize) {
+        self.limit = bytes;
+    }
+    fn limit(&self) -> usize {
+        if self.limit == 0 {
+            PARCEL_DATA
+        } else {
+            self.limit
+        }
     }
     /// A byte[] (also byte[N]).
     pub fn put_bytes(&mut self, bytes: &[u8]) {
@@ -385,10 +406,15 @@ impl<'a> Reader<'a> {
 
     /// The interface token of a call: true when it names `descriptor` ('SYST' or a vendor's 'VNDR': not compared).
     pub fn token(&mut self, descriptor: &str) -> bool {
+        self.token_header(descriptor).is_some()
+    }
+    /// As [`Reader::token`], with the token's header ('SYST', 'VNDR') when it names `descriptor` (the tests' fake
+    /// services check what a client sends).
+    pub fn token_header(&mut self, descriptor: &str) -> Option<u32> {
         let _policy = self.i32();
         let _work_source = self.i32();
-        let _header = self.i32();
-        self.string(127).is_some_and(|name| name == descriptor)
+        let header = self.u32();
+        self.string(127).filter(|name| name == descriptor).map(|_| header)
     }
 
     /// A reply's status header: Ok(()), or Err((exception, specific)) with specific the service's error
@@ -748,6 +774,35 @@ mod tests {
         p.wipe();
         assert_eq!(p.size(), 0);
         assert!(!p.is_overflow());
+    }
+
+    #[test]
+    fn token_headers_and_large_parcels() {
+        let mut p = Parcel::new();
+        p.put_token_header("a.B", HEADER_VNDR);
+        assert_eq!(&p.bytes()[8..12], b"RDNV"); // B_PACK_CHARS('V','N','D','R') as a little-endian word
+        assert_eq!(p.reader().token_header("a.B"), Some(HEADER_VNDR));
+        assert_eq!(Parcel::with_token("a.B").reader().token_header("a.B"), Some(HEADER_SYST));
+        assert_eq!(p.reader().token_header("a.C"), None);
+        assert!(p.reader().token("a.B") && !p.reader().token("a.C"));
+        // A Bluetooth packet past PARCEL_DATA: refused by a plain parcel, carried by one with a larger limit, which
+        // clear() keeps.
+        let big = vec![0x5au8; 9000];
+        let mut p = Parcel::new();
+        p.put_bytes(&big);
+        assert!(p.is_overflow());
+        let mut p = Parcel::new();
+        p.set_limit(0x1_0000 + 256);
+        p.put_token("a.B");
+        p.put_bytes(&big);
+        assert!(!p.is_overflow());
+        let mut r = p.reader();
+        assert!(r.token("a.B") && r.bytes() == Some(&big[..]));
+        p.clear();
+        p.put_bytes(&[0u8; 0x1_0000]);
+        assert!(!p.is_overflow());
+        p.put_bytes(&[0u8; 256]);
+        assert!(p.is_overflow());
     }
 
     #[test]

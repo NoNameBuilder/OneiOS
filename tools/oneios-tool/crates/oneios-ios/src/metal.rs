@@ -386,11 +386,25 @@ fn file_mode(p: &Path) -> Result<u32> {
     Ok(if std::fs::metadata(p).with_context(|| p.display().to_string())?.permissions().mode() & 0o111 != 0 { 0o755 } else { 0o644 })
 }
 
-/// The Metal plug-in's files as the kernel's 0031 union wants them: `addons/NativeAdrenoMetal.bundle/...` in
-/// os.walk's order, then the `addons/NativeAdrenoMetal.publish` marker.
+/// The Galaxy A56's Metal plug-in (userland/metal-amd): a bundle folder of this name keeps it under addons/.
+const RADEON_BUNDLE: &str = "OneiOSRadeonMetal";
+
+/// The name a Metal bundle has under addons/: the A56's plug-in (a folder named `OneiOSRadeonMetal.bundle`) keeps its
+/// own; every other folder is the Adreno plug-in, NativeAdrenoMetal, whatever the folder is called (as before the
+/// A56's plug-in existed: out/userland and out/userland-rt both hold one).
+fn addon_bundle_name(bundle: &Path) -> &'static str {
+    match bundle.file_name().and_then(|n| n.to_str()) {
+        Some(n) if n.strip_suffix(".bundle") == Some(RADEON_BUNDLE) => RADEON_BUNDLE,
+        _ => "NativeAdrenoMetal",
+    }
+}
+
+/// The Metal plug-in's files as the kernel's 0031 union wants them: `addons/<name>.bundle/...` in os.walk's order, then
+/// the `addons/<name>.publish` marker (the name: [`addon_bundle_name`]).
 fn metal_files(bundle: &Path) -> Result<Vec<AddonFile>> {
     let mut files: Vec<AddonFile> = Vec::new();
-    fn walk(dir: &Path, rel: &str, out: &mut Vec<AddonFile>) -> Result<()> {
+    let name = addon_bundle_name(bundle);
+    fn walk(dir: &Path, rel: &str, bundle: &str, out: &mut Vec<AddonFile>) -> Result<()> {
         let mut entries: Vec<_> = std::fs::read_dir(dir).with_context(|| dir.display().to_string())?.flatten().collect();
         entries.sort_by_key(|e| e.file_name());
         // os.walk's order: this folder's files (by name), then each folder (by name)
@@ -407,16 +421,16 @@ fn metal_files(bundle: &Path) -> Result<Vec<AddonFile>> {
             let p = e.path();
             let name = e.file_name().to_string_lossy().into_owned();
             let r = if rel.is_empty() { name } else { format!("{rel}/{name}") };
-            out.push((format!("addons/NativeAdrenoMetal.bundle/{r}"), file_mode(&p)?, std::fs::read(&p)?));
+            out.push((format!("addons/{bundle}.bundle/{r}"), file_mode(&p)?, std::fs::read(&p)?));
         }
         for e in dirs {
             let name = e.file_name().to_string_lossy().into_owned();
-            walk(&e.path(), &if rel.is_empty() { name } else { format!("{rel}/{name}") }, out)?;
+            walk(&e.path(), &if rel.is_empty() { name } else { format!("{rel}/{name}") }, bundle, out)?;
         }
         Ok(())
     }
-    walk(bundle, "", &mut files)?;
-    files.push(("addons/NativeAdrenoMetal.publish".into(), 0o644, b"1\n".to_vec()));
+    walk(bundle, "", name, &mut files)?;
+    files.push((format!("addons/{name}.publish"), 0o644, b"1\n".to_vec()));
     Ok(files)
 }
 
@@ -593,6 +607,32 @@ mod tests {
             ]
         );
         assert_eq!(files[1].2, vec![7u8; 100_000]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_a56_bundle_keeps_its_name_in_the_sidecar() {
+        // userland/metal-amd's OneiOSRadeonMetal.bundle: its own name under addons/ and its own .publish marker
+        let dir = std::env::temp_dir().join(format!("oneios-ios-addon-a56-{}", std::process::id()));
+        let b = dir.join("OneiOSRadeonMetal.bundle");
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::write(b.join("Info.plist"), b"<plist/>").unwrap();
+        std::fs::write(b.join("OneiOSRadeonMetal"), b"mach-o").unwrap();
+        let out = dir.join("a.gpuaddon");
+        gpuaddon(&b, &out).unwrap();
+        let files = read_gpuaddon(&std::fs::read(&out).unwrap()).unwrap();
+        let names: Vec<&str> = files.iter().map(|(n, _, _)| n.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "addons/OneiOSRadeonMetal.bundle/Info.plist",
+                "addons/OneiOSRadeonMetal.bundle/OneiOSRadeonMetal",
+                "addons/OneiOSRadeonMetal.publish",
+            ]
+        );
+        // any other folder name is the Adreno plug-in, as before
+        assert_eq!(addon_bundle_name(Path::new("out/userland-rt/NativeAdrenoMetal.bundle")), "NativeAdrenoMetal");
+        assert_eq!(addon_bundle_name(Path::new("x/OneiOSRadeonMetalX.bundle")), "NativeAdrenoMetal");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -200,6 +200,16 @@ pub struct Machine {
     /// (MobileGestalt's HWModelDescriptionForCamera: CMCapture reads its per-model tables from
     /// CMCapture.framework/<it less "AP">). docs/hardware.md section 7.
     pub cameras: u32,
+    /// /product product-id when there is no identity tree: the 20 bytes iOS 16's MobileGestalt finds its product by
+    /// (libMobileGestalt 20F66 copies IODeviceTree:/product product-id and looks it up in its table of 363 products; with
+    /// none, MGGetProductType is -1, every MGIsDeviceOneOfType is false and bluetoothd's chip factory finds no chip).
+    /// xnuhost gives the iPhone X's for an iOS 16.5 image set (docs/userland.md, "The iOS 16.5 identity"); iOS 27 reads
+    /// none. With it, /product product-description is product-name too. None: no property, as before.
+    pub product_id: Option<[u8; 20]>,
+    /// The root's serial-number, as text: written in the layout XNU's IODTPlatformExpert (ArmDTPlatform's base) turns
+    /// into IOPlatformExpertDevice IOPlatformSerialNumber, which MobileGestalt answers SerialNumber from (Settings >
+    /// General > About). 11 characters of A-Z and 0-9 ([`serial_number_property`]). None: no property, as before.
+    pub serial_number: Option<String>,
     /// /product unique-model with the cameras (xnuhost's camera-model=): None gives an identity tree's own, else
     /// [`CAMERA_MODEL`]. A name that AVFCapture's AVGestalt knows ("V54AP") makes VirtualAudio build a webcam subport
     /// it has no DSP chain for, and audio never starts (2026-11-23); [`CAMERA_MODEL`] is in no such table, and the
@@ -269,6 +279,8 @@ impl Default for Machine {
             display_hz: 0,
             cameras: 0,
             unique_model: None,
+            product_id: None,
+            serial_number: None,
             text_fixups: None,
             host_vector: 0,
             host_io_base: 0,
@@ -368,6 +380,21 @@ impl Put for Node {
     }
 }
 
+/// The root's serial-number for `serial`, 11 characters of A-Z and 0-9 (None for any other text): 32 bytes laid out
+/// as XNU's IODTPlatformExpert::createSystemSerialNumberString reads a serial without a hyphen (iokit/Kernel/
+/// IOPlatformExpert.cpp): IOPlatformSerialNumber = bytes 13..21 then bytes 0..3. So bytes 0..3 are its last three
+/// characters, 13..21 its first eight, the rest zero (as on a Mac; a '-' anywhere would select the CTO layout).
+pub fn serial_number_property(serial: &str) -> Option<[u8; 32]> {
+    let s = serial.as_bytes();
+    if s.len() != 11 || !s.iter().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()) {
+        return None;
+    }
+    let mut p = [0u8; 32];
+    p[..3].copy_from_slice(&s[8..]);
+    p[13..21].copy_from_slice(&s[..8]);
+    Some(p)
+}
+
 fn pair(a: u64, b: u64) -> [u8; 16] {
     let mut v = [0u8; 16];
     v[..8].copy_from_slice(&a.to_le_bytes());
@@ -423,6 +450,9 @@ impl Machine {
     }
 
     fn check(&self) -> Result<(), Error> {
+        if self.serial_number.as_deref().is_some_and(|s| serial_number_property(s).is_none()) {
+            return Err(Error("the serial number must be 11 characters of A-Z and 0-9"));
+        }
         if self.ncpu == 0 || self.ncpu as usize > MAX_CPUS {
             return Err(Error("1 to 8 CPUs"));
         }
@@ -492,6 +522,10 @@ impl Machine {
         }
         compatible.extend_from_slice(b"oneios,xnuhost\0");
         root.put("compatible", compatible);
+        // The serial number Settings shows (xnuhost: an iOS 16.5 image set's; a made-up value, never an Apple serial).
+        if let Some(p) = self.serial_number.as_deref().and_then(serial_number_property) {
+            root.put("serial-number", p);
+        }
         root.put_u32("#address-cells", 2);
         root.put_u32("#size-cells", 2);
 
@@ -700,6 +734,13 @@ impl Machine {
             }
         } else {
             product.put_str("product-name", "OneiOS guest");
+            // iOS 16's product (xnuhost, an iOS 16.5 image set): MobileGestalt finds it by product-id and reads the
+            // marketing name and the description from /product (product-name, product-description); iOS 27 reads no
+            // product-id, so its tree stays as it was.
+            if let Some(id) = &self.product_id {
+                product.put("product-id", id);
+                product.put_str("product-description", "OneiOS guest");
+            }
             // No identity tree (the phone's image set has none): the iPhone18,2 answers that CoreUI asks
             // MobileGestalt for (kMGArtworkDeviceIdiom, kMGArtworkDisplayGamut, kMGArtworkGraphicsFeatureSetClass, the
             // subtype). Without them every app logged `CUICatalog: couldn't get 'kMGArtworkDeviceIdiom' from

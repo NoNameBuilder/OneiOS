@@ -695,12 +695,12 @@ section 9.
 ```sh
 oneios-tool ios sign [--identifier ID] [--entitlements PLIST] [--json] FILE...   # ad hoc, in place; CDHASH ARCH pages=4096 ID FILE
 oneios-tool ios macho-check [--tbd DIR | --sdk] [--local DYLIB]... [--arch A] FILE...  # will it load in the guest? exit 1 if not
-oneios-tool ios tbds [--cache DIR] [--image systemos.img] [--out DIR] [NAME...]   # the guest's .tbd stubs (out/ios27-tbd)
+oneios-tool ios tbds [--cache DIR] [--image systemos.img] [--out DIR] [NAME...]   # the guest's .tbd stubs (out/ios27-tbd; an arm64 cache, iOS 16.5's, gives arm64-ios stubs)
 oneios-tool ios tbd-diff [--a-listed] [--show N] A B                            # two stub trees, by what the linker reads
 oneios-tool ios codesign ARGS...                         # `codesign` for the Metal build's scripts (shim/codesign runs it)
 oneios-tool ios metal-stage-edit ROOT HOOKS JOBS KNOWS [--rt]   # userland/metal/build.sh stage: the staged copy's changes (since 2026-11-23 also: m2v-spare-command-pools.patch and m2v-idle-memory.patch in the bridge's list, turnip-idle-bo-cache.patch in the Mesa list, the command pool and GPU memory rows' calls in the plug-in; with --rt, METAL_RUNTIME=rt: the plug-in script links userland/metal/rt's bridge and does not build the old one)
 oneios-tool ios metal-record ROOT BUNDLE RECORD HOOKS TARGET   # build.sh finish: NativeAdrenoMetal.build.json
-oneios-tool ios gpuaddon BUNDLE OUTPUT                   # build.sh addon: the kernel.kc.gpuaddon sidecar (NGPUADD2)
+oneios-tool ios gpuaddon BUNDLE OUTPUT                   # build.sh addon: the kernel.kc.gpuaddon sidecar (NGPUADD2); addons/NativeAdrenoMetal.bundle, or addons/OneiOSRadeonMetal.bundle for a folder of that name (the A56, userland/metal-amd)
 oneios-tool ios addon OUTPUT [--metal BUNDLE] [--camera DIR]   # the boot addon with the Metal and/or the capture plug-in, and OUTPUT.cdhashes (hosted 0090)
 ```
 
@@ -712,7 +712,7 @@ oneios-tool ios addon OUTPUT [--metal BUNDLE] [--camera DIR]   # the boot addon 
 | `codesign` | `userland/metal/shim/codesign` (Python) | `sign` | the four forms the base's scripts use; `--display` reads what `image tweaks cdhash` reads (the shim read it with roottweak's `macho.py`) |
 | `metal-stage-edit` | build.sh `stage`'s inline Python | nothing | on copies of the pinned Droid-VM-UniXNU and NativeMetal trees, with and without the clang-23 warning: the same staged tree (`diff -r`) and the same lines; a hooks file of another revision is refused with the same message |
 | `metal-record` | build.sh `finish`'s inline Python | scripts/ios/env.sh's variables | the same record and lines on the bundle in `out/userland`, but for its `check` text (`ios macho-check`) |
-| `gpuaddon` | build.sh `addon`'s inline Python | nothing | the same sidecar byte for byte (12,286,344 bytes, 5 files: flate2's zlib-rs writes zlib's level 9 stream) |
+| `gpuaddon` | build.sh `addon`'s inline Python | nothing | the same sidecar byte for byte (12,286,344 bytes, 5 files: flate2's zlib-rs writes zlib's level 9 stream). Since 2026-11-24 a bundle folder named `OneiOSRadeonMetal.bundle` (the Galaxy A56's plug-in, `userland/metal-amd`) keeps its name: `addons/OneiOSRadeonMetal.bundle/...` and `addons/OneiOSRadeonMetal.publish`; any other folder is `NativeAdrenoMetal` as before (unit test `the_a56_bundle_keeps_its_name_in_the_sidecar`) |
 | `addon` | nothing (new, 2026-11-23) | `image tweaks cdhash`'s Mach-O reader (oneios-tweaks) | new: its Metal part is `gpuaddon`'s byte for byte (unit test); the capture plug-in goes to `camera/MediaCapture/H9ISP.mediacapture`, which hosted 0090 mounts; `OUTPUT.cdhashes` has one `CDHASH NAME` line for each Mach-O file in it, for `phone addon`. `userland/camera/build.sh` makes `H9ISP.gpuaddon` with it |
 
 `tbds` writes TBD v4 as the 24A446 stubs were laid out (one item per line); weak definitions and thread-local
@@ -1663,6 +1663,23 @@ that copy (18.6 s) is byte for byte the index built through an apfs-fuse mount (
 `out/dsc/root/System/Library/Caches/com.apple.dyld`), but there every open of `.symbols` decompresses it again
 (2.5 s for its first 16 bytes), which is why `dsc.py` is so slow through it.
 
+**`sym find` and `sym callers` (2026-11-24, fix/a56-ios16-faults):** the other way round, for reading a crash's
+neighbourhood without IDA.
+
+```sh
+oneios-tool sym find [--slide HEX] NAME...       # every kept symbol whose name holds NAME: address, image, name
+oneios-tool sym callers [--slide HEX] ADDR...    # every b and bl of the cache's images that reaches ADDR, named
+```
+
+`find` answers from the index (the names `sym` would give: one per address of an image's `__TEXT`, local symbols
+included); an `_objc_msgSend$SELECTOR` stub names an image that sends SELECTOR, which is how a selector's callers are
+found (then `callers` of the stub). A NAME nothing holds is said, status 1. `callers` reads the cache itself (it needs
+`ONEIOS_DSC_DIR`): each image's `__TEXT` is scanned for `b`/`bl` whose target is ADDR (parallel; 0.5 s over 20F66's
+3.3 GB cache); a target nothing reaches is said too (an Objective-C method is reached through `objc_msgSend`, not by
+a branch). With `--slide` the addresses are given and printed slid. Used on 20F66 (`ONEIOS_DSC_DIR=out/ios16-cache`,
+the shared region's slide 0x2db08000) to follow SpringBoard's pc-0 crash from `CI::GLContext::init` back to
+`+[CIContext internalGLContextWithOptions:]` (docs/gpu.md 5.2). Tests: `tests/synthetic.rs` `find_names_and_callers`.
+
 ```sh
 ONEIOS_DSC_DIR=<cache folder> tools/oneios-tool/tests/sym/compare-golden.sh
 ```
@@ -2058,7 +2075,7 @@ oneios-tool phone sparse-write OUT [--gunzip] [--expect-size N]   # stdin to OUT
 
 **The host phone in `status` (2026-11-21).** After `root: yes`, one line: `host: galaxy-s24-ultra (Galaxy S24 Ultra
 (SM-S928, SM8650)), matched by ro.product.model=SM-S928B; defaults: none (today's)`, or for another known phone its
-defaults (`galaxy-s26-ultra ... defaults: ONEIOS_BRIGHT_MAX=2300`, `galaxy-a56 ... defaults: gpu=2d, panel-fallback=1080x2340@120`), or `host: unknown
+defaults (`galaxy-s26-ultra ... defaults: ONEIOS_BRIGHT_MAX=2300`, `galaxy-a56 ... defaults: gpu=auto, panel-fallback=1080x2340@120, width=720, height=1560, scale=2, hz=60, return-graceful-ms=4000, hw-backend-haptics=treble, hw-backend-fallback=1`), or `host: unknown
 phone (ro.product.model=... ...): xnuhost keeps today's defaults (host-device=NAME forces one)`. One `adb shell` call as
 the shell user: `getprop` of `ro.product.model`, `ro.product.device`, `ro.board.platform`, `ro.soc.model`,
 `ro.soc.manufacturer`, and `/sys/devices/soc0/{machine,soc_id}`, `/proc/device-tree/compatible`; matched in xnuhost's
@@ -3147,6 +3164,17 @@ checked by `the_edit_lists_write_what_the_python_functions_wrote`. Run on the Li
 `tests/kernelgen/golden/build/`, which the repository's `.gitignore` (`build/`) keeps out of git, so they fail in any
 fresh checkout (not caused by this change). `cargo test -p oneios-kernel` alone does not compile: `oneios-prelink`'s
 `toml` needs the `serde` feature, which only the whole workspace turns on.
+
+Since 2026-11-24 (a56-gpu, the Galaxy A56's Metal accelerator; `docs/a56-gpu.md` 5) `kernel gen gpu` also stages:
+- NativeAdreno's `NativeAdrenoAccelerator.cpp`, with the new edit list `staged/gpu.rs` `ACCELERATOR`: the A56
+  accelerator's open types and its CPU-composition filter in `copyProperty` and a new `serializeProperties`;
+  `staged_accelerator_text`, with the made-up `synthetic/accelerator.in`/`.out`;
+- two more edits of `GPU`: the Metal plug-in's names come from `OneiOSAdreno.cpp`;
+- two more edits of `GPU3D`: each DRM context made is reported to `OneiOSAdreno.cpp`.
+
+The archive's sources gain `gpu/OneiOSGpuChoice.h`. `the_gpu_edits_fit_the_pinned_sources` applies the three lists to
+the real pinned files, when `external/` has them. Run in this worktree on the build laptop: `cargo test -q --test
+golden` in `crates/oneios-kernel`, 15 of 15.
 
 **`kernel gen codec`** (hevc-guest, 2026-11-15; the tenth archive, after `audio` in `kernel/build-hosted.sh`) builds
 `build/oneios-codec/liboneioscodec.a`, the hosted kernel's video encoder: UniXNU-droidvm's virtio-media transport

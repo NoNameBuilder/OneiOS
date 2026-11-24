@@ -20,6 +20,8 @@ use std::path::{Path, PathBuf};
 const USAGE: &str = "\
 usage: oneios-tool sym [--slide HEX] [--stdin | -] [--dsc DIR] [--index DIR] [--no-index] ADDR...
        oneios-tool sym index [--force] [--dsc DIR] [--index DIR]
+       oneios-tool sym find [--slide HEX] NAME...
+       oneios-tool sym callers [--slide HEX] ADDR...
 
 Name user addresses of a boot log (the kernel's sheng-exc / sheng-ubt / oneios-ubt lines) in the image set's dyld
 shared cache: image + nearest symbol (local symbols from the .symbols file, else the image's own symbol table) for
@@ -36,6 +38,10 @@ ONEIOS_DSC_DIR the index built last is used.
   --stdin, -    read the addresses from standard input (any number per line), after those of the command line
   --no-index    read the cache for every answer, as dsc.py does (slow)
   index         build the index now (--force: again, when it is there)
+  find NAME     the symbols whose name holds NAME (any part of it), with their image and address (unslid, or slid
+                by --slide): which image defines a function, or has an objc_msgSend$SELECTOR stub (calls SELECTOR)
+  callers ADDR  every b and bl in the cache whose target is ADDR (slid by --slide, else unslid), named; needs the
+                cache itself (ONEIOS_DSC_DIR), not only the index
 
 Kernel addresses (a panic's caller, pc, lr and frame lines) are `oneios-tool sym kernel`'s: its own --help.";
 
@@ -171,7 +177,16 @@ struct Options {
     no_index: bool,
     force: bool,
     build: bool,
+    mode: Mode,
+    names: Vec<String>,
     addrs: Vec<i128>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Name,
+    Find,
+    Callers,
 }
 
 /// `oneios-tool sym`'s command line (clap). `index` as the first word builds the index; `-` reads the addresses
@@ -209,7 +224,7 @@ struct Standalone {
 }
 
 fn options(cli: Cli, loc: &mut Locate) -> Result<Options> {
-    let mut o = Options { slide: None, stdin: cli.stdin, no_index: cli.no_index, force: cli.force, build: false, addrs: Vec::new() };
+    let mut o = Options { slide: None, stdin: cli.stdin, no_index: cli.no_index, force: cli.force, build: false, mode: Mode::Name, names: Vec::new(), addrs: Vec::new() };
     let address = |text: &str| parse_hex(text).ok_or_else(|| anyhow!("invalid hex address: {text:?}"));
     if let Some(slide) = &cli.slide {
         o.slide = Some(address(slide)?);
@@ -227,6 +242,8 @@ fn options(cli: Cli, loc: &mut Locate) -> Result<Options> {
         let mut value = || words.next().map(|(_, v)| v.as_str()).ok_or_else(|| anyhow!("{word} needs a value"));
         match word.as_str() {
             "index" if i == 0 => o.build = true,
+            "find" if i == 0 => o.mode = Mode::Find,
+            "callers" if i == 0 => o.mode = Mode::Callers,
             "-" | "--stdin" => o.stdin = true,
             "--no-index" => o.no_index = true,
             "--force" => o.force = true,
@@ -234,6 +251,7 @@ fn options(cli: Cli, loc: &mut Locate) -> Result<Options> {
             "--dsc" => loc.dsc = Some(PathBuf::from(value()?)),
             "--index" => loc.index_parent = Some(PathBuf::from(value()?)),
             other if other.starts_with("--") => bail!("unknown option {other}"),
+            other if o.mode == Mode::Find => o.names.push(other.to_string()),
             other => o.addrs.push(address(other)?),
         }
     }
@@ -290,6 +308,12 @@ fn run_inner(cli: Cli, mut loc: Locate, input: &mut dyn Read, out: &mut dyn Writ
     let mut o = options(cli, &mut loc)?;
     if o.build {
         return build_command(&o, &loc, out);
+    }
+    if o.mode == Mode::Find {
+        return find_command(&o, &loc, out, err);
+    }
+    if o.mode == Mode::Callers {
+        return callers_command(&o, &loc, out, err);
     }
     if o.stdin {
         let mut text = String::new();
@@ -474,4 +498,66 @@ fn describe(out: &mut dyn Write, index: &Index) -> Result<()> {
     }
     writeln!(out, "  {:<10} {total:>12} bytes  ({:.1} MiB)", "total", total as f64 / 1048576.0)?;
     Ok(())
+}
+
+/// `sym find NAME...`: every symbol whose name holds NAME, one line each: address (slid by --slide), image, name.
+/// Status 1 when a name matches nothing.
+fn find_command(o: &Options, loc: &Locate, out: &mut dyn Write, err: &mut dyn Write) -> Result<i32> {
+    if o.names.is_empty() {
+        bail!("find: give the name (or part of it) to look for");
+    }
+    let index = open_index(loc, err)?;
+    let slide = o.slide.unwrap_or(0);
+    let mut status = 0;
+    for needle in &o.names {
+        let found = index.find(needle);
+        if found.is_empty() {
+            writeln!(out, "{needle}: no symbol of the cache's images holds it")?;
+            status = 1;
+        }
+        for (image, value, name) in found {
+            writeln!(out, "{}  {}  {name}", hex(value as i128 + slide), index.image_name(image))?;
+        }
+    }
+    Ok(status)
+}
+
+/// `sym callers ADDR...`: every b and bl of the cache's images whose target is ADDR, one line each: the site and its
+/// name, the target, the kind. Addresses are slid by --slide (given and printed), else unslid.
+fn callers_command(o: &Options, loc: &Locate, out: &mut dyn Write, err: &mut dyn Write) -> Result<i32> {
+    let Some(dsc) = &loc.dsc else {
+        bail!("callers: set ONEIOS_DSC_DIR (or --dsc DIR) to the folder that holds {}: the cache is read", cache::MAIN_NAME);
+    };
+    if o.addrs.is_empty() {
+        bail!("callers: give the address(es) called");
+    }
+    let index = open_index(loc, err)?;
+    let cache = Cache::open(dsc)?;
+    if cache.uuid != index.uuid {
+        bail!("{}: not the cache of the index {}", cache.dir.display(), index.dir.display());
+    }
+    let slide = o.slide.unwrap_or(0);
+    let targets: Vec<u64> = o.addrs.iter().filter_map(|&a| u64::try_from(a - slide).ok()).collect();
+    let found = cache.callers(&targets)?;
+    let named = |a: u64| match index.name(a) {
+        Some(Name { image, symbol: Some((symbol, offset)) }) => format!("{image}  {symbol} + {offset:#x}"),
+        Some(Name { image, symbol: None }) => format!("{image}  ?"),
+        None => "(not in a cache image)".to_string(),
+    };
+    for &t in &targets {
+        if !found.iter().any(|f| f.1 == t) {
+            writeln!(out, "{}  ({}): no b or bl reaches it", hex(t as i128 + slide), named(t))?;
+        }
+    }
+    for (site, target, link) in found {
+        writeln!(
+            out,
+            "{}  {}  -> {} {}",
+            hex(site as i128 + slide),
+            named(site),
+            if link { "bl" } else { "b" },
+            hex(target as i128 + slide)
+        )?;
+    }
+    Ok(0)
 }

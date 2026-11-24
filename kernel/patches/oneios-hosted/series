@@ -519,3 +519,59 @@
 # Numbered 0101: 0098 and 0100 are on main (launchd DisableAllowed, the kill reason), 0099 is left to fix/audio-late. Applies
 # after 0100 (git apply --check on the patched tree; pmap.c, hosted_pmap.h, hosted_user.c are not theirs).
 0101-unmap-fanout.patch
+# a56-full (2026-11-24, port/a56-full; OneiOS issue 73): the Galaxy A56 fork's (Musicalista/OneiOS-A56) kernel fixes for
+# iOS 16.5 (20F66) not taken before, renumbered (fork -> here: 0078 -> 0102, 0079 -> 0103, 0080 -> 0104, its 0043
+# change -> 0105, 0076 -> 0106). Each is off for iOS 27: a boot argument that xnuhost adds only for an image set of
+# build 20F66 (0103-0105), a boot argument nobody passes (0102), or a call only return-graceful-ms > 0 makes (0106; set
+# by the galaxy-a56 host row only). IODataQueue.cpp, IOUserClient.cpp's copyClientEntitlement and kern_sig.c's end are
+# no other patch's; 0105 edits 0043's code. Apply after 0101 here and after 0092 on release-kernel-a56 (git apply
+# --check on both patched trees). README.md, "0102-0106". kernel/tests/host.sh runs 0103's conversion on the fork's
+# dumped touch entry (tests/test_hid16.c).
+# 0102: a lasting tool. oneios-dq-head=N prints, at each data queue "data available" notification, the entry at the
+# queue's head in hex ("oneios-dq-head: I size 0xS @0xO: ..."); IOHIDFamily writes its event queues without
+# IOSharedDataQueue::enqueue. It found 0103's cause on the fork's A56. Off without it.
+0102-data-queue-head-dump.patch
+# 0103: the A56's touch. iOS 27's IOHIDFamily writes digitizer events (0xa0 bytes, x/y/z as doubles, a header before
+# each child) that iOS 16.5's IOKit misreads (0x68 bytes, x/y/z as IOFixed): backboardd counted the touches and found no
+# finger. oneios-hid16=1 rewrites the queue's unread digitizer elements in place, in 20F66's layout, at each "data
+# available" notification. Line "oneios-hid16: digitizer events rewritten for iOS 16.5 (first: N events)". The fork's
+# A56 (2026-11-21): touch works, 371 frames in its test session against about 10.
+0103-hid-digitizer-ios16.patch
+# 0104: the A56's Wi-Fi interface. oneios-grant=PROC:ENTITLEMENT[,...] answers true for an entitlement the binary lacks
+# (IOUserClient::copyClientEntitlement): 20F66's configd lacks com.apple.networking.ionetworkstack.user-client, which iOS
+# 27's IONetworkStackUserClient wants, so en0 was never named. Line "oneios-grant: configd[N] given ...". The fork's A56:
+# en0 named and up, wifid's Apple80211 requests; no scan or join seen there.
+0104-entitlement-grant.patch
+# 0105: LaunchServices' database kept on iOS 16.5. oneios-ls-keep=3 is 0043's test (=2) with the /Applications bundles
+# that have no Info.plist of their own left out (20F66's DisplayCal.app, a macOS bundle lsd never registers): counted,
+# every boot dropped the database, and SpringBoard waited about 66 s for lsd after the first frame (the fork's A56).
+0105-ls-keep-plist.patch
+# 0106: the return's graceful window sends logd SIGTERM (oneios_power_request, over the bridge's weak default), so iOS's
+# unified log reaches the Data store before the kill. Only on xnuhost's ask (return-graceful-ms > 0). Not a power-off.
+# Line "oneios-power: return asked: SIGTERM to logd (N process(es))".
+0106-return-logd-flush.patch
+# 0107 (a56-full, 2026-11-24, issue 73's logs of 20:05 and 20:31): iOS 27's port policy against an iOS 16.5 userland.
+# Past the lock screen SpringBoard (46 times in a boot, then the Apple logo), assistantd, coreduetd, contactsd,
+# IMDPersistenceAgent, maild and searchd died with EXC_GUARD (FATAL exception type=0xc reason=0x17), not jetsam: flavor
+# 0x42 (kGUARD_EXC_INVALID_MPO_ENTITLEMENT: mach_port_construct of a weak reply port, iOS 16's provisional one, without
+# iOS 27's entitlement) and flavor 0x6 (kGUARD_EXC_EXCEPTION_BEHAVIOR_ENFORCE, thid_should_crash). With
+# oneios-ios16-port-policy=1, default the value of oneios-legacy-registered-ports (0068: a 20F66 image's boot arguments
+# carry it), neither is applied. iOS 27 has neither switch. Line "oneios-ios16-port-policy: on: ...". ipc_policy.c and
+# ipc_tt.c's set_exception_behavior_violation are no other patch's hunks. README.md, "0107".
+0107-ios16-port-policy.patch
+# 0108 (a56-gpu, 2026-11-24, docs/a56-gpu.md 5): the Galaxy A56's Metal plug-in in the kernel's two plug-in hooks. The
+# GPU archive publishes the A56's accelerator (MetalPluginName OneiOSRadeonMetal) with oneios-gpu-amd=1 on an AMDGPU
+# capset (gpu/OneiOSAdreno.cpp, gpu/OneiOSGpuChoice.h); 0039's list is written as <its MetalPluginName>.clients (the GPU
+# archive's oneios_gpu_metal_plugin: NativeAdrenoMetal as before on every other boot), one line says whether that
+# bundle is visible ("oneios-gpu-addon: /System/Library/Extensions/OneiOSRadeonMetal.bundle/Info.plist (the
+# accelerator's MetalPluginName): visible (0)", only for a plug-in that is not NativeAdrenoMetal), and 0031's dyld lines
+# name OneiOSRadeon* files too. Edits 0031's and 0039's code (kern_exec.c, kern_descrip.c). README.md, "0108".
+0108-a56-gpu-plugin.patch
+# 0109 (fix/a56-ios16-faults, 2026-11-24, issue 73's boot of 21:47): an iOS 16 userland's fat binaries run their arm64
+# slice. 20F66 is the iPhone X's (an A11): its shared cache and dyld are arm64 only, but its App cryptex's programs are
+# fat (webbookmarksd: arm64 + arm64e). This arm64e kernel graded the arm64e slice first; that process got an empty
+# shared region (its "check_np ... returned 0x1" lines) and died on an unresolved arm64e pointer (far 0x61f80001c0b0),
+# 27 times a boot. oneios-arm64e-slices=0 grades arm64e 0, as an A11 kernel does; default 0 with 0068's
+# oneios-legacy-registered-ports=1 (only a 20F66 image passes it), else 1. Line "oneios-arm64e-slices: off: ...".
+# bsd/dev/arm/kern_machdep.c is no other patch's. README.md, "0109".
+0109-ios16-arm64-slices.patch

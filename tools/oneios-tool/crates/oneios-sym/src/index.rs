@@ -603,3 +603,29 @@ fn build_into(cache: &Cache, dir: &Path) -> Result<BuildReport> {
         stages: [ranges_s, calls_s.max(syms_s), clock.elapsed().as_secs_f64()],
     })
 }
+
+impl Index {
+    /// Every kept symbol whose name contains `needle`: (image number, unslid value, name), images in the cache's
+    /// order, each image's in value order. `sym find`.
+    pub fn find(&self, needle: &str) -> Vec<(usize, u64, &str)> {
+        let mut out = Vec::new();
+        for image in 0..self.n_images {
+            let at = self.images_at + 32 * image;
+            let start = self.meta_u64(at + 16) as usize;
+            let count = self.meta_u64(at + 24) as usize;
+            for i in start..(start + count).min(self.n_syms) {
+                let name = self.sym_name(i);
+                if name.contains(needle) {
+                    out.push((image, self.sym_value(i), name));
+                }
+            }
+        }
+        out
+    }
+
+    /// The short name of image `i` (its path's last part).
+    pub fn image_name(&self, i: usize) -> &str {
+        let path = self.image_path(i);
+        path.rsplit('/').next().unwrap_or(path)
+    }
+}

@@ -10,8 +10,9 @@
 //! let mac = bt::hci::bt_address("/mnt/vendor/efs/bluetooth/bt_addr");
 //! ```
 
+pub mod aidl_parcel; // the AIDL half of the A56 fork's bt/hidl_parcel.c (26a2276)
 pub mod hci; // bt/hci.c
-pub mod hci_hidl; // bt/hci_hidl.c
+pub mod hci_hidl; // bt/hci_hidl.c (HIDL; AIDL from the A56 fork, 26a2276)
 pub mod hci_sim; // bt/hci_sim.c
 pub mod hidl_parcel; // bt/hidl_parcel.c (the generic HIDL wire format: hal::hidl)
 pub mod le_scan; // bt/le_scan.c

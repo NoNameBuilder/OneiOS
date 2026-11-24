@@ -1,0 +1,135 @@
+OneiOS 5002: the AIR Metal library (Jesvi-iOS's libredwoodair, its tools/mesa/air-metal.patch and
+air-panfrost.patch) as libOneiOSRadeonAir, the library OneiOSRadeonMetal.bundle loads, and
+air_metal_test, its host test on softpipe.
+
+Jesvi declared both in freedreno's and panfrost's meson files, because they need libgallium and
+a driver. Here they are a target of their own, src/gallium/targets/air-metal, read after every
+driver, so that the A56's radeonsi build and a softpipe-only host build read the same file.
+
+Two options (meson.options):
+  -Doneios-air=true            build them; and count as a graphics and compute build
+                               (with_gfx_compute): without OpenGL or Vulkan Mesa otherwise builds
+                               NIR as headers only and libgallium without its compilers, and the
+                               AIR library needs both (radeonsi's gfx part needs it as well)
+  -Doneios-air-screen=radeonsi the library opens the A56's screen with
+                               oneios_radeonsi_screen_create (the guest Mesa stage's; contract K3);
+                               =none (the default) opens no GPU: only RWA_SOFTWARE=1 softpipe
+userland/metal-amd/air/build.sh sets both.
+
+diff --git a/meson.build b/meson.build
+index 8788a07..dd900ff 100644
+--- a/meson.build
++++ b/meson.build
+@@ -1109,6 +1109,7 @@ with_gfx_compute = [
+   with_gallium_va and with_video_encode,
+   with_gallium_mediafoundation and with_video_encode,
+   get_option('oneios-radeonsi-screen'),
++  get_option('oneios-air'),   # OneiOS: the AIR Metal library compiles Metal shaders (5002-air-metal-library.patch)
+ ].contains(true)
+ if with_gfx_compute
+   pre_args += '-DHAVE_GFX_COMPUTE'
+diff --git a/meson.options b/meson.options
+index 84580e1..5381229 100644
+--- a/meson.options
++++ b/meson.options
+@@ -932,3 +932,18 @@ option(
+   description : 'OneiOS: build src/gallium/targets/oneios-radeonsi (oneios_radeonsi_screen_create: ' +
+                 'the radeonsi pipe_screen over the amdgpu virtio context, with no GL or Vulkan frontend)',
+ )
++# OneiOS (userland/metal-amd/patches/mesa/5002-air-metal-library.patch)
++option(
++  'oneios-air-screen',
++  type : 'combo',
++  value : 'none',
++  choices : ['none', 'radeonsi'],
++  description : 'OneiOS: the screen of the AIR Metal library (src/gallium/targets/air-metal): none (only RWA_SOFTWARE=1 softpipe, the host test) or radeonsi (oneios_radeonsi_screen_create, the Galaxy A56)',
++)
++
++option(
++  'oneios-air',
++  type : 'boolean',
++  value : false,
++  description : 'OneiOS: build Mesa with its graphics and compute compilers (NIR, the Gallium helpers, radeonsi gfx) for the AIR Metal library, which needs no OpenGL or Vulkan (src/gallium/targets/air-metal)',
++)
+diff --git a/src/gallium/meson.build b/src/gallium/meson.build
+index 144a90a..ce9294a 100644
+--- a/src/gallium/meson.build
++++ b/src/gallium/meson.build
+@@ -268,3 +268,9 @@ if get_option('oneios-radeonsi-screen')
+   endif
+   subdir('targets/oneios-radeonsi')
+ endif
++
++# OneiOS (userland/metal-amd/air): the AIR Metal library and its test, which need libgallium and the
++# drivers, so they are read here, after every driver. Only where the AIR frontend was copied in.
++if get_option('oneios-air') and fs.is_dir('../compiler/air')
++  subdir('targets/air-metal')
++endif
+diff --git a/src/gallium/targets/air-metal/meson.build b/src/gallium/targets/air-metal/meson.build
+new file mode 100644
+index 0000000..8b6c26d
+--- /dev/null
++++ b/src/gallium/targets/air-metal/meson.build
+@@ -0,0 +1,62 @@
++# Copyright © 2026 OneiOS contributors
++# SPDX-License-Identifier: MIT
++#
++# OneiOS: the AIR Metal library of Jesvi-iOS (its libredwoodair, tools/mesa/air-metal.patch), built
++# where libgallium and every driver exist, as libOneiOSRadeonAir: the library OneiOSRadeonMetal.bundle
++# loads (userland/metal-amd). Its contract is src/compiler/air/air_metal.h. Jesvi declared it in
++# freedreno's and panfrost's directories; here it is a target of its own, so a softpipe-only build
++# (the host test) and the A56's radeonsi build read the same file.
++#
++# The screen: -Doneios-air-screen=radeonsi (set by userland/metal-amd/air/build.sh when the tree
++# defines oneios_radeonsi_screen_create, the guest Mesa stage's Darwin radeonsi over the virtio
++# amdgpu context) or none (rwa_device_open then fails with a reason unless RWA_SOFTWARE=1 asks for
++# softpipe, which only the host test does).
++
++air_metal_c_args = []
++air_metal_sources = files('../../../compiler/air/air_metal.c')
++air_metal_incs = [inc_include, inc_src, inc_gallium, inc_gallium_aux, inc_gallium_winsys_sw, inc_gallium_winsys,
++                  inc_gallium_drivers]
++air_metal_deps = [dep_m, dep_thread, idep_air, idep_nir, idep_mesautil, idep_xmlconfig, driver_softpipe]
++air_metal_link_args = []
++if get_option('oneios-air-screen') == 'radeonsi'
++  if not with_gallium_radeonsi
++    error('oneios-air-screen=radeonsi needs radeonsi in -Dgallium-drivers')
++  endif
++  if not get_option('oneios-radeonsi-screen')
++    error('oneios-air-screen=radeonsi needs -Doneios-radeonsi-screen=true (src/gallium/targets/oneios-radeonsi)')
++  endif
++  air_metal_c_args += '-DONEIOS_AIR_RADEONSI=1'
++  # oneios_radeonsi_screen_create compiled into this library (the target's own sources, include directories and
++  # dependencies, radeonsi among them): the bundle carries one library, not this one beside liboneios_radeonsi.dylib
++  air_metal_sources += oneios_radeonsi_sources
++  air_metal_incs += oneios_radeonsi_incs
++  air_metal_deps += oneios_radeonsi_deps
++endif
++if host_machine.system() == 'darwin'
++  # dlopened by its full path inside the bundle (OneiOSRadeonMetal.bundle/libOneiOSRadeonAir.dylib)
++  air_metal_link_args += '-Wl,-install_name,@loader_path/libOneiOSRadeonAir.dylib'
++endif
++
++libair_metal = shared_library(
++  'OneiOSRadeonAir',
++  air_metal_sources,
++  c_args : air_metal_c_args,
++  include_directories : air_metal_incs,
++  dependencies : air_metal_deps,
++  link_with : [libgallium, libgalliumvl_stub, libws_null],
++  link_args : air_metal_link_args,
++  build_by_default : false,
++  install : false,
++)
++
++# air_metal_test: the library driven the way the Metal driver drives it, on softpipe. It is given the
++# frontend's include directory and nothing else, so a call air_metal.h does not provide is a test that
++# cannot be written (Jesvi-iOS's words; userland/metal-amd/air/host-test.sh runs it).
++air_metal_test = executable(
++  'air_metal_test',
++  files('../../../compiler/air/air_metal_test.c'),
++  include_directories : include_directories('../../../compiler/air'),
++  link_with : [libair_metal],
++  build_by_default : false,
++  install : false,
++)

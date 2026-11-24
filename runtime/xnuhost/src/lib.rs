@@ -19,6 +19,8 @@ pub mod frame_path;
 pub mod gic;
 /// The 3D renderer's front.
 pub mod gpu3d;
+/// The amdgpu native-context renderer (the Galaxy A56's Xclipse, raw ioctls) behind the 3D front.
+pub mod gpu3d_amdgpu;
 /// The drm2kgsl renderer (Droid-VM's, linked in) behind the 3D front.
 pub mod gpu3d_kgsl;
 /// The host-call vector.

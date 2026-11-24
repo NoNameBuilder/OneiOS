@@ -1,0 +1,112 @@
+OneiOS's Metal plug-in for the Galaxy A56 (OneiOSRadeonMetal.bundle) and its AIR Metal layer
+================================================================================================
+
+The files under userland/metal-amd/air/ and userland/metal-amd/plugin/ were taken from
+jesvi-eulah/Jesvi-iOS at commit a13e406 ("Recover S20 fast charging after a temporary fallback"),
+the iOS 16.5 port to the Galaxy S20 (Exynos 990, Mali-G77) built on HakiOS. They are under the MIT
+licence of that repository (its LICENSE: "Everything else that is ours ... is licensed under the
+MIT License below"; only its xnu/ is APSL-2.0, and nothing of xnu/ is taken). Its notice:
+
+MIT License
+
+Copyright (c) 2025-2026 the HakiOS authors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Taken (copied as they are at a13e406 in the first commit that adds them; each file keeps its own
+notice, the files without one are covered by the notice above):
+
+  Jesvi-iOS path                       here
+  tools/mesa/air/air2nir.c             air/air2nir.c
+  tools/mesa/air/air_bitcode.c, .h     air/air_bitcode.c, .h
+  tools/mesa/air/air_intrinsics.c      air/air_intrinsics.c
+  tools/mesa/air/air_layout.c          air/air_layout.c
+  tools/mesa/air/air_metal.c, .h       air/air_metal.c, .h
+  tools/mesa/air/air_metallib.c        air/air_metallib.c
+  tools/mesa/air/air_metal_test.c      air/air_metal_test.c
+  tools/mesa/air/air_module.c, .h      air/air_module.c, .h
+  tools/mesa/air/air_print.c           air/air_print.c
+  tools/mesa/air/air_private.h         air/air_private.h
+  tools/mesa/air/air_to_nir.c          air/air_to_nir.c
+  tools/mesa/air/meson.build           air/meson.build
+  tools/mesa/air/nir_air.h             air/nir_air.h
+  tools/air/argbuf_set.ll              air/tests/argbuf_set.ll       (hand-written LLVM IR, no Apple bytes)
+  tools/air/argbuf_direct.ll           air/tests/argbuf_direct.ll    (hand-written)
+  tools/air/fragpos.ll                 air/tests/fragpos.ll          (hand-written)
+  tools/air/phiconst.ll                air/tests/phiconst.ll         (hand-written)
+  userland/src/redwoodmetal.m          plugin/redwoodmetal.m
+  userland/src/redwooddrawable.m       plugin/redwooddrawable.m (removed again, see Changes)
+  userland/src/redwood_drawable.h      plugin/redwood_drawable.h
+  userland/src/metal_argument_indices.h plugin/metal_argument_indices.h
+  userland/src/m2m.h                   plugin/m2m.h
+  userland/src/metal_plugin.plist      plugin/metal_plugin.plist
+  userland/src/metal_dev.m             plugin/metal_dev.m      (a probe; removed again, see Changes)
+  userland/src/metal_caps.m            plugin/metal_caps.m     (Jesvi's capability probe; built as out/metal-amd/metal_caps)
+  userland/src/metal_props.c           plugin/metal_props.c    (a switch of its kernel; removed again, see Changes)
+
+Not taken: tools/mesa/air/air_run.c (a test harness that draws on the Adreno), every .py tool,
+prebuilt/ (binaries), the Panfrost, freedreno and ir3 patches (another GPU), tools/mesa/redwood-drm
+(Jesvi's libdrm stand-in: on the A56 Mesa reaches the GPU through its Darwin vdrm), xnu/, and no
+Apple metallib, shared-cache extract or capture.
+
+What was changed, and why, is listed in "Changes" below (and in git history: the first commit is
+the verbatim copy).
+
+Changes
+-------
+
+Each change is also marked "OneiOS" (or "Mesa 26") in the file it is in.
+
+air/ (the AIR frontend and air_metal):
+  - Ported from Jesvi's Mesa 25.0.7 to Mesa cecc0e9 (26.3-devel, external/mesa-droidvm): the builder's `exact` is
+    `fp_math_ctrl` (nir_fp_exact / nir_fp_fast_math), gl_shader_stage is mesa_shader_stage, PIPE_SHADER_* are
+    MESA_SHADER_*, unreachable() is UNREACHABLE(), nir_block_create takes the impl, nir_shader_create has no
+    shader_info, nir_def_rewrite_uses_after has no third argument, nir_metadata_preserve is nir_progress,
+    nir_copy_prop is nir_opt_copy_prop, nir_lower_io's type_size returns unsigned; get_compute_param and
+    get_compiler_options are the screen's compute_caps and nir_options[]; pipe_surface is a value (no
+    create_surface: air_metal.c makes its own, rwa_surface_make), pipe->clear takes the colour and stencil masks,
+    set_constant_buffer and set_sampler_views lost take_ownership.
+  - air_module.c: MODULE_CODE_GUIDLIST (20), which LLVM 22 and later write, is skipped (the host test assembles its
+    modules with LLVM 23; Apple's iOS 16.5 metallibs have none).
+  - air_metal.c, rwa_device_open: the screen is oneios_radeonsi_screen_create() (oneios_radeonsi_screen.h, new; the
+    guest Mesa stage defines it) under -Doneios-air-screen=radeonsi, where Jesvi opened freedreno (msm) or Panfrost
+    over its xf86drm stand-in; without it the open fails with a sentence (RWA_SOFTWARE=1 still gives softpipe for
+    tests). threadExecutionWidth is the smallest size in radeonsi's subgroup_sizes mask (32 on RDNA3, still never
+    below 32).
+  - meson.build (Jesvi's) unchanged; the Mesa wiring is patches/mesa/5001-air-frontend.patch (guarded subdir) and
+    5002-air-metal-library.patch (src/gallium/targets/air-metal: libOneiOSRadeonAir and air_metal_test in a target of
+    their own, where Jesvi declared libredwoodair in freedreno's and panfrost's meson files; options oneios-air and
+    oneios-air-screen).
+  - New: build.sh, host-test.sh, tests/tid_store.ll (OneiOS's own compute kernel), oneios_radeonsi_screen.h.
+
+plugin/ (the Metal device):
+  - redwoodmetal.m: the device class RedwoodMetalDevice is OneiOSRadeonMetalDevice (K3); no RedwoodGPU/RedwoodMali
+    user client and no kernel GEM buffers (every buffer is Mesa's; without a screen a buffer is nil); the library is
+    libOneiOSRadeonAir.dylib beside the bundle's executable (was /redwood/lib/libredwoodair.dylib); -name is Mesa's
+    renderer name; linear and IOSurface alignments 256 (RDNA3's linear pitch, was Panfrost's 64); every IOSurface is
+    served as a copy (Jesvi's in-place import needed its kernel's kRedwoodSurface); rm_offered: no device in
+    backboardd (unless oneios-radeon-backboardd=1) and Jesvi's metaloff processes, or as OneiOSRadeonMetal.clients
+    says; metal_profile= is oneios-metal-profile=; notify names com.redwood.metal.* are com.oneios.radeonmetal.*;
+    error domain OneiOSRadeonMetal.
+  - m2m.h: /dev/m2m (Jesvi's kernel) replaced by os_log (subsystem com.oneios.radeonmetal) and, for errors, the
+    device's init and the first pipelines, the kernel's text rows (oneios-gpu-text, hosted 0039); the crash recorder
+    is kept.
+  - metal_plugin.plist: the K3 names (OneiOSRadeonMetal, OneiOSRadeonMetalDevice, com.oneios.radeonmetal).
+  - Removed after the first commit: redwooddrawable.m (its in-place IOSurface import is its kernel's), metal_dev.m
+    and metal_props.c (probes of Jesvi's kernel's services). metal_caps.m is unchanged and built as a probe.

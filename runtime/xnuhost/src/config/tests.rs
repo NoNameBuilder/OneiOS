@@ -1197,14 +1197,49 @@ fn host_device() {
     assert!(c.host == find("galaxy-s26-ultra") && c.host_line.contains("matched by ro.product.model=SM-S948B"));
     assert!(c.host_line.contains("; defaults: ONEIOS_BRIGHT_MAX=2300"));
     assert_eq!(host_clear(c), off);
-    // The A56: gpu=2d, under the command line and the image set.
+    // The A56: gpu=auto (its amdgpu renderer when the gpuaddon has the plug-in and the self-test passes, else 2D;
+    // gpu=2d before 2026-11-24), under the command line and the image set.
     let props = host_props(&dir, "a56", "SM-A566E", "s5e8855");
     let c = rig.finish(Some(&props), None, None).unwrap();
-    assert!(c.host == find("galaxy-a56") && c.gpu == Gpu::TwoD);
-    assert!(c.host_line.contains("; defaults: gpu=2d") && !c.host_line.contains("not taken"));
-    let c = rig.finish(Some(&props), None, Some("gpu=auto")).unwrap();
+    assert!(c.host == find("galaxy-a56") && c.gpu == Gpu::Auto);
+    assert!(c.host_line.contains("; defaults: gpu=auto") && !c.host_line.contains("not taken"));
+    // gpu-node=: the amdgpu render node, "" (renderD128) unless the image set or the command line names one
+    assert!(c.gpu_node.is_empty());
+    write(format!("{image}/xnuhost.conf"), "gpu-node=/dev/dri/renderD129\n");
+    assert_eq!(rig.finish(Some(&props), None, None).unwrap().gpu_node, "/dev/dri/renderD129");
+    assert_eq!(rig.finish(Some(&props), None, Some("gpu-node=/x")).unwrap().gpu_node, "/x");
+    fs::remove_file(format!("{image}/xnuhost.conf")).unwrap();
+    let c = rig.finish(Some(&props), None, None).unwrap();
+    // and (2026-11-24, the fork's c83b9ca and e8747cc) the guest frame 720x1560 @2x at 60 Hz, the 4 s graceful return
+    // (kernel 0106), haptics on the vibrator HAL with the evdev search behind it
+    assert!(c.width == 720 && c.height == 1560 && c.scale == 2 && c.hz == 60 && c.return_graceful_ms == 4000);
     assert!(
-        c.gpu == Gpu::Auto && c.host_line.contains("gpu=2d not taken (the command line or the image set gives it)")
+        c.display_mode(Some(&PanelMode { width: 1080, height: 2340, hz: 120 }))
+            == PanelMode { width: 720, height: 1560, hz: 60 }
+    );
+    assert!(c.hw.choose(Bridge::Haptics, Backend::Unset).0 == Backend::Treble && c.hw.fallback_allowed());
+    assert!(c
+        .host_line
+        .contains("width=720, height=1560, scale=2, hz=60, return-graceful-ms=4000, hw-backend-haptics=treble"));
+    // the frame is one setting: an image set made at the panel's scale (roottweak writes scale=3) gets the frame and @2x;
+    // an image set or a command line that gives a width or a height keeps its own frame and scale
+    let conf = format!("{image}/xnuhost.conf");
+    write(&conf, "scale=3\n");
+    let c = rig.finish(Some(&props), None, None).unwrap();
+    assert!(c.width == 720 && c.height == 1560 && c.scale == 2 && !c.host_line.contains("scale=2 not taken"));
+    write(&conf, "scale=3\nwidth=1080\nheight=2340\nhz=120\nreturn-graceful-ms=0\n");
+    let c = rig.finish(Some(&props), None, None).unwrap();
+    assert!(c.width == 1080 && c.height == 2340 && c.scale == 3 && c.hz == 120 && c.return_graceful_ms == 0);
+    assert!(c.host_line.contains("width=720 not taken") && c.host_line.contains("scale=2 not taken"));
+    assert!(c.host_line.contains("hz=60 not taken") && c.host_line.contains("return-graceful-ms=4000 not taken"));
+    fs::remove_file(&conf).unwrap();
+    let c = rig.finish(Some(&props), None, Some("scale=3")).unwrap();
+    assert!(c.width == 720 && c.scale == 3 && c.host_line.contains("scale=2 not taken"));
+    let c = rig.finish(Some(&props), None, Some("height=2340")).unwrap();
+    assert!(c.width == 0 && c.height == 2340 && c.scale == 3);
+    let c = rig.finish(Some(&props), None, Some("gpu=2d")).unwrap();
+    assert!(
+        c.gpu == Gpu::TwoD && c.host_line.contains("gpu=auto not taken (the command line or the image set gives it)")
     );
     assert_eq!(rig.finish(Some(&props), Some("none"), None).unwrap().gpu, Gpu::Auto);
     let c = rig.finish(Some(&props), Some("NONE"), None).unwrap();
@@ -1212,7 +1247,7 @@ fn host_device() {
     let conf = format!("{image}/xnuhost.conf");
     write(&conf, "gpu=3d\n");
     let c = rig.finish(Some(&props), None, None).unwrap();
-    assert!(c.gpu == Gpu::ThreeD && c.host_line.contains("gpu=2d not taken"));
+    assert!(c.gpu == Gpu::ThreeD && c.host_line.contains("gpu=auto not taken"));
     assert_eq!(rig.finish(Some(&props), None, Some("gpu=2d")).unwrap().gpu, Gpu::TwoD); // the command line over the image set
     write(&conf, "host-device=none\n"); // the image set may turn it off
     let c = rig.finish(Some(&props), None, None).unwrap();
@@ -1223,7 +1258,7 @@ fn host_device() {
     // property file that cannot be read.
     let props = host_props(&dir, "s24u", "SM-S928B", "SM8650");
     let c = rig.finish(Some(&props), Some("galaxy-a56"), None).unwrap();
-    assert!(c.host == find("galaxy-a56") && c.gpu == Gpu::TwoD);
+    assert!(c.host == find("galaxy-a56") && c.gpu == Gpu::Auto);
     assert!(c.host_line.contains("host-device=galaxy-a56 (forced); read: ro.product.model=SM-S928B"));
     assert!(rig.finish(Some(&props), Some("pixel-11"), None).is_err());
     let mut c = Config::new();
@@ -1235,6 +1270,13 @@ fn host_device() {
     for entry in bhw::host_table() {
         let c = rig.finish(None, Some(entry.name), None).unwrap();
         assert!(c.host == Some(Host(entry)));
+        // the row's hw-backend settings together (one row may give several: galaxy-a56 haptics and the fallback)
+        let mut hw = Config::new();
+        for pair in entry.config.iter().filter(|p| p.starts_with("hw-backend")) {
+            let (key, value) = pair.split_once('=').expect("KEY=VALUE");
+            assert!(hw.set(key, value).is_ok(), "{pair}");
+        }
+        hw.hw.merge(&off.hw);
         for pair in entry.config {
             let (key, value) = pair.split_once('=').expect("KEY=VALUE");
             let mut want = Config::new();
@@ -1242,10 +1284,12 @@ fn host_device() {
             match key {
                 "gpu" => assert_eq!(c.gpu, want.gpu),
                 "panel-fallback" => assert_eq!(c.panel_fallback, want.panel_fallback),
-                _ => {
-                    want.hw.merge(&off.hw);
-                    assert_eq!(c.hw, want.hw);
-                }
+                "hz" => assert_eq!(c.hz, want.hz),
+                "width" => assert_eq!(c.width, want.width),
+                "height" => assert_eq!(c.height, want.height),
+                "scale" => assert_eq!(c.scale, want.scale),
+                "return-graceful-ms" => assert_eq!(c.return_graceful_ms, want.return_graceful_ms),
+                _ => assert_eq!(c.hw, hw.hw),
             }
         }
     }
@@ -1562,4 +1606,83 @@ fn the_switches() {
     assert!(c.encoder_10bit == Encoder10::EightBit && !c.wifi_send_wait && c.wifi_ring_wait);
     assert!(c.decoder == Decoder::Off && c.decoder_codecs == 1, "decoder= and decoder-codecs= of the image");
     let _ = fs::remove_dir_all(&dir);
+}
+
+// ---- iOS 16.5 (20F66): the kernel switches xnuhost adds (kernel 0103-0105, docs/a56.md) -----------------------------
+
+#[test]
+fn ios16_boot_args_add_what_the_image_does_not_name() {
+    // roottweak's 20F66 boot-args of 2026-11-23 (the A56 user's image): none of the 16.5 switches of 0103-0105
+    let image = "debug=0x14e serial=3 -v vgpu-3d=1 oneios-gpu-metal=0 oneios-legacy-bootstrap-replies=1 \
+oneios-legacy-registered-ports=1 oneios-mac-exec-skip=mediaserverd,TVRemoteConnectionService";
+    let mut args = image.to_owned();
+    let added = ios16_boot_args(&mut args, BOOT_ARGS_SIZE).unwrap();
+    assert_eq!(added, "oneios-hid16 oneios-grant oneios-ls-keep oneios-disable-jobs");
+    assert!(args.starts_with(image) && args.contains(" oneios-hid16=1 "));
+    assert!(args.contains(" oneios-grant=configd:com.apple.networking.ionetworkstack.user-client "));
+    assert!(args.contains(" oneios-ls-keep=3 ") && args.contains(",com.apple.tailspind"));
+    // the kernel's list (0053) is a 256-byte buffer: the label list fits it
+    let jobs = args.split(' ').find_map(|w| w.strip_prefix("oneios-disable-jobs=")).unwrap();
+    assert!(jobs.len() < 256 && jobs.starts_with("com.apple.accessibility.axassetsd,com.apple.aonsensed,"));
+    // a second pass adds nothing; what the image or the command line names wins
+    let again = args.clone();
+    assert_eq!(ios16_boot_args(&mut args, BOOT_ARGS_SIZE).unwrap(), "");
+    assert_eq!(args, again);
+    let mut args = format!("{image} oneios-ls-keep=1 oneios-disable-jobs=-");
+    assert_eq!(ios16_boot_args(&mut args, BOOT_ARGS_SIZE).unwrap(), "oneios-hid16 oneios-grant");
+    assert!(
+        args.contains("oneios-ls-keep=1")
+            && !args.contains("oneios-ls-keep=3")
+            && args.contains("oneios-disable-jobs=-")
+    );
+    // no room: nothing is changed
+    let mut short = image.to_owned();
+    assert!(ios16_boot_args(&mut short, image.len() + 20).is_err());
+    assert_eq!(short, image);
+}
+
+#[test]
+fn ios16_boot_args_are_roottweaks_20f66_words() {
+    // roottweak writes the same words into a new 20F66 image's boot-args (oneios-tweaks apply.rs): the two lists agree
+    let apply = include_str!("../../../../tools/oneios-tool/crates/oneios-tweaks/src/apply.rs");
+    let line =
+        apply.lines().find(|l| l.contains("boot-args=debug=0x14e") && l.contains("oneios-legacy-bootstrap-replies=1"));
+    let line = line.expect("roottweak's 20F66 boot-args line");
+    assert!(line.contains(&format!(" {IOS16_BOOT_ARGS}\\n")), "{line}");
+    // ... and that line carries oneios-legacy-registered-ports=1, which turns hosted 0107 and 0109 on for 20F66
+    assert!(line.contains(" oneios-legacy-registered-ports=1 "), "{line}");
+}
+
+#[test]
+fn ios16_fixups_only_for_20f66_once_and_switchable() {
+    // the image's own (roottweak's keybagd and QuartzCore entries) stay first; CoreImage's GL fallback after them
+    let mut list = TextFixups::default();
+    list.push_within("keybagd,cf5c,600000b4,1f2003d5", TEXT_FIXUPS_SIZE);
+    assert_eq!(ios16_fixups(Some("20F66"), &mut list), 1);
+    let f = list.entries();
+    assert!(f.len() == 2 && f[0] == "keybagd,cf5c,600000b4,1f2003d5");
+    // +[CIContext internalGLContextWithOptions:] in 20F66's cache file .07 (0x1949bd62c - 0x19491c000 = 0xa162c):
+    // mov x3, x2; adrp x8, ... -> mov x0, #0; ret
+    assert_eq!(f[1], "dyld_shared_cache_arm64.07,a162c,e30302aa88512490,000080d2c0035fd6");
+    assert_eq!(f[1].split(',').count(), 4);
+    // once only (an image set or a command line that already names it), and never for another build
+    assert_eq!(ios16_fixups(Some("20F66"), &mut list), 0);
+    assert_eq!(list.entries().len(), 2);
+    let mut other = TextFixups::default();
+    for build in [Some("24A446"), Some("20H392"), None] {
+        assert_eq!(ios16_fixups(build, &mut other), 0);
+    }
+    assert!(other.is_empty());
+    // no room: nothing added
+    let mut full = TextFixups::default();
+    while full.push_within("f,0,00,00", TEXT_FIXUPS_SIZE) {}
+    assert_eq!(ios16_fixups(Some("20F66"), &mut full), 0);
+    // ios16-fixup=0 is the A/B switch (default on)
+    let mut c = Config::default();
+    assert!(c.ios16_fixup);
+    c.set("ios16-fixup", "0").unwrap();
+    assert!(!c.ios16_fixup);
+    // the identity: 20 bytes (MobileGestalt's product-id length), a serial the loader's layout takes
+    assert_eq!(IOS16_PRODUCT_ID.len(), 20);
+    assert!(xnuloader::machine::serial_number_property(IOS16_SERIAL).is_some());
 }

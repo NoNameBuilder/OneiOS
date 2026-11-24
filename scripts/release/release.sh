@@ -86,6 +86,10 @@ if [ -z "${ANDROID_NDK_ROOT:-}" ]; then
 fi
 [ "$RUNTIME" = 0 ] || [ -n "${ANDROID_NDK_ROOT:-}" ] || die "no NDK 28.2.13676358 (set ANDROID_NDK_ROOT)"
 export ANDROID_NDK_ROOT
+# rustup's cargo first: the Metal bridge's build runs `cargo +1.98.0`, which only rustup's proxy takes. A run under
+# tmux started from ssh had /usr/bin/cargo first (the distribution's, no rustup): v0.1.24's first run stopped in the
+# runtime lane with "error: no such command: `+1.98.0`".
+[ ! -x "$HOME/.cargo/bin/rustup" ] || export PATH="$HOME/.cargo/bin:$PATH"
 if [ "$APK" = 1 ]; then
   [ -n "$SDK" ] || die "no Android SDK with build-tools 37.0.0 (set ANDROID_HOME)"
   # Gradle finds the SDK only by ANDROID_HOME or local.properties: a run under tmux started from ssh has neither

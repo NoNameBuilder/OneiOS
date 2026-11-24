@@ -198,7 +198,8 @@ named!(
     DisplayFormat { Bgrx8 = "bgrx", Rgba16f = "rgba16f" }
 );
 named!(
-    /// gpu=: auto (3D when the host has KGSL, udmabuf and a dma heap), 3d (or do not start), 2d.
+    /// gpu=: auto (3D when the host has KGSL, udmabuf and a dma heap; on an amdgpu host without KGSL, the amdgpu
+    /// renderer when the gpuaddon carries OneiOSRadeonMetal and its self-test passes), 3d (or do not start), 2d.
     Gpu { Auto = "auto", ThreeD = "3d", TwoD = "2d" }
 );
 named!(
@@ -449,6 +450,7 @@ const GIVEN_KEYS: &[&str] = &[
     "panel-fallback",
     "scale",
     "scale-fixup",
+    "ios16-fixup",
     "display-direct",
     "touch-exclusive",
     "session-mode",
@@ -596,6 +598,8 @@ pub struct Config {
     pub display: DisplayBackend,
     pub display_format: DisplayFormat,
     pub gpu: Gpu,
+    /// gpu-node=PATH: the amdgpu render node (gpu3d_amdgpu; "" = /dev/dri/renderD128)
+    pub gpu_node: String,
     pub gpu_level: GpuLevel,
     /// gpu-priority=0: KGSL queue priorities as the guest asks, not by the owner's class (1)
     pub gpu_priority: bool,
@@ -612,6 +616,8 @@ pub struct Config {
     pub scale: u32,
     /// the QuartzCore text fixups a scale of 3 needs (scale_fixups): on by default
     pub scale_fixup: bool,
+    /// the iOS 16.5 (20F66) text fixups (ios16_fixups: CoreImage's OpenGL ES fallback answers no context): on by default
+    pub ios16_fixup: bool,
     pub text_fixups: TextFixups,
     /// read /dev/input
     pub input: bool,
@@ -888,6 +894,7 @@ impl Config {
             display_format: DisplayFormat::Bgrx8,
             gpu: Gpu::Auto,
             gpu_level: GpuLevel::Deadline,
+            gpu_node: String::new(),
             gpu_priority: true,
             width: 0,
             height: 0,
@@ -895,6 +902,7 @@ impl Config {
             panel_fallback: None,
             scale: 3,
             scale_fixup: true,
+            ios16_fixup: true,
             text_fixups: TextFixups::default(),
             input: true,
             display_direct: true,
@@ -1006,6 +1014,7 @@ impl Config {
             "display-format" => self.display_format = named(DisplayFormat::parse(value))?,
             "gpu" => self.gpu = named(Gpu::parse(value))?,
             "gpu-level" => self.gpu_level = named(GpuLevel::parse(value))?,
+            "gpu-node" => self.gpu_node = text(value, 128)?,
             "gpu-priority" => self.gpu_priority = number(value, 0, 1)? == 1,
             "cpus" => {
                 let n = i64::from(parse::atoi(value));
@@ -1071,6 +1080,7 @@ impl Config {
                 self.scale = scale;
             }
             "scale-fixup" => self.scale_fixup = flag(value)?,
+            "ios16-fixup" => self.ios16_fixup = flag(value)?,
             "text-fixup" => {
                 // FILE,OFFSET,ORIGINAL,REPLACEMENT in hex, as UniXNU's [payload] text_fixups (the kernel checks them again)
                 let commas = value.bytes().filter(|&b| b == b',').count();
@@ -1354,6 +1364,9 @@ impl Config {
         if !self.given("gpu") {
             self.gpu = if image.given("gpu") { image.gpu } else { device.gpu };
         }
+        if self.gpu_node.is_empty() {
+            self.gpu_node = image.gpu_node.clone();
+        }
         if self.boot_args.is_empty() {
             self.boot_args = image.boot_args.clone();
         }
@@ -1406,6 +1419,9 @@ impl Config {
         if self.hz == 0 {
             self.hz = image.hz;
         }
+        if self.hz == 0 {
+            self.hz = device.hz; // the host phone's rate (the galaxy-a56 row: 60, the fork's CPU-composited A56)
+        }
         // panel-fallback: the command line's, else the image set's, else the host phone's
         self.panel_fallback = self.panel_fallback.or(image.panel_fallback).or(device.panel_fallback);
         take!(self, image, "display-direct", display_direct);
@@ -1415,7 +1431,26 @@ impl Config {
             return Err(ConfigError::new("display-format=rgba16f needs --display shm"));
         }
         take!(self, image, "scale", scale);
+        // The host phone's guest frame (width, height and its UI scale, taken as one): only where neither the command line
+        // nor the image set gives a width or a height. Its scale then wins over the image set's, which is the scale of the
+        // panel-sized frame roottweak made the image for, but not over the command line's. The galaxy-a56 row: 720x1560 @2x,
+        // the fork's A56 frame since 2026-11-22 (Musicalista/OneiOS-A56 c83b9ca: the same 360x780 points as 1080x2340 @3x,
+        // 2.25x fewer pixels for the CPU compositor; the display helper scales it to the panel).
+        // return-graceful-ms: the command line's, else the image set's (finish_ram), else the host phone's (galaxy-a56: 4000,
+        // in which kernel 0106 sends logd SIGTERM so iOS's log reaches the Data store).
+        if !self.given("return-graceful-ms") && !image.given("return-graceful-ms") && device.given("return-graceful-ms")
+        {
+            self.return_graceful_ms = device.return_graceful_ms;
+        }
+        if self.width == 0 && self.height == 0 && device.width != 0 && device.height != 0 {
+            self.width = device.width;
+            self.height = device.height;
+            if device.given("scale") && !self.given("scale") {
+                self.scale = device.scale;
+            }
+        }
         take!(self, image, "scale-fixup", scale_fixup);
+        take!(self, image, "ios16-fixup", ios16_fixup);
         if self.text_fixups.is_empty() {
             self.text_fixups = image.text_fixups.clone();
         }
@@ -1765,6 +1800,16 @@ impl Config {
         match key {
             "gpu" => self.given("gpu") || image.given("gpu"),
             "panel-fallback" => self.panel_fallback.is_some() || image.panel_fallback.is_some(),
+            "hz" => self.hz != 0 || image.hz != 0,
+            // the frame is taken as one (width, height, scale): not where a width or a height is given above
+            "width" | "height" | "scale" => {
+                self.width != 0
+                    || self.height != 0
+                    || image.width != 0
+                    || image.height != 0
+                    || (key == "scale" && self.given("scale"))
+            }
+            "return-graceful-ms" => self.given(key) || image.given(key),
             _ => {
                 let mut one = HwSettings::default();
                 if one.setting(key, value).is_err() {
@@ -1819,7 +1864,8 @@ sched_preemption_disable_debug_mode=0 wdt=-1 native-source-storage=1 vgpu-3d=1 d
 
 /// The keys a host table entry may give as device defaults.
 fn device_key(key: &str) -> bool {
-    key == "gpu" || key == "panel-fallback" || key.starts_with("hw-backend")
+    matches!(key, "gpu" | "panel-fallback" | "hz" | "width" | "height" | "scale" | "return-graceful-ms")
+        || key.starts_with("hw-backend")
 }
 
 /// `<dir>/<name>` when it is a regular file.
@@ -1865,6 +1911,35 @@ fn native_impacts_boot_arg(args: &mut String, size: usize) -> Result<(), NoRoom>
         return Ok(());
     }
     append_arg(args, size, "oneios_native_impacts=1")
+}
+
+/// The boot arguments an iOS 16.5 (20F66) userland needs on the 24A446 kernel collection beyond the image set's own
+/// (roottweak's 20F66 xnuhost.conf), from the Galaxy A56 fork's switch (Musicalista/OneiOS-A56 e8747cc, c83b9ca;
+/// docs/a56.md). xnuhost adds them for an image set of build 20F66 only, so the user updates the runtime and the
+/// kernel and keeps the image: oneios-hid16=1 (kernel 0103: touch events in 16.5's layout), oneios-grant=configd's
+/// IONetworkStack entitlement (0104: en0 is named, Wi-Fi comes up), oneios-ls-keep=3 (0105: LaunchServices' database
+/// kept), oneios-disable-jobs (0053: 0053's three defaults and the fork's eight idle jobs; 250 bytes, the kernel's list
+/// holds 255).
+pub const IOS16_BOOT_ARGS: &str = "oneios-hid16=1 \
+oneios-grant=configd:com.apple.networking.ionetworkstack.user-client oneios-ls-keep=3 \
+oneios-disable-jobs=com.apple.accessibility.axassetsd,com.apple.aonsensed,com.apple.prngseedd,com.apple.suggestd,\
+com.apple.spotlightknowledged,com.apple.corespotlightservice,com.apple.siriknowledged,com.apple.tipsd,com.apple.gamed,\
+com.apple.followupd,com.apple.tailspind";
+
+/// The words of [`IOS16_BOOT_ARGS`] that `args` does not name already, added (the command line's and the image set's
+/// win); the names of those added, space-separated (empty: all were named). Err when they do not fit `size` bytes.
+pub fn ios16_boot_args(args: &mut String, size: usize) -> Result<String, NoRoom> {
+    let mut next = args.clone();
+    let mut added = Vec::new();
+    for w in words(IOS16_BOOT_ARGS) {
+        let name = w.split('=').next().unwrap_or(w);
+        if !boot_arg_named(&next, name) {
+            append_arg(&mut next, size, w)?;
+            added.push(name);
+        }
+    }
+    *args = next;
+    Ok(added.join(" "))
 }
 
 /// Whether `args` has a boot argument named `name`: a word equal to it, or one that starts with it and then '='.
@@ -2027,6 +2102,58 @@ pub fn scale_fixups(build: Option<&str>, scale: u32, list: &mut TextFixups) {
         }
     }
 }
+
+/// The text fixups an iOS 16.5 (20F66) userland needs (docs/gpu.md, "iOS 16.5 without a Metal device"). Read in
+/// 20F66's dyld_shared_cache_arm64 (out/ios16-cache, `oneios-tool sym find` / `sym callers`): CoreImage's
+/// -[CIContext initWithOptions:] makes a Metal context when MTLCreateSystemDefaultDevice has a device, and else falls
+/// back to +[CIContext internalGLContextWithOptions:] (0x1949bd62c unslid, reached from nowhere else), an OpenGL ES
+/// context through internalContextWithEAGLContext:nil. On iOS 16 there is no CPU renderer (kCIContextUseSoftwareRenderer
+/// still takes GL) and CIGLIsUsable answers 1 always. With no GL driver (the Galaxy A56: no Apple GPU, no GL of ours)
+/// the context has no EAGL macro context, GetMacroContext leaves its dispatch table zero, and CI::GLContext::init calls
+/// glDisable(GL_DEPTH_TEST) through it: pc 0, lr CI::GLContext::init + 0xcc. SpringBoard died so 9 times in the A56's
+/// boot of 2026-11-24 21:47, at each start after Bold Text was turned on (UIKit's styled images: +[CUIShapeEffectStack
+/// sharedCIContext], iOSPlus10 docs/boldtext-crash.md, the same fault on 20H392); any app reaching that context can.
+/// The fixup makes the GL fallback answer no context (mov x0, #0; ret): initWithOptions: then returns nil, as it does
+/// when GL is not usable, and CoreUI renders into a blank bitmap through a nil context (-[CUIShapeEffectStack
+/// _newFlattenedImageFromShapeCGImage:...] sends render:toBitmap: to it) instead of crashing. A Metal device (the
+/// Metal plug-in, docs/a56-gpu.md) is taken before the fallback, so it keeps working. Appends to `list` what fits and
+/// is not there yet; the kernel applies an entry only where its original bytes match. The number of entries added.
+pub fn ios16_fixups(build: Option<&str>, list: &mut TextFixups) -> usize {
+    const FIXUPS_20F66: &[&str] = &[
+        // +[CIContext internalGLContextWithOptions:]: mov x3, x2; adrp x8, ... -> mov x0, #0; ret
+        "dyld_shared_cache_arm64.07,a162c,e30302aa88512490,000080d2c0035fd6",
+    ];
+    if build != Some("20F66") {
+        return 0;
+    }
+    let mut added = 0;
+    for f in FIXUPS_20F66 {
+        if list.entries().iter().any(|e| e == f) {
+            continue;
+        }
+        if !list.push_within(f, TEXT_FIXUPS_SIZE) {
+            break;
+        }
+        added += 1;
+    }
+    added
+}
+
+/// iOS 16.5's (20F66) product: the iPhone X's /product product-id (DeviceTree.d22ap of the restore file the image is
+/// made from, iPhone10,3/iPhone10,6 16.5, read with `oneios-tool remotezip get`, `image im4p` and `xnuloader-inspect
+/// adt`), entry 36 of 20F66 libMobileGestalt's table of 363 products (product type 0x669eebc5). MobileGestalt finds
+/// the product by it; without it MGGetProductType is -1, Settings has no model name, and bluetoothd's chip factory
+/// (MGIsDeviceOneOfType against lists of these ids) leaves its chip null and dies on it (status 11 every 10 s:
+/// [chip + 0x260] at 0x100274cf0 of 20F66's /usr/sbin/bluetoothd). With it the factory makes the iPhone X's chip (15).
+/// The root's model and target-type stay the generic machine's (docs/userland.md, "The iOS 16.5 identity").
+pub const IOS16_PRODUCT_ID: [u8; 20] = [
+    0xfd, 0x07, 0x9b, 0x29, 0x81, 0x44, 0xa7, 0xde, 0xb4, 0xd7, 0xc8, 0x7f, 0xef, 0x3e, 0xb4, 0x74, 0xd8, 0xf0, 0xe7,
+    0xeb,
+];
+
+/// The serial number an iOS 16.5 guest shows (Settings > General > About): OneiOS's own, made up, the same on every
+/// phone; never an Apple serial. 11 characters, the most XNU's IODTPlatformExpert gives from serial-number.
+pub const IOS16_SERIAL: &str = "ONEIOS16A56";
 
 /// xh_panel_native: the panel's native mode among the modes of its connector: the largest, at its highest refresh
 /// rate. Not the current one: One UI's resolution setting may run the panel at 1080x2340.

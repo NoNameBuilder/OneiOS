@@ -69,6 +69,18 @@ What xnuhost has to supply for drm2kgsl, as crosvm does [F] (`drm2kgsl_renderer.
 - environment switches worth keeping: `DRM2KGSL_PRIORITIES=3` (render server on its own ringbuffer),
   `DRM2KGSL_PWR_CONSTRAINT`, `NCTX_NO_WAITTS`.
 
+### GPU (Metal on the Galaxy A56's Xclipse 540, iOS 16.5; added 2026-11-24)
+
+The A56 port's design and what each stage takes: [a56-gpu.md](a56-gpu.md) section 1. In short:
+
+| Layer | Take | From (pin in `get-references.sh`) | Licence | Fit |
+| --- | --- | --- | --- | --- |
+| Metal on Gallium, no Vulkan | `tools/mesa/air/` (AIR frontend, `air_metal.c`), `userland/src/redwoodmetal.m`, `metal_plugin.plist` | `Jesvi-iOS` a13e406 (main table) | MIT (outside `xnu/`; `xnu/` is APSL) | Ported onto radeonsi instead of Panfrost; its notices kept. Its CoreAnimation render server stayed off Metal (a56-gpu.md 1). No `prebuilt/`, no `.py` |
+| Host: amdgpu native context | `runtime/xnuhost/amdgpu/src/amdgpu_renderer.c`, `src/gpu3d_xclipse.c` (commit `e7d56f2`) | `OneiOS-A56` c83b9ca (main table) | MIT per file (the repository states none) | Rewritten in Rust as `runtime/xnuhost/src/gpu3d_amdgpu.rs`; nothing copied as is |
+| Guest: amdgpu virtio, radeonsi, ACO | `src/amd/common/virtio`, `src/virtio/vdrm`, `src/gallium/drivers/radeonsi`, `src/gallium/winsys/amdgpu` | `mesa-droidvm` cecc0e9 | MIT | Built for Darwin arm64 (iOS 16.5) with a Darwin vdrm backend over `DroidVMVirtgpuABI.h` |
+| Guest: libdrm for Darwin | `xf86drm.h`, `include/drm`, `amdgpu/` (the VA manager) | libdrm 2.4.133, the release Mesa's `subprojects/libdrm.wrap` pins (sha256 checked; fetched by `userland/metal-amd/build.sh`, not by `get-references.sh`) | MIT | Headers and libdrm_amdgpu built for iOS 16.5; the DRM calls are `src/oneios/oneios_drm.c` of the Mesa patches (a56-gpu.md 3) |
+| Ideas only | Panfrost on Darwin (Pixel 6a); a HakiOS XNU; a Mali driver for XNU | `pixelios-kernel` f084ce5, `pixelios-userland` d5b2079 (MIT); `hakios-xnu-kernel` 62e09f8 (no licence); `mapple_gpu_mali` f893fed (GPL-3.0) (extra table) | as said | read only; nothing of the last two goes into our files |
+
 ### Display
 
 | Take | From | Licence | Fit |

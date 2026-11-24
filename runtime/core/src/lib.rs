@@ -14,6 +14,7 @@
 //!   [`text`] (C's fixed-size cuts, C strings in buffers), [`thread`] (named threads, a lock that outlives a
 //!   panic), [`fd`] (O_NONBLOCK, FD_CLOEXEC, EINTR, memfds, socket pairs, SCM_RIGHTS), [`sys`] (errno, its texts,
 //!   [`sys::Errno`], the page size), [`ioctl`] (the numbers and the call), [`time`] (the monotonic clock).
+//! - [`inflate`]: zlib streams decoded (what xnuhost reads of a gpuaddon sidecar's files).
 //! - [`evdev`]: Linux's input devices: the event codes, input_event, the EVIOC* ioctls (xnuhost's input path, the
 //!   haptics and brightness bridges, bridgectl).
 pub mod bytes;
@@ -21,6 +22,7 @@ pub mod evdev;
 pub mod fd;
 pub mod fs;
 pub mod hooks;
+pub mod inflate;
 pub mod insn;
 pub mod ioctl;
 pub mod log;

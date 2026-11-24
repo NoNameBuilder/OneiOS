@@ -1,0 +1,114 @@
+diff --git a/src/amd/common/virtio/amdgpu_virtio.c b/src/amd/common/virtio/amdgpu_virtio.c
+index 00494d6..b32fc9f 100644
+--- a/src/amd/common/virtio/amdgpu_virtio.c
++++ b/src/amd/common/virtio/amdgpu_virtio.c
+@@ -16,6 +16,9 @@
+ #include "amdgpu.h"
+ 
+ #include "amdgpu_virtio_private.h"
++#ifdef HAVE_VDRM_DARWIN
++#include "virtio/vdrm/vdrm_darwin.h"
++#endif
+ #include "drm-uapi/amdgpu_drm.h"
+ 
+ #include "util/log.h"
+@@ -413,8 +416,13 @@ amdvgpu_cs_submit_raw2(amdvgpu_device_handle dev, uint32_t ctx_id,
+ 
+    if (ret == 0 && fence_fd_ptr) {
+       /* Sync execution */
++#ifdef HAVE_VDRM_DARWIN
++      /* OneiOS: a ring fence number, not a descriptor (vdrm_darwin.c). */
++      vdrm_darwin_wait(dev->vdev, virtio_ring_idx, vdrm_execbuf_p.out_fence, UINT64_MAX >> 1);
++#else
+       sync_wait(*fence_fd_ptr, -1);
+       close(*fence_fd_ptr);
++#endif
+       vdrm_host_sync(dev->vdev, &req->hdr);
+    }
+ 
+diff --git a/src/amd/common/virtio/amdgpu_virtio_bo.c b/src/amd/common/virtio/amdgpu_virtio_bo.c
+index 7d3a54f..96cc50f 100644
+--- a/src/amd/common/virtio/amdgpu_virtio_bo.c
++++ b/src/amd/common/virtio/amdgpu_virtio_bo.c
+@@ -60,6 +60,11 @@ struct amdvgpu_host_blob *create_host_blob(uint32_t kms_handle,
+ 
+ static
+ void destroy_host_blob(amdvgpu_device_handle dev, struct amdvgpu_host_blob *hb) {
++#ifdef HAVE_VDRM_DARWIN
++   /* OneiOS: the CPU view is the kernel's mapping into this task (vdrm_darwin.c MAP); GEM_CLOSE below
++    * unmaps it. munmap() here would leave the kernel's mapping object pointing at a hole. */
++   hb->cpu_addr = NULL;
++#endif
+    if (hb->cpu_addr) {
+       int r = os_munmap(hb->cpu_addr, hb->alloc_size);
+       assert(r == 0);
+@@ -311,8 +316,12 @@ int amdvgpu_bo_cpu_unmap(amdvgpu_device_handle dev, amdvgpu_bo_handle bo) {
+    }
+    assert(bo->host_blob->cpu_addr);
+    if (p_atomic_dec_zero(&bo->host_blob->map_count)) {
++#ifdef HAVE_VDRM_DARWIN
++      /* OneiOS: the kernel's mapping stays until GEM_CLOSE (destroy_host_blob); a later map takes it again. */
++#else
+       r = os_munmap(bo->host_blob->cpu_addr, bo->host_blob->alloc_size);
+       bo->host_blob->cpu_addr = NULL;
++#endif
+    }
+    simple_mtx_unlock(&bo->host_blob->cpu_access_mutex);
+ 
+diff --git a/src/amd/common/virtio/amdgpu_virtio_device.c b/src/amd/common/virtio/amdgpu_virtio_device.c
+index eecfd6a..5e7b75c 100644
+--- a/src/amd/common/virtio/amdgpu_virtio_device.c
++++ b/src/amd/common/virtio/amdgpu_virtio_device.c
+@@ -14,6 +14,10 @@
+ 
+ #include <xf86drm.h>
+ 
++#ifdef HAVE_VDRM_DARWIN
++#include "virtio/vdrm/vdrm_darwin.h"
++#endif
++
+ /* amdvgpu_device manage the virtual GPU.
+  *
+  * It owns a vdrm_device instance, the rings and manage seqno.
+@@ -197,9 +201,14 @@ int amdvgpu_device_initialize(int fd, uint32_t *drm_major, uint32_t *drm_minor,
+    *drm_minor = dev->vdev->caps.version_minor;
+ 
+ init_sync_provider:
++#ifdef HAVE_VDRM_DARWIN
++   /* OneiOS: no DRM syncobjs on Darwin; the vdrm backend's own (binary, over its ring fences). */
++   *p = vdrm_darwin_get_sync(dev->vdev);
++#else
+    *p = vdrm_vpipe_get_sync(dev->vdev);
+    if (!(*p))
+       *p = util_sync_provider_drm(dev->fd);
++#endif
+ 
+    return 0;
+ }
+diff --git a/src/gallium/winsys/amdgpu/drm/amdgpu_winsys.c b/src/gallium/winsys/amdgpu/drm/amdgpu_winsys.c
+index 833dba0..eff51e2 100644
+--- a/src/gallium/winsys/amdgpu/drm/amdgpu_winsys.c
++++ b/src/gallium/winsys/amdgpu/drm/amdgpu_winsys.c
+@@ -18,6 +18,9 @@
+ #include "util/log.h"
+ #include "util/thread_sched.h"
+ #include "util/xmlconfig.h"
++#ifdef HAVE_VDRM_DARWIN
++#include "oneios_drm.h"
++#endif
+ #include "drm-uapi/amdgpu_drm.h"
+ #include <xf86drm.h>
+ #include <stdio.h>
+@@ -361,6 +364,12 @@ amdgpu_cs_set_pstate(struct radeon_cmdbuf *rcs, enum radeon_ctx_pstate pstate)
+ static bool
+ are_file_descriptions_equal(int fd1, int fd2)
+ {
++#ifdef HAVE_VDRM_DARWIN
++   /* OneiOS: Darwin cannot compare file descriptions; GPU descriptors (src/oneios/oneios_drm.h) are equal
++    * only when they are the same descriptor, which is what the winsys needs (no log line for each screen). */
++   if (oneios_drm_is_device(fd1) && oneios_drm_is_device(fd2))
++      return fd1 == fd2;
++#endif
+    int r = os_same_file_description(fd1, fd2);
+ 
+    if (r == 0)

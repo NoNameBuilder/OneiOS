@@ -42,6 +42,12 @@ DEST=${REF_DIR:-$REPO/external}
 #                   base's kits/XnuPrelink submodule at b74ed7c). Needed: from 2b7baca it retargets the `<stub>.original`
 #                   branches of the hosted kernel's archives (native_original_branches); b74ed7c leaves all 507 of them
 #                   pointing past the collection and the kernel panics at the GPU's start (phone, 2026-11-12).
+# Jesvi-iOS        iOS 16.5 on the Galaxy S20 (HakiOS-based; MIT outside xnu/, APSL in xnu/): Metal over Mesa Gallium without
+#                   Vulkan (tools/mesa/air: the AIR frontend, air_metal.c; userland/src/redwoodmetal.m: the Metal device
+#                   classes). The A56's Metal plug-in is ported from these (docs/a56-gpu.md). Source only: its prebuilt/
+#                   binaries and its Python tools are never taken.
+# OneiOS-A56        Musicalista/OneiOS-A56, the other A56 fork: runtime/xnuhost/amdgpu (e7d56f2, the C virglrenderer amdgpu
+#                   native context the Rust gpu3d_amdgpu is written from), userland/metal/amdgpu (the guest probe).
 TABLE='
 virglrenderer        https://github.com/Droid-VM/virglrenderer.git        7e17c8e814e963912fc1e4e737137a31b5efa027 wip/hackintosh
 crosvm               https://github.com/Droid-VM/crosvm.git               f82707d2cbd8d1666cd11428157ddb45c4d61282 wip/hackintosh
@@ -60,6 +66,8 @@ droidvm-meta-repo    https://github.com/Droid-VM/droidvm-meta-repo.git    a18ec7
 macOS-DroidVM        https://github.com/Droid-VM/macOS-DroidVM.git        77f761485bfc2c2e379ee49eb5c6a25c19b98739 main
 gunyah_host_mod      https://github.com/Droid-VM/gunyah_host_mod.git      44e8ae5a088a3a35290a5cacb205640cff187b99 droidvm
 XnuPrelink           https://github.com/UniXNU/XnuPrelink.git             9b950f2e104da77f494e8f2735c6f044f0e4db4d main
+Jesvi-iOS            https://github.com/jesvi-eulah/Jesvi-iOS.git         a13e4060dbc81b9db54f4688efbd51e695998420 main
+OneiOS-A56           https://github.com/Musicalista/OneiOS-A56.git        c83b9cae30207d8256cdbf1ad6bb4d81405df8cd main
 '
 # Extra table (-a or by name): read-only references, nothing to build on.
 # UniXNU-shennong   Xiaomi 14 Pro (SM8650): the only public iPhone iOS 27.0.1 (24A446, iPhone17,1) OS profile. No licence.
@@ -69,6 +77,9 @@ XnuPrelink           https://github.com/UniXNU/XnuPrelink.git             9b950f
 # tahoe-on-linux    macOS 26 userland on Linux with the XNU personality in user space (x86_64): trap-layer design notes.
 # vphone-linux      reims-vgpu + metal2vulkan on Linux: the fallback GPU path of docs/plan.md 5.5.
 # Portsmith-iOS     the catalogue of every UniXNU / HakiOS / ios-sweet device port (ports/catalog/unixnu-devices.toml).
+# pixelios-kernel, pixelios-userland  PixOS-Project, iOS on the Pixel 6a (Mali via Panfrost), MIT: ideas for the A56 GPU port.
+# hakios-xnu-kernel oosexgang, the HakiOS XNU kernel: no licence stated, read only (ideas).
+# mapple_gpu_mali   open-mapple, a Mali GPU driver for XNU: GPL-3.0, read only (ideas; no code into MIT or APSL files).
 EXTRA='
 UniXNU-shennong      https://github.com/YX2748198202-lab/UniXNU-shennong.git 363cc770793ca998a70801b70798e17aadb64261 main
 UniXNU-houji         https://github.com/lonzzi/UniXNU-houji.git           99beb109d66d24d3a1780901cb8958ec3fb24b06 main
@@ -77,6 +88,10 @@ UniXNU-sheng         https://github.com/UniXNU/UniXNU-sheng.git           6bc0ce
 tahoe-on-linux       https://github.com/ediwiuwj/tahoe-on-linux.git       2595c97a3a1ff97dc31cc7c4068b1d95eb627b44 main
 vphone-linux         https://github.com/YahiaAngelo/vphone-linux.git      9c75e88d4b379ae5018dc4e0e9d8c71a90538567 main
 Portsmith-iOS        https://github.com/Chromitsune/Portsmith-iOS.git     8794f29410822d2c258ad6abad57b26150a99fed main
+pixelios-kernel      https://github.com/PixOS-Project/pixelios-kernel.git f084ce5ec5cbfabee7ab7b20ba9c7d7232bd8361 main
+pixelios-userland    https://github.com/PixOS-Project/pixelios-userland.git d5b20792cc13c09be3fc04276874607ba59775c6 main
+hakios-xnu-kernel    https://github.com/oosexgang/hakios-xnu-kernel.git  62e09f850f1f713192228cb9031da256033ede93 common
+mapple_gpu_mali      https://github.com/open-mapple/mapple_gpu_mali.git  f893fed9bd8ff26daf1a3303e42b96ac29335b8b main
 '
 
 rows() { printf '%s\n' "$1" | sed '/^[[:space:]]*$/d'; }

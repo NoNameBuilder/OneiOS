@@ -265,6 +265,51 @@ fn machine_tree() {
 }
 
 #[test]
+fn machine_ios16_product_and_serial() {
+    // Without them (iOS 27, the S24 Ultra): no product-id, no product-description, no serial-number, as before.
+    let plain = machine_default().tree().unwrap();
+    let product = plain.find("product").unwrap();
+    assert!(product.get("product-id").is_none() && product.get("product-description").is_none());
+    assert!(plain.get("serial-number").is_none());
+    // An iOS 16.5 image set's (xnuhost): /product product-id as given, product-description = product-name, and the
+    // root's serial-number in IODTPlatformExpert's layout.
+    let id: [u8; 20] = std::array::from_fn(|i| 0xa0 + i as u8);
+    let mut m = machine_default();
+    m.product_id = Some(id);
+    m.serial_number = Some("ONEIOS16A56".into());
+    let t = m.tree().unwrap();
+    let product = t.find("product").unwrap();
+    assert_eq!(product.get("product-id").unwrap().value, id);
+    assert!(str_of(product, "product-description") == Some("OneiOS guest"));
+    assert!(str_of(product, "product-name") == Some("OneiOS guest"));
+    let serial = &t.get("serial-number").unwrap().value;
+    assert_eq!(serial.len(), 32);
+    // XNU's IODTPlatformExpert::createSystemSerialNumberString with no '-': bytes 13..21, then 0..3
+    assert!(!serial.contains(&b'-'));
+    let shown: Vec<u8> = serial[13..21].iter().chain(&serial[..3]).copied().collect();
+    assert_eq!(shown, b"ONEIOS16A56");
+    assert!(serial[3..13].iter().chain(&serial[21..]).all(|&b| b == 0));
+    // MobileGestalt's cache follows the new answers (hosted 0084): another identity
+    assert_ne!(machine::identity_hash(&t), machine::identity_hash(&plain));
+    // A serial the layout cannot carry is refused, not shortened
+    for bad in ["ONEIOS16A5", "ONEIOS16A567", "oneios16a56", "ONEIOS-6A56", "ONEIOS 6A56"] {
+        assert!(machine::serial_number_property(bad).is_none(), "{bad}");
+        m.serial_number = Some(bad.into());
+        assert!(m.tree().is_err(), "{bad}");
+    }
+    // An identity tree's own /product wins: no product-id or description of ours is added to it
+    let mut i = machine_default();
+    let mut idt = Node::new("device-tree");
+    idt.set("model", b"iPhone10,3\0").unwrap();
+    idt.set("target-type", b"D22\0").unwrap();
+    idt.add("product").set("product-name", b"iPhone X\0").unwrap();
+    i.identity = Some(idt);
+    i.product_id = Some(id);
+    let it = i.tree().unwrap();
+    assert!(it.find("product").unwrap().get("product-id").is_none());
+}
+
+#[test]
 fn machine_cameras_and_identity() {
     use DeviceKind::*;
     let t = machine_default().tree().unwrap();

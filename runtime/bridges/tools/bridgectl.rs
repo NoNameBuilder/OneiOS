@@ -440,7 +440,14 @@ fn bt() -> i32 {
         println!("no Bluetooth HAL found ({hal})");
         return 1;
     }
-    println!("HAL {} registered", if hal == 11 { "1.1" } else { "1.0" });
+    println!(
+        "HAL {} registered",
+        match hal {
+            11 => "1.1",
+            hci_hidl::PROBE_AIDL => "AIDL (android.hardware.bluetooth.IBluetoothHci/default)",
+            _ => "1.0",
+        }
+    );
     let state = Arc::new(AtomicI32::new(-1));
     let events = Arc::new(AtomicU32::new(0));
     let rx: hci::RxFn = {

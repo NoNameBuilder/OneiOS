@@ -9,18 +9,27 @@
 //! Scenarios: a 1.1 HAL (probe, open, interfaceChain on our callback, initializationComplete, HCI Reset and Read
 //! BD_ADDR answered with Command Complete, ACL echoed, close); a 1.0-only HAL; no HAL registered; a HAL that never
 //! completes initialisation (the timeout); a HAL that dies.
+//! And the Galaxy A56's layout (no HIDL HAL; the stable AIDL android.hardware.bluetooth.IBluetoothHci/default on
+//! servicemanager, a second device of the same binderfs, ONEIOS_BINDER): probe, open (initialize with our callback
+//! object, its descriptor and version asked, initializationComplete), commands answered through hciEventReceived
+//! before they return, ACL (one past 4 KiB), ISO and SCO echoed, close; a HAL that refuses the 'SYST' token (the
+//! 'VNDR' retry); neither HAL (the line naming both); an AIDL HAL that dies.
 //! Not tested here: the real libhwbinder, SELinux, the QTI HAL itself. That is `bridgectl bt` on the phone.
 //! C: tests/test_hidl_binder.c.
 
 mod common;
 
+use onebridges::bt::aidl_parcel as ap;
 use onebridges::bt::hci::{Hci, HciState};
 use onebridges::bt::{hci_hidl, hidl_parcel::*};
+use onebridges::hal::aidl::{self, Connection, Object, Parcel, Reader, HEADER_SYST, HEADER_VNDR};
 use onebridges::hal::binder::uapi::*;
 use onebridges::hal::binder::{Commands, TransactionData};
 use onebridges::hal::binderfs::{self, Entered};
 use onebridges::hal::hidl;
+use onebridges::log::Capture;
 use std::ffi::CStr;
+use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::Duration;
 use xh_core::bytes::ne;
@@ -513,16 +522,205 @@ fn fake_hal(device: &str, mode: Mode, ready: i32) {
 }
 
 fn start_hal(device: &str, mode: Mode) -> libc::pid_t {
+    let device = device.to_owned();
+    start_child(move |ready| fake_hal(&device, mode, ready))
+}
+
+// ================================ the fake servicemanager + AIDL HAL (child) ================================
+// The A56's layout: no Bluetooth service on hwservicemanager (no context manager on the hwbinder at all: "Broken
+// pipe", as the A56 logged), android.hardware.bluetooth.IBluetoothHci/default on servicemanager. Served with
+// hal::aidl (both ends: what this proves is the client's calls, codes, callbacks and threads on a real driver; the
+// parcels' bytes are checked against libbinder's layout in bt::aidl_parcel's unit tests). Like the AOSP HAL it calls
+// back from its own thread, two-way, and for a command before it answers the command; like libbinder_ndk it asks our
+// callback object for its descriptor and version.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum AidlMode {
+    Ok,
+    Vndr, // refuses a 'SYST' token (a HAL on the vendor copy of libbinder): the client tries 'VNDR'
+    Absent,
+}
+const OBJ_HCI: u64 = 1;
+
+static AFAKE: OnceLock<Connection> = OnceLock::new();
+static AMODE: OnceLock<AidlMode> = OnceLock::new();
+/// What the fake AIDL HAL saw, a line each (set by the parent before the fork).
+static ALOG: OnceLock<PathBuf> = OnceLock::new();
+
+fn alog(line: &str) {
+    use std::io::Write;
+    println!("  fake AIDL HAL: {line}");
+    // One write of the whole line: the HAL's callback thread and its call thread both log here, and writeln!'s
+    // separate writes of the text and the newline let one land inside the other ("callback 0x1: yesiso 8", the
+    // v0.1.24 release run's failure at the order check). One O_APPEND write of a short line is not split.
+    if let Ok(mut f) = std::fs::OpenOptions::new().append(true).create(true).open(ALOG.get().unwrap()) {
+        let _ = f.write_all(format!("{line}\n").as_bytes());
+    }
+}
+
+/// What the fake saw since the last look.
+fn alog_take() -> String {
+    let path = ALOG.get().unwrap();
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let _ = std::fs::remove_file(path);
+    text
+}
+
+fn aidl_incoming(object: u64, code: u32, r: &mut Reader<'_>) -> Result<Parcel, i32> {
+    let mode = *AMODE.get().unwrap();
+    let mut reply = Parcel::new();
+    if object == 0 {
+        // servicemanager
+        let header = if code == onebridges::hal::SM_GET_SERVICE {
+            r.token_header(onebridges::hal::SERVICE_MANAGER)
+        } else {
+            None
+        };
+        scheck!(header == Some(HEADER_SYST));
+        let name = r.string(127).unwrap_or_default();
+        scheck!(name == ap::HCI_INSTANCE && !r.is_bad());
+        alog(&format!("getService {name}"));
+        reply.put_ok();
+        if mode == AidlMode::Absent {
+            reply.put_null_binder();
+        } else {
+            reply.put_local(OBJ_HCI);
+        }
+        return Ok(reply);
+    }
+    scheck!(object == OBJ_HCI);
+    if let Some(standard) = aidl::standard(code, ap::HCI, 1, ap::HASH) {
+        return Ok(standard);
+    }
+    let Some(header) = r.token_header(ap::HCI) else {
+        scheck!(false);
+        return Err(aidl::BAD_TYPE);
+    };
+    if mode == AidlMode::Vndr && header != HEADER_VNDR {
+        alog("refused a SYST token");
+        return Err(aidl::BAD_TYPE); // libbinder_ndk's answer to a token it does not take
+    }
+    scheck!(header == if mode == AidlMode::Vndr { HEADER_VNDR } else { HEADER_SYST });
+    match code {
+        ap::HCI_INITIALIZE => {
+            let cb = r.binder();
+            scheck!(matches!(cb, Object::Handle(_)));
+            if let Object::Handle(h) = cb {
+                scheck!(AFAKE.get().unwrap().acquire(h).is_ok());
+                JOBS.lock().unwrap().cb_handle = Some(h);
+                post(aidl::INTERFACE, &[]);
+                post(aidl::GET_VERSION, &[]);
+                post(ap::CB_INIT_COMPLETE, &[]);
+            }
+            alog(&format!("initialize {}", if header == HEADER_VNDR { "VNDR" } else { "SYST" }));
+        }
+        ap::HCI_SEND_COMMAND => {
+            let data = r.bytes().unwrap_or_default();
+            scheck!(data.len() >= 3 && data.len() == 3 + data[2] as usize);
+            let opcode = u16::from(data[0]) | u16::from(data[1]) << 8;
+            let mut event = vec![0x0e, 4, 1, data[0], data[1], 0];
+            if opcode == 0x1009 {
+                event[1] = 10; // Read BD_ADDR
+                event.extend_from_slice(b"\x66\x55\x44\x33\x22\x11");
+            }
+            alog(&format!("command {opcode:#06x}"));
+            wait_job(post(ap::CB_EVENT, &event)); // the event goes out before the command returns
+        }
+        ap::HCI_SEND_ACL | ap::HCI_SEND_ISO | ap::HCI_SEND_SCO => {
+            let data = r.bytes().unwrap_or_default();
+            let (name, back) = match code {
+                ap::HCI_SEND_ACL => ("acl", ap::CB_ACL),
+                ap::HCI_SEND_ISO => ("iso", ap::CB_ISO),
+                _ => ("sco", ap::CB_SCO),
+            };
+            alog(&format!("{name} {}", data.len()));
+            post(back, data); // echoed
+        }
+        ap::HCI_CLOSE => alog("close"),
+        _ => {
+            scheck!(false); // an unknown HAL code
+            return Err(aidl::UNKNOWN_TRANSACTION);
+        }
+    }
+    scheck!(!r.is_bad());
+    reply.put_ok();
+    Ok(reply)
+}
+
+/// The fake AIDL HAL's thread of callbacks into the client, two-way, one at a time.
+fn aidl_reader() {
+    let conn = AFAKE.get().unwrap();
+    loop {
+        let (job, cb) = {
+            let mut j = JCOND.wait_while(JOBS.lock().unwrap(), |j| j.queue.is_empty()).unwrap();
+            (j.queue.pop_front().unwrap(), j.cb_handle.unwrap_or(0))
+        };
+        let ok = match job.code {
+            aidl::INTERFACE => conn
+                .call(cb, aidl::INTERFACE, &Parcel::new(), |r| r.string(95).ok_or(-libc::EPROTO))
+                .is_ok_and(|name| name == ap::CALLBACKS),
+            aidl::GET_VERSION => conn
+                .call(cb, aidl::GET_VERSION, &Parcel::with_token(ap::CALLBACKS), aidl::take_i32)
+                .is_ok_and(|v| v == ap::VERSION),
+            ap::CB_INIT_COMPLETE => {
+                let mut p = Parcel::with_token(ap::CALLBACKS);
+                p.put_i32(0); // Status.SUCCESS
+                conn.call_void(cb, job.code, &p).is_ok()
+            }
+            code => {
+                let mut p = Parcel::new();
+                p.set_limit(ap::PARCEL_MAX);
+                p.put_token(ap::CALLBACKS);
+                p.put_bytes(&job.data);
+                conn.call_void(cb, code, &p).is_ok()
+            }
+        };
+        scheck!(ok);
+        alog(&format!("callback {:#x}: {}", job.code, if ok { "yes" } else { "NO" }));
+        let mut j = JOBS.lock().unwrap();
+        j.done += 1;
+        JCOND.notify_all();
+    }
+}
+
+fn fake_aidl_hal(device: &str, mode: AidlMode, ready: i32) {
+    let _ = AMODE.set(mode);
+    let incoming = |object: u64, code: u32, _one_way: bool, r: &mut Reader<'_>| aidl_incoming(object, code, r);
+    let Ok(conn) = Connection::open(Some(device), Some(Box::new(incoming)), None) else {
+        println!("fake AIDL HAL: no binder device {device}");
+        common::exit(91);
+    };
+    let _ = AFAKE.set(conn);
+    if let Err(rc) = AFAKE.get().unwrap().context_manager() {
+        println!("fake AIDL HAL: not the context manager: {rc}");
+        common::exit(92);
+    }
+    std::thread::spawn(aidl_reader);
+    // SAFETY: one byte to the parent's pipe, then our end closed.
+    unsafe {
+        libc::write(ready, b"r".as_ptr().cast(), 1);
+        libc::close(ready);
+    }
+    loop {
+        std::thread::park();
+    }
+}
+
+fn start_aidl_hal(device: &str, mode: AidlMode) -> libc::pid_t {
+    let device = device.to_owned();
+    start_child(move |ready| fake_aidl_hal(&device, mode, ready))
+}
+
+/// A child that writes one byte to `ready` once it serves: its pid, or -1.
+fn start_child(child: impl FnOnce(i32)) -> libc::pid_t {
     let mut fds = [0; 2];
     // SAFETY: pipe writes two fds.
     if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
         return -1;
     }
-    let device = device.to_owned();
     let pid = common::fork(move || {
         // SAFETY: the read end is the parent's.
         unsafe { libc::close(fds[0]) };
-        fake_hal(&device, mode, fds[1])
+        child(fds[1])
     });
     let mut c = 0u8;
     // SAFETY: our pipe's ends.
@@ -615,6 +813,140 @@ fn full_session(device: &str, mode: Mode) {
     drop(h);
 }
 
+/// The lines a scenario logged, printed (the capture holds them instead of stdout).
+fn show(log: &Capture) {
+    for (level, line) in log.lines() {
+        println!("  [{}] {line}", if level == onebridges::log::Level::Error { "E" } else { "I" });
+    }
+}
+
+/// The A56: no HIDL HAL, the AIDL one on servicemanager. Probe, open (initialize with our callback object, its
+/// descriptor and version asked, initializationComplete), commands answered through hciEventReceived, ACL (one past
+/// the 4 KiB parcel), ISO and SCO echoed through their callbacks, close.
+fn aidl_session(binder: &str, mode: AidlMode) {
+    println!("AIDL HAL ({mode:?}), no HIDL HAL");
+    let failures = common::FAILURES.load(std::sync::atomic::Ordering::Relaxed);
+    let log = Capture::start();
+    let hal = start_aidl_hal(binder, mode);
+    check!(hal > 0);
+    check!(hci_hidl::probe() == hci_hidl::PROBE_AIDL);
+    check!(log.has(
+        "bluetooth: the AIDL HAL android.hardware.bluetooth.IBluetoothHci/default (version 1) on servicemanager: \
+         no HIDL HAL on hwservicemanager (Broken pipe)"
+    ));
+    let c = Arc::new(Client::default());
+    let Some(h) = c.open() else {
+        check!(false);
+        show(&log);
+        return;
+    };
+    check!(h.send(1, &RESET) == Err(-libc::ENOTCONN)); // not open yet
+    check!(h.open().is_ok());
+    check!(c.wait(3000, |g| g.state == Some(HciState::On))); // initializationComplete(SUCCESS)
+    let mut big = vec![0x01u8, 0x00, 0, 0];
+    big.extend((0..4996u32).map(|i| i as u8));
+    big[2..4].copy_from_slice(&4996u16.to_le_bytes());
+    const ISO: [u8; 8] = [0x02, 0x00, 4, 0, 1, 2, 3, 4];
+    const SCO: [u8; 5] = [0x03, 0x00, 2, 9, 9];
+    check!(h.send(1, &RESET).is_ok());
+    check!(h.send(1, &READ_ADDRESS).is_ok());
+    check!(h.send(2, &ACL).is_ok());
+    check!(h.send(2, &big).is_ok());
+    check!(h.send(5, &ISO).is_ok());
+    check!(h.send(3, &SCO).is_ok());
+    check!(c.wait(3000, |g| g.packets.len() == 6));
+    {
+        let g = c.got.lock().unwrap();
+        let p = &g.packets;
+        check!(p.len() == 6);
+        if p.len() == 6 {
+            check!(p[0].0 == 4 && p[0].1 == b"\x0e\x04\x01\x03\x0c\x00");
+            check!(p[1].0 == 4 && p[1].1.len() == 12 && p[1].1[6..12] == *b"\x66\x55\x44\x33\x22\x11");
+            check!(p[2].0 == 2 && p[2].1 == ACL);
+            check!(p[3].0 == 2 && p[3].1 == big);
+            check!(p[4].0 == 5 && p[4].1 == ISO);
+            check!(p[5].0 == 3 && p[5].1 == SCO);
+        }
+    }
+    h.close();
+    check!(c.state() == Some(HciState::Off));
+    drop(h); // joins the caller thread: the close queued above is made and logged by then
+    let header = if mode == AidlMode::Vndr { "VNDR" } else { "SYST" };
+    check!(log.has(&format!(
+        "bluetooth: HAL AIDL (version 1, token header {header}) found, initialising (power and firmware are the HAL's)"
+    )));
+    check!(log.has("bluetooth: HAL initialisation complete: the controller is on (status 0)"));
+    check!(log.has("bluetooth: first packet from the controller (H4 type 4, 6 bytes)"));
+    check!(log.has("bluetooth: HAL closed (6 packets from the controller, 0 dropped: queue full)"));
+    check!(
+        mode != AidlMode::Vndr || log.has("bluetooth: the AIDL HAL refused initialize with the system token header")
+    );
+    check!(!log.lines().iter().any(|(level, _)| *level == onebridges::log::Level::Error));
+    // What the HAL was asked, in order: the probe's and the open's lookups, initialize, the packets, close (the
+    // client's calls are one at a time). Its callbacks come from its own thread, so they are counted, not ordered.
+    let seen = alog_take();
+    let mut want = vec![
+        "getService android.hardware.bluetooth.IBluetoothHci/default",
+        "getService android.hardware.bluetooth.IBluetoothHci/default",
+    ];
+    if mode == AidlMode::Vndr {
+        want.push("refused a SYST token");
+    }
+    want.extend([
+        if mode == AidlMode::Vndr { "initialize VNDR" } else { "initialize SYST" },
+        "command 0x0c03",
+        "command 0x1009",
+        "acl 8",
+        "acl 5000",
+        "iso 8",
+        "sco 5",
+        "close",
+    ]);
+    let asked: Vec<&str> = seen.lines().filter(|l| !l.starts_with("callback ")).collect();
+    check!(asked == want);
+    let answered = |code: &str| seen.matches(&format!("callback {code}: yes\n")).count();
+    check!(answered("0x5f4e5446") == 1); // INTERFACE: our descriptor, as libbinder_ndk asks
+    check!(answered("0xffffff") == 1); // getInterfaceVersion: 1
+    check!(answered("0x3") == 1); // initializationComplete
+    check!(answered("0x2") == 2); // hciEventReceived, each before its command returned
+    check!(answered("0x1") == 2 && answered("0x4") == 1 && answered("0x5") == 1); // ACL, ISO, SCO echoed
+    check!(!seen.contains("NO"));
+    if failures != common::FAILURES.load(std::sync::atomic::Ordering::Relaxed) {
+        println!("  the HAL saw:\n{seen}");
+    }
+    common::kill(hal);
+    show(&log);
+}
+
+/// Neither HAL: one line naming both, the HIDL error; and the AIDL HAL's process dies under an open controller.
+fn aidl_absent_and_death(binder: &str) {
+    println!("no HIDL HAL, no AIDL HAL registered");
+    let log = Capture::start();
+    let hal = start_aidl_hal(binder, AidlMode::Absent);
+    check!(hci_hidl::probe() == -libc::EPIPE);
+    check!(log.has(
+        "bluetooth: no Bluetooth HAL: no android.hardware.bluetooth@1.x::IBluetoothHci/default from hwservicemanager \
+         (Broken pipe), no android.hardware.bluetooth.IBluetoothHci/default from servicemanager (not registered with \
+         servicemanager, or SELinux denies the lookup)"
+    ));
+    common::kill(hal);
+    let _ = alog_take();
+
+    println!("the AIDL HAL dies");
+    let hal = start_aidl_hal(binder, AidlMode::Ok);
+    check!(hci_hidl::probe() == hci_hidl::PROBE_AIDL);
+    let d = Arc::new(Client::default());
+    let h = d.open();
+    check!(h.as_ref().is_some_and(|h| h.open().is_ok()) && d.wait(3000, |g| g.state == Some(HciState::On)));
+    common::kill(hal);
+    check!(d.wait(2000, |g| g.state == Some(HciState::Failed))); // the death notification
+    check!(h.as_ref().is_some_and(|h| h.send(1, &RESET) == Err(-libc::ENOTCONN)));
+    check!(log.has("bluetooth: the HAL process died"));
+    drop(h);
+    let _ = alog_take();
+    show(&log);
+}
+
 fn main() {
     let device = match binderfs::enter("ONEIOS_HWBINDER", "hwbinder") {
         Entered::Device(path) => path,
@@ -627,6 +959,19 @@ fn main() {
     common::log_to_stdout();
     // SAFETY: a signal disposition: a write to a dead pipe is an error, not the end.
     unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) };
+    // The AIDL HAL's device (ONEIOS_BINDER, read by the client): the caller's, else a "binder" beside the hwbinder
+    // in this test's binderfs. Set before any thread starts. With no context manager on it, the HIDL scenarios'
+    // probes find no AIDL HAL either.
+    let binder = std::env::var("ONEIOS_BINDER")
+        .unwrap_or_else(|_| std::path::Path::new(&device).with_file_name("binder").display().to_string());
+    if let Err(why) = binderfs::add_device(&binder) {
+        println!("{why}");
+    }
+    let binder_usable = std::ffi::CString::new(binder.clone())
+        // SAFETY: a NUL-terminated path.
+        .is_ok_and(|c| unsafe { libc::access(c.as_ptr(), libc::R_OK | libc::W_OK) } == 0);
+    std::env::set_var("ONEIOS_BINDER", &binder);
+    let _ = ALOG.set(std::env::temp_dir().join(format!("oneios-aidl-bt-{}.log", std::process::id())));
 
     full_session(&device, Mode::Ok);
     full_session(&device, Mode::V10);
@@ -667,6 +1012,18 @@ fn main() {
     common::kill(hal);
     check!(d.wait(2000, |g| g.state == Some(HciState::Failed))); // the death notification
     check!(h.as_ref().is_some_and(|h| h.send(1, &RESET) == Err(-libc::ENOTCONN)));
+    drop(h);
+
+    // The A56's layout: the hwbinder has no service manager left (the fakes above are gone), the AIDL HAL is on the
+    // binder device beside it.
+    if !binder_usable {
+        println!("AIDL scenarios: skipped ({binder} is not a binder device this test can open)");
+    } else {
+        aidl_session(&binder, AidlMode::Ok);
+        aidl_session(&binder, AidlMode::Vndr);
+        aidl_absent_and_death(&binder);
+    }
+    let _ = std::fs::remove_file(ALOG.get().unwrap());
 
     std::process::exit(common::finish("test_hidl_binder"));
 }
