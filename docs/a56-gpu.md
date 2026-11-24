@@ -946,8 +946,8 @@ then iOS's log with `phone pull-log`):
 8. the frame rate: `display: 10 s:` lines against the 2D session's.
 
 **Left, exactly:**
-- **The release.** The kernel `5966e71ce2aa` is uploaded and pinned (2026-11-25, [releases.md](releases.md)); the GL
-  half reaches an A56 with the first runtime release made after that pin. Until then step 4's older-kernel line.
+- **The release: done.** v0.1.26 (2026-11-25, [releases.md](releases.md)) carries the kernel `5966e71ce2aa` and the
+  two A56 bundles (`runtime.json` `metal_a56`); app 0.5.90. Checked after it: the assets, every runtime file, the kernel.
 - **A boot.** Unknowns only a boot shows: whether the Xclipse reads the guest's cached pages coherently (section 2),
   whether radeonsi's screen opens over the Darwin vdrm (section 3), whether CoreAnimation's GL shaders compile on
   Mesa and the per-frame IOSurface copies (4.5 MB written back per 720x1560 frame) beat CPU composition (4a), the
@@ -998,8 +998,7 @@ on the 20F66 set's manifest and owner-trust, the app's parse, `gpuctl addon`) pa
    `kernel-xnu-12377.121.6-ios-27.0.1-24A446-5966e71ce2aa` ([releases.md](releases.md)).
 
 **Next, in order:**
-1. The release (the coordinator or the owner): `scripts/release/release.sh VERSION` (builds the A56 bundles in the
-   runtime lane) or `--metal-amd-dir out/metal-amd` (the tested path; `out/metal-amd` holds the integrated build of main).
+1. Done: v0.1.26, `scripts/release/release.sh 0.1.26 --metal-amd-dir out/metal-amd` (exit 0, 2026-11-25; [releases.md](releases.md)).
 2. A boot on an A56 (section 6's taps and proof lines).
 3. Not done by owner's choice of this session: the licence rule change relayed on 2026-11-25 (code from repos with no
    stated licence) was refused by the permission check; the owner sets it in docs/references.md section 5 directly.
