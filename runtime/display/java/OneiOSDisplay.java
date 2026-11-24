@@ -207,24 +207,35 @@ public final class OneiOSDisplay {
      */
     private static int[] panel(Object transaction, boolean project, boolean takeover, int[] logical) {
         Object token = null;
-        int[] mode = null;                 // active width, height, hz; native width, height, hz, mode id
+        int[] mode = null;                 // active width, height, max Hz; native width, height, max Hz, ids
         try {
             Object[] display = display();
             token = display[1];
             mode = mode((Long) display[0], token);
-            log("panel modes: active " + mode[0] + "x" + mode[1] + " (up to " + mode[2] + " Hz), native " + mode[3] + "x" + mode[4]
-                + " at " + mode[5] + " Hz");
-            if (takeover && (mode[0] != mode[3] || mode[1] != mode[4])) {
-                if (nativeMode(token, mode[6], mode[5])) {
+            log("panel modes: active " + mode[0] + "x" + mode[1] + " mode id " + mode[7] + " (up to " + mode[2]
+                + " Hz), native " + mode[3] + "x" + mode[4] + " at " + mode[5] + " Hz (mode id " + mode[6] + ")");
+            // Refresh policy can be capped even while the native resolution and mode id are already active. In an
+            // explicit takeover, reopen the mode ranges every time; wait for a mode switch only when the id/size differs.
+            if (takeover && token != null && mode != null) {
+                boolean needsSwitch = mode[0] != mode[3] || mode[1] != mode[4] || mode[7] != mode[6];
+                boolean requested = nativeMode(token, mode[6], mode[5]);
+                if (requested && needsSwitch) {
                     // the switch happens at a vsync of surfaceflinger's: wait for it to be the active mode
                     for (int tries = 0; tries < 20; tries++) {
                         Thread.sleep(50);
                         mode = mode((Long) display[0], token);
-                        if (mode[0] == mode[3] && mode[1] == mode[4]) break;
+                        if (mode[0] == mode[3] && mode[1] == mode[4] && mode[7] == mode[6]) break;
                     }
                 }
-                if (mode[0] == mode[3] && mode[1] == mode[4]) log("the panel is in its native mode " + mode[0] + "x" + mode[1]);
-                else log("the panel stays at " + mode[0] + "x" + mode[1] + ": the guest's frame is scaled to it");
+                if (!requested) {
+                    log("the native mode request failed; active mode id " + mode[7] + " at " + mode[0] + "x" + mode[1]);
+                } else if (mode[0] == mode[3] && mode[1] == mode[4] && mode[7] == mode[6]) {
+                    log("the panel selected its native mode " + mode[0] + "x" + mode[1] + " (mode id " + mode[7]
+                        + ", up to " + mode[5] + " Hz)");
+                } else {
+                    log("the native mode is not active (mode id " + mode[7] + "): panel stays at " + mode[0] + "x" + mode[1]
+                        + "; the guest's frame is scaled only if its size differs");
+                }
             }
         } catch (Throwable unavailable) {
             log("the display's modes are not readable (" + unavailable + ")");
@@ -318,7 +329,7 @@ public final class OneiOSDisplay {
 
     /**
      * {active width, height, the highest refresh rate among the modes of that size;
-     *  native width, height, its highest refresh rate, the id of the native mode at that rate}.
+     *  native width, height, its highest refresh rate, the id of that native mode, active mode id}.
      * The native mode is the largest the panel has, not the one it is in.
      */
     private static int[] mode(long id, Object token) throws Exception {
@@ -404,6 +415,6 @@ public final class OneiOSDisplay {
             long area = (long) widths[i] * heights[i], most = nativeAt < 0 ? 0 : (long) widths[nativeAt] * heights[nativeAt];
             if (nativeAt < 0 || area > most || (area == most && widths[i] == widths[nativeAt] && rates[i] > rates[nativeAt])) nativeAt = i;
         }
-        return new int[]{width, height, best, widths[nativeAt], heights[nativeAt], rates[nativeAt], ids[nativeAt]};
+        return new int[]{width, height, best, widths[nativeAt], heights[nativeAt], rates[nativeAt], ids[nativeAt], active};
     }
 }
