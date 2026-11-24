@@ -1095,14 +1095,14 @@ second time).
 ## 8. Releases
 
 A tag `vN.N.N` on `main` (or a dispatch with a version) runs `.github/workflows/release.yml`, which builds the
-runtime package with the pinned NDK and the fork's APK (submodule `app/`, the head of `oneios`) on two runners at
-once, and attaches both with their `.sha256` to the release. No kernel, no image, no package set. See
+S24 Ultra Metal and camera plug-ins with Xcode 27.2, then packages them into the runtime alongside the pinned kernel;
+the fork's APK (submodule `app/`, the head of `oneios`) builds in parallel. No image or package set is released. See
 [releases.md](releases.md).
 `scripts/release/release.sh VERSION [--build-only]` (run under `scripts/bg.sh`) builds the same files on the build
 machine, runs CI's checks and the host tests in parallel, and publishes the release without waiting for the
 runners. Its runtime carries the Metal plug-in and the capture plug-in, built from HEAD in the runtime lane
 (`userland/metal/build.sh`, `userland/camera/build.sh`; `--metal-dir DIR` takes a built one, `--no-metal` leaves them
-out); CI's runtime has neither, so a phone-made image with a CI runtime composites on the CPU. It signs the APK with the debug key CI uses, `secrets/oneios-debug.keystore`, which is git-ignored (releases.md,
+out); CI builds the same plug-ins for iPhone18,2 / 24A446 and requires them in the runtime artifact. It signs the APK with the debug key CI uses, `secrets/oneios-debug.keystore`, which is git-ignored (releases.md,
 "Releasing from a build machine" and "The debug key").
 `runtime/package.sh VERSION` builds the phone's `bin/oneios-tool` with `ONEIOS_VERSION=VERSION`: its `serve` hello's
 `tool` is the release's version (up to v0.1.16 every release said the crate's `0.1.0`; issue 75).

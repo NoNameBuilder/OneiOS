@@ -30,7 +30,7 @@
 # Env: ANDROID_NDK_ROOT (default $HOME/Android/Sdk/ndk/28.2.13676358, on macOS $HOME/Library/Android/sdk/ndk/...;
 #      the revision is checked; runtime/build.sh gets it as NDK unless NDK is set), ANDROID_API (35),
 #      KERNEL_DIR, OUT_DIR (out/release; a relative one is taken from the current folder), SOURCE_DATE_EPOCH (default: the commit time),
-#      METAL_DIR, CAMERA_DIR, REQUIRE_METAL (step 3b; neither given: no lib/guest/),
+#      METAL_DIR, CAMERA_DIR, METAL_LICENSES_DIR (default: $ROOT/external), REQUIRE_METAL (step 3b; neither given: no lib/guest/),
 #      PACKAGE_EXTRA_DIR (a folder copied into the package as it is; used by the tests).
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -179,6 +179,7 @@ GUEST=$STAGE/lib/guest
 HAVE_METAL=0
 if [ -n "${METAL_DIR:-}" ]; then
   B=$METAL_DIR/NativeAdrenoMetal.bundle
+  METAL_LICENSES_DIR=${METAL_LICENSES_DIR:-$ROOT/external}
   [ -f "$B/NativeAdrenoMetal" ] && [ -f "$B/oneios-target" ] && [ -f "$METAL_DIR/NativeAdrenoMetal.build.json" ] ||
     { echo "package: METAL_DIR=$METAL_DIR holds no whole NativeAdrenoMetal.bundle (NativeAdrenoMetal, oneios-target) with NativeAdrenoMetal.build.json beside it (userland/metal/build.sh)" >&2; exit 1; }
   mkdir -p "$GUEST"
@@ -204,11 +205,11 @@ if [ -n "${METAL_DIR:-}" ]; then
     for f in NativeMetal/LICENSE metal2vulkan/LICENSE metal2vulkan/LICENSE-GPL-2.0 metal2vulkan/LICENSE-GPL-3.0 \
              metal2vulkan/LICENSE-LGPL-3.0 mesa-droidvm/LICENSING.md mesa-droidvm/licenses Droid-VM-UniXNU/LICENSE \
              NativeAdreno/LICENSE AdrenoPM4/LICENSE NativeMobileDisplay/LICENSE; do
-      p=$ROOT/external/$f
-      [ -e "$p" ] || { echo "package: no $p: the Metal plug-in's licence texts come from external/ (scripts/setup/get-references.sh)" >&2; exit 1; }
+      p=$METAL_LICENSES_DIR/$f
+      [ -e "$p" ] || { echo "package: no $p: the Metal plug-in's licence texts come from the pinned source checkouts" >&2; exit 1; }
       # (a folder: every file below it, sorted)
       while IFS= read -r q; do
-        printf '\n==== %s\n\n' "${q#"$ROOT"/external/}"; cat "$q"
+        printf '\n==== %s\n\n' "${q#"$METAL_LICENSES_DIR"/}"; cat "$q"
       done < <(find "$p" -type f | LC_ALL=C sort)
     done
   } > "$GUEST/NOTICE"
