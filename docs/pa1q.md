@@ -124,7 +124,13 @@ Each milestone is its own boot, and each boot ends in a power cycle, not a flash
 
 ## 7. Where the work starts
 
-1. Pull `dtbo` from the phone (read-only) and read the panel, touch and regulator nodes into the board file.
+0. The stub and its harness are in `baremetal/` (`baremetal/test.sh`): a small EL1 host with the MMU and
+   the caches on calls the stub, the stub drops both and branches into a payload that checks the ABI,
+   the window and the breadcrumb under QEMU. The register and `boot_args` contract it pins down is the
+   one the injector and the real payload both use.
+1. Pull the phone's merged DT (`/proc/device-tree`, read-only) and read the panel, touch and regulator
+   nodes into the board file. It is the base tree with the `dtbo` overlay applied, so the partition the
+   dump lacks is not needed.
 2. Fetch and pin the SM8750 layer and the Pagani board as the base (`external/UniXNU`, schema 2), and write the
    `pa1q` board over it: SoC `sm8750`, 1080x2340 panel, `stm,stm_ts_spi`, UFS LUNs, the memory window.
 3. Build the kernel and payload on the host; check the emitted DT and the ADT against the numbers above.
