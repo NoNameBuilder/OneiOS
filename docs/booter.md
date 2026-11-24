@@ -1508,8 +1508,9 @@ The bridges are linked in (the crates `onebridges`, `onecamera`, `oneencoder`; `
 `/cpus` gets the host's cluster types (E vCPUs first), each vCPU thread is put on one host CPU of its cluster
 (`cpu-pin=1`, section 2.6a; `cpu-pin=0`: any CPU of its cluster), and so is the iOS thread a vCPU runs (when the vCPU
 changes). The speaker's output latency (since 2026-11-15, fix-audio-latency): once virtio-snd has the AAudio helper,
-xnuhost asks it for its measured latency before the guest boots (`AudioBackend::probe_latency` of `runtime/bridges/audio/backend.rs`, at most 2 s: the helper
-opens the speaker in silence, which then lingers for iOS's first sound) and adds `oneios-audio-latency=FRAMES` to the
+xnuhost asks it for its measured latency before the guest boots (`AudioBackend::probe_latency` of
+`runtime/bridges/audio/backend.rs`, at most 3 s; the helper opens the speaker in silence, which then lingers for iOS's
+first sound) and adds `oneios-audio-latency=FRAMES` to the
 boot arguments, unless they have one (`audio: speaker latency N frames (N ms) measured by the helper:
 oneios-audio-latency=N`, or `audio: output latency N frames (N ms): the boot arguments' oneios-audio-latency, not
 measured`, or `audio: speaker latency not measured (...): the kernel's default output latency`); the guest publishes

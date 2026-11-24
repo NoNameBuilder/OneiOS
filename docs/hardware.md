@@ -2482,8 +2482,9 @@ yet: the audio test cycle adds it (below).
     the DSP reads nothing (the boot's probe saw `no timestamp … in 1.5 s` in sessions 3, 4 and 5; session 5's 1 s
     sound played 240 of 48240 frames, and the next stream played 0 of 10.1 M while the guest's engine ran 6 s late
     and audiomxd spun). Two places notice and reopen on the third path above, once for the helper's run
-    (`mmap_dead`, so no later open asks for MMAP): the probe, after its 1.5 s with no read (before the guest's boot,
-    so iOS's first sound already finds the mixer track; the boot costs one more 1.5 s), and the writer, when three
+    (`mmap_dead`, so no later open asks for MMAP): the probe, when the writer says the stream is dead (its 600 ms) or
+    after 1.5 s with no read (before the guest's boot, so iOS's first sound already finds the mixer track; the boot
+    costs about a second more), and the writer, when three
     writes in a row take nothing (600 ms: the stream never started, so AAudio holds nothing and the read alone cannot
     tell) or when AAudio holds frames the server has not read for 1 s (it stopped; the receive loop closes the stream
     and opens the mixer track while the guest's stream stays up: a gap of the ring's fill). A mixer track's silence

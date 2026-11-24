@@ -63,8 +63,9 @@
 //! A stream whose server takes no frames: on the S25's HAL an MMAP exclusive stream sometimes never leaves STARTING (no
 //! timestamp, every blocking write times out with 0, the DSP never reads: sessions 3, 4 and 5), and the writer would
 //! drop every guest period for as long as the track lingered. Two places notice and reopen the speaker on 3, once for
-//! the helper's run (mmap_dead below): the probe, after 1.5 s with no read (before the guest's boot, so iOS's first
-//! sound already finds the mixer track; the boot costs one more 1.5 s probe), and the writer, when three writes in a
+//! the helper's run (mmap_dead below): the probe, when the writer says the stream is dead or after 1.5 s with no read
+//! (before the guest's boot, so iOS's first sound already finds the mixer track; the boot costs about a second more),
+//! and the writer, when three writes in a
 //! row take nothing (600 ms: the stream never started, so AAudio holds nothing) or AAudio holds frames the server has
 //! not read for 1 s (it stopped; the receive loop closes the stream and opens the mixer track while the guest's stream
 //! stays up: a gap of the ring's fill). The fallback is logged; after it no open asks for MMAP again.
@@ -80,7 +81,8 @@
 //!
 //! The probe (AU_PROBE, xnuhost before the boot): the speaker stream opened in silence, its latency measured and sent
 //! back, so the kernel publishes the host's measured latency as the device's output latency. A stream that takes no
-//! frames in the probe's 1.5 s is reopened on 3 (above) and measured there.
+//! frame (the writer's 600 ms, or the probe's 1.5 s) is reopened on 3 (above); a mixer track's silence is not measured
+//! (0: the guest's first period starts it).
 //!
 //!
 //! Log lines: "oneios-audio: ..." on stderr (xnuhost's log): each stream's open (its mode), the server's pulls once they
@@ -1621,6 +1623,9 @@ impl Helper {
     /// a pull). Frames (0: not measured).
     fn probe(self: &Arc<Helper>) -> u32 {
         // Two tries: the stream on the configured path, then (when its server took no frame) one on the legacy path.
+        // The answer must come well within xnuhost's 2 s (session/bridges.rs): a dead stream is given up as soon as
+        // the writer says so (its 600 ms of timed-out writes or a second with AAudio's frames unread), and the legacy
+        // path is not waited on at all (its silence never reaches AudioFlinger's start threshold without the guest).
         for attempt in 0..2 {
             if self.dir(true).is_none() {
                 if self.start_dir(true, RATE, 2) != 0 {
@@ -1631,9 +1636,15 @@ impl Helper {
                 *locked(&self.idle_since) = time::monotonic_s();
             }
             let Some(d) = self.dir(true) else { return 0 };
+            if attempt != 0 {
+                eprintln!(
+                    "oneios-audio: probe: not measured on the mixer track (it starts on the guest's first period)"
+                );
+                return 0;
+            }
             let mut samples = Vec::with_capacity(10);
             for _ in 0..150 {
-                if samples.len() >= 10 {
+                if samples.len() >= 10 || self.ring().dead {
                     break;
                 }
                 std::thread::sleep(Duration::from_millis(10));
@@ -1643,15 +1654,15 @@ impl Helper {
                     }
                 }
             }
-            if samples.is_empty() {
+            if samples.is_empty() || self.ring().dead {
                 let path = self.ring().out_path;
-                if attempt == 0 && path != OutPath::Legacy {
+                if path != OutPath::Legacy {
                     // The server never took a frame: the MMAP stream's DSP did not start (this phone's HAL does it
                     // now and then). The writer would then wait 200 ms per write forever and drop every guest period:
-                    // the legacy mixer track instead, measured here.
+                    // the legacy mixer track instead.
                     self.mmap_dead.store(true, Ordering::Relaxed);
                     eprintln!(
-                        "oneios-audio: probe: the server took no frames in 1.5 s on {}: reopened as a mixer track",
+                        "oneios-audio: probe: the server took no frames on {}: reopened as a mixer track",
                         path_name(path)
                     );
                     self.stop_dir(true);
