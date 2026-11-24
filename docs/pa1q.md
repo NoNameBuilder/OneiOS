@@ -58,24 +58,29 @@ same kernel and replaces only the platform layer.
 
 ## 4. The phone's own numbers
 
-Read from the dump's `scratch_czf1/dtb_main.dtb` (356,665 bytes, FDT 17, 2,748 nodes), with `dtc -I dtb -O dts`:
+Read from the phone's `vendor_boot.img` (the dump's `firmware/extracted/vendor_boot.img.lz4`): its DTB section is a
+concatenation of **19** base trees, one per Qualcomm SoC this GKI build ships (Kera, KeraP, Sun, SunP, Tuna), and the
+bootloader picks one by `qcom,msm-id`. The SM8750 is **Sun**, `0x26a`. The dump's `scratch_czf1/dtb_main.dtb` is the
+*Kera* entry (`0x2db`), not this phone's base — the numbers below are from `dtb_9` ("Sun SoC"), converted with
+`dtc -I dtb -O dts`:
 
 | What | Value in the phone's DT |
 |---|---|
-| Root | `model = "Qualcomm Technologies, Inc. Kera IoT SoC"`, `compatible = "qcom,kera"`, `qcom,msm-id = <0x2db 0x10000>` |
-| CPUs | 8 × `qcom,kryo`, `enable-method = "psci"` (the Oryon rule already plans 2 E + 6 P vCPUs, s25.md) |
-| Interrupts | GICv3 `0x17100000` + redistributors `0x17180000` (2 MiB), ITS `0x17140000`; arch timer present |
+| Root | `model = "Qualcomm Technologies, Inc. Sun SoC"`, `compatible = "qcom,sun"`, `qcom,msm-id = <0x26a 0x10000>` (v2: `0x26a 0x20000`) |
+| CPUs | 8 × `arm,armv8`, `enable-method = "psci"`, capacities 0x700 × 6 and 0x766 × 2 (the Oryon rule already plans 2 E + 6 P vCPUs, s25.md) |
+| Interrupts | GICv3 `0x16000000` + redistributors `0x16080000` (2 MiB), ITS `0x16040000`; arch timer at 19.2 MHz |
 | Storage | `ufshc@1d84000` (`qcom,ufshc`), PHY `0x1d80000` |
-| Console fallback | `qup_uart@894000`, `qcom,geni-debug-uart`, IRQ 587, `/aliases/serial0` |
+| Console fallback | `/aliases/serial0` = `qup_uart@a9c000`, `qcom,geni-debug-uart`, `stdout-path = "serial0:115200n8"` |
 | PMIC | SPMI `0xc42d000` with `pm8550`, `pmxr2230`, `pm8550vs` (GDSCs included) |
-| Remote processors | adsp `0x03000000`, cdsp `0x32300000`, mss `0x04080000`, wpss `0x97000000` (`qcom,kera-*-pas`) |
-| Memory | `memory { reg = <0 0 0 0> }` — a placeholder; the loader fills the window |
+| Remote processors | adsp, cdsp, mss and wpss as `qcom,sun-*-pas` nodes |
 
 Board facts the base DT does not carry, from the port record (docs/forks.md and s25.md): panel
-`PA1_S6E3FAE_AMB616FL03`, touch `stm,stm_ts_spi`, haptics `cirrus,cs40l26a`.
+`PA1_S6E3FAE_AMB616FL03` (Samsung S6E3FAE, 1080x2340, seven modes 120/80/60/48/30/24/10 Hz, DSI **command mode with
+DSC**), touch `stm,stm_ts_spi` (`samsung,ss_touch`), haptics `cirrus,cs40l26a`.
 
-**Gap:** the dump has no `dtbo.img`, so the panel timings, the touch SPI lines/rails and the regulator names are
-not measured here yet. They are in the phone's `dtbo` partition; pulling it read-only is the first task below.
+**Gap:** the board overlay with those nodes is in the phone's `dtbo` partition, which is not in the dump, so the panel
+timings, touch SPI lines/rails and regulator names are not measured here yet. Pulling `dtbo` read-only is the first
+task below; until then the board uses the port record's names and the panel driver's own table.
 
 ## 5. Milestones
 
