@@ -3545,7 +3545,8 @@ SpringBoard about 70 %. Two new lines say where the heat goes at the next boot, 
 - The kernel's trips are junction trips: X4 90 C (`cpufreq-cpu7`), GPU 95 C (KGSL devfreq), DDR 90 C, the cores pause
   at 108-110 C, `xo-therm` 78/80 C, the BCL levels. They cap every Linux thread, xnuhost's too; nothing caps on the
   case temperature any more. xnuhost's thermal step does (inside the process only: thread affinities; no cpufreq,
-  devfreq or `/sys/power` node is written, so a SIGKILL leaves nothing to restore).
+  devfreq or `/sys/power` node is written, so a SIGKILL leaves nothing to restore); since 2026-11-24 it engages on the
+  cell at 50 C only, not on the case (heat is accepted; the battery is the limit, `runtime/bridges/thermal/README.md`).
 - Sensors: `cpu-*`, `cpuss-*`, `gpuss-0..7`, `ddr`, `xo-therm` zones; `/sys/class/sec/sec-{ap,cf,lp,pa,wf}-thermistor`;
   `power_supply/battery/temp` and `lrp`. No `skin` zone. `lrp` is the case sensor Samsung's charger limits current by
   (device tree: 37-39 C with the screen on, 46 C `mix_v2_lrp_cond`).

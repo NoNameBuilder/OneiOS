@@ -116,17 +116,17 @@ fn rules() {
     let s = decide(&l, &r, Some(&prev));
     assert!(s.skin_level == prev.skin_level && s.soc_level == prev.soc_level);
     assert_eq!(decide(&l, &r, None).level, NOMINAL);
-    // sleeping, and the steps
+    // sleeping: iOS is told, and nothing is pinned (the case is not the battery)
     let s = decide(&l, &raw_with(505, 500, 300), None);
-    assert!(s.level == SLEEPING && s.cap == CAP_CRITICAL); // the case at 50 C: the one step
+    assert!(s.level == SLEEPING && s.cap == 0);
     let prev = decide(&l, &raw_with(485, 500, 300), Some(&s));
-    assert!(prev.level == SLEEPING && prev.cap == CAP_CRITICAL); // held to 48 C
+    assert!(prev.level == SLEEPING && prev.cap == 0); // held to 48 C
     let s = decide(&l, &raw_with(475, 1060, 300), Some(&prev)); // the case at 47.5 C, the SoC at 106 C
     assert!(s.level == TRAPPING && s.cap == 0); // all cores: the SoC is the kernel's
     let mut at = State { skin_level: TRAPPING, soc_level: TRAPPING, battery_level: HEAVY, ..State::default() };
     assert_eq!(cap_for(&at), 0);
     at.skin_level = SLEEPING;
-    assert_eq!(cap_for(&at), CAP_CRITICAL);
+    assert_eq!(cap_for(&at), 0); // the case at 50 C: no cap of ours
     at.skin_level = NOMINAL;
     at.battery_level = TRAPPING;
     assert_eq!(cap_for(&at), CAP_CRITICAL);
@@ -474,16 +474,23 @@ fn worker() {
     assert!(n(&caps) == 0 && n(&reports) == 2 && v(&last_level) == TRAPPING);
     b.put("/sys/class/power_supply/battery/lrp", "505\n");
     ms(200);
-    assert!(n(&caps) == 1 && v(&last_cap) == CAP_CRITICAL && v(&last_level) == SLEEPING); // the case at 50 C
+    assert!(n(&caps) == 0 && n(&reports) == 3 && v(&last_level) == SLEEPING); // the case at 50 C: iOS is told, no step
+    b.put("/sys/class/power_supply/battery/temp", "505\n");
+    ms(200);
+    assert!(n(&caps) == 1 && v(&last_cap) == CAP_CRITICAL); // the cell at 50 C: the one step
+    b.put("/sys/class/power_supply/battery/temp", "475\n");
     b.put("/sys/class/power_supply/battery/lrp", "300\n");
     ms(200);
-    assert!(n(&caps) == 2 && v(&last_cap) == 0 && v(&last_level) == NOMINAL);
+    assert!(n(&caps) == 2 && v(&last_cap) == 0 && v(&last_level) == HEAVY);
     t.on_cap(None);
     t.on_report(None);
     b.put("/sys/class/power_supply/battery/lrp", "510\n");
     ms(150);
-    assert!(n(&caps) == 2 && n(&reports) == 4);
+    assert!(n(&caps) == 2 && n(&reports) == 5);
     assert_eq!(t.get().level, SLEEPING); // still read with no listener: the next listener hears it
+    b.put("/sys/class/power_supply/battery/temp", "510\n");
+    ms(150);
+    assert!(n(&caps) == 2); // no listener: nothing sent
     t.on_cap(Some(on_cap));
     ms(150);
     assert!(n(&caps) == 3 && v(&last_cap) == CAP_CRITICAL);

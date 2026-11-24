@@ -108,8 +108,15 @@ ours beyond a true over-temperature guard).**
 
 | When (`thermal::cap_for`) | Step | P vCPUs on (this phone) | E vCPUs on |
 |---|---|---|---|
-| otherwise: every level up to "trapping" by the case, every SoC temperature, the cell under 50 C | 0 | cpu2-7 (one per core with cpu-pin) | cpu0-1 |
-| the case (lrp) at 50 C ("sleeping"), or the cell at 50 C (the battery rule's "trapping"); each held down to its 2 C hysteresis | 2 (`BR_THERMAL_CAP_CRITICAL`) | cpu0-1, 5-6 (the P domain of the lowest top clock, 2.96 GHz, and the E cores) | cpu0-1 |
+| otherwise: every level up to "sleeping" by the case, every SoC temperature, the cell under 50 C | 0 | cpu2-7 (one per core with cpu-pin) | cpu0-1 |
+| the cell at 50 C (the battery rule's "trapping"), held down to its 2 C hysteresis | 2 (`BR_THERMAL_CAP_CRITICAL`) | cpu0-1, 5-6 (the P domain of the lowest top clock, 2.96 GHz, and the E cores) | cpu0-1 |
+
+The case (lrp) no longer takes a step (2026-11-24, the owner: heat is acceptable, the battery is not): at 50 C it still
+tells iOS "sleeping" (its thermal state slows the guest, as SSRM does on the phone), and the phone's kernel still caps
+the SoC by its trips, but xnuhost keeps every vCPU on every core. The 0.1.24 session showed the cost: two 30 s steps at
+50.1 and 50.7 C pinned all six P vCPUs on four host CPUs (the case cooling by 3.5 C while the guest stalled around the
+return), and the lag was already the session's complaint. The cell's 50 C is the guard that stays: that is the
+battery's limit, not the skin's comfort.
 
 Until 2026-11-15 the steps began at "heavy": step 1 (the X4 left out) from the case at 44 C, the SoC at 95 C or the
 cell at 45 C, step 2 at "trapping" (the case at 46 C, the SoC at 105 C, the cell at 50 C), step 3 (the E cores only) at
@@ -124,9 +131,9 @@ the case took the X4 for the whole of a warm session. What stays, and why:
 - **iOS's own reaction** to the level it is told (its thermal state, as One UI's SSRM reacts on the phone): the levels
   and thresholds below are unchanged.
 - **This step**, where nothing else acts in a session (SSRM is gone with system_server; the charger only limits its
-  current): the case at 50 C is past what a hand should hold for long [inference], and a cell at 50 C is where charging
-  stops [inference]. Step 2, not 3: the E cores alone put eight vCPUs on two cores, the crowding behind the hang of
-  2026-11-13 (below).
+  current): a cell at 50 C is where charging stops [inference], so the battery rule's "trapping" is the one that pins
+  (and the case rule at 50 C is iOS's to act on, not ours since 2026-11-24). Step 2, not 3: the E cores alone put eight
+  vCPUs on two cores, the crowding behind the hang of 2026-11-13 (below).
 
 `Topology::thermal_mask` (`cpu/topology.rs`) works from the topology, not from these numbers, and still knows steps 1 and
 3 (`thermalctl` prints steps 0 and 2). xnuhost's `thermal_step` (`runtime/xnuhost/src/session/bridges.rs`) narrows the vCPU threads' affinity and bumps
@@ -169,7 +176,7 @@ the process is written, so a SIGKILL leaves nothing to restore. No cpufreq or de
 
 Log lines (xnuhost's log): `thermal: on: 29 zones; case 31.9 C (lrp), SoC 37.4 C (cpu-2-1-1), battery 29.2 C; nominal;
 read every 5000 ms`, then `thermal: heavy (was moderate; by case): ...` at each new level and `thermal: step 2 (sleeping): P
-vCPUs on host CPUs 0x63` (and `thermal: step 0 (...): ... (all of their kind)` when it lifts) at each new step: since 2026-11-15 only with the case or the cell at 50 C.
+vCPUs on host CPUs 0x63` (and `thermal: step 0 (...): ... (all of their kind)` when it lifts) at each new step: since 2026-11-15 only with the cell at 50 C (the case at 50 C was dropped on 2026-11-24: heat is accepted, the battery is not).
 
 **Where the heat comes from (2026-11-14):** every 30 s (`thermal::load::LOAD_MS`), one line:
 
@@ -228,7 +235,7 @@ zones: a 135 C placeholder, 105, 118 and 125 C hot; the median, the start line w
 rule and the N-reading window (the S25 Ultra's session 2 replayed), the worker's two listeners, and the guest header's
 `OB_THERMAL_*` numbers. History of the C test: 158 checks on
 2026-11-22 (the test files are written whole and renamed: a truncated `lrp` read as missing made `test_worker` (now `worker`) fail
-about 1 run in 6). 99 with the merge of hw-backend (79 on fix-ram-locked's own, 2026-11-15: the step at the case or the cell at 50 C only, none at "heavy" or for
+about 1 run in 6). 99 with the merge of hw-backend (79 on fix-ram-locked's own, 2026-11-15: the step at the cell at 50 C only, none at "heavy" or for
 the SoC, its hysteresis, the worker's cap listener at 50 C).
 
 ## On the phone

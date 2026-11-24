@@ -283,10 +283,10 @@ pub fn decide(l: &Limits, raw: &Raw, prev: Option<&State>) -> State {
     s
 }
 
-/// xnuhost's step (since fix-ram-locked, 2026-11-15): 0, all CPU cores, unless the temperature is critical: the case
-/// rule at SLEEPING (50 C) or the battery rule at TRAPPING (50 C); then CAP_CRITICAL, only the slowest P domain and the
-/// E cores. The SoC is the kernel's (its own trips and LMh). cpu's Topology::thermal_mask turns a step into CPUs (it
-/// still knows steps 1 and 3: thermalctl prints them).
+/// xnuhost's step (since fix-ram-locked, 2026-11-15): 0, all CPU cores, unless the cell is critical: the battery
+/// rule at TRAPPING (50 C); then CAP_CRITICAL, only the slowest P domain and the E cores. The SoC is the kernel's (its
+/// own trips and LMh). cpu's Topology::thermal_mask turns a step into CPUs (it still knows steps 1 and 3: thermalctl
+/// prints them).
 ///
 /// One step, at a critical temperature only (the owner's rule: all CPU cores, no caps of ours beyond a true
 /// over-temperature guard). Until then the steps began at "heavy" (the case at 44 C, the SoC at 95 C, the cell at
@@ -296,12 +296,19 @@ pub fn decide(l: &Limits, raw: &Raw, prev: Option<&State>) -> State {
 /// - the phone's own throttling for the SoC (the kernel's trips on the X4 at 90 C, the GPU at 95 C, the cores pausing
 ///   at 108-110 C, LMh in hardware): the SoC rule informs iOS and takes no step;
 /// - iOS's own reaction to the level it is told (its thermal state), as One UI's SSRM reacts on the phone;
-/// - this step, where nothing else acts in a session: the case (Samsung's lrp) at 50 C ("sleeping") or the cell at
-///   50 C ("trapping" of the battery rule), each down to its hysteresis (2 C). Step 2 (the slowest P domain and the E
-///   cores, cpu0-1 and 5-6 on this phone) and not step 3: the E cores alone put eight vCPUs on two cores, the crowding
-///   behind the hang of 2026-11-13 (a preempted vCPU holding a kernel lock holds up the others).
+/// - this step, where nothing else acts in a session: the cell at 50 C ("trapping" of the battery rule), down to its
+///   hysteresis (2 C).
+///
+/// The case no longer takes a step (2026-11-24, the owner: heat is acceptable, the battery is not). At 50 C the case
+/// rule still tells iOS "sleeping" (its own thermal state then slows the guest, as SSRM does on the phone) and the
+/// phone's kernel caps the SoC by its trips; pinning all six P vCPUs onto four host CPUs at a 50 C skin only made the
+/// guest slower: in the 0.1.24 session the two steps took 30 s each and the session stalled around the return to
+/// "trapping" (case 50.7 C, battery 46.7 C, SoC 103 C). The cell's own 50 C is the guard that stays, because that is
+/// the battery's limit rather than the skin's comfort. Step 2 (the slowest P domain and the E cores, cpu0-1 and 5-6
+/// on this phone) and not step 3: the E cores alone put eight vCPUs on two cores, the crowding behind the hang of
+/// 2026-11-13 (a preempted vCPU holding a kernel lock holds up the others).
 pub fn cap_for(s: &State) -> u32 {
-    if s.skin_level >= SLEEPING || s.battery_level >= TRAPPING {
+    if s.battery_level >= TRAPPING {
         CAP_CRITICAL
     } else {
         0
