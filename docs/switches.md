@@ -158,12 +158,11 @@ decoder-codecs=h264,hevc,vp9,av1
   Handed to the Mac as `out/handoff/integration2-d3b802f/`. Not booted.
 - Not tested on a phone: any non-default value, and most defaults (column "Phone").
 
-## Found while building the Metal plug-in (2026-11-23)
+## Found while building the Metal plug-in (2026-11-23; shader fixes enabled 2026-11-24)
 
-- `userland/metal/patches/metal2vulkan/0101-0103` are copied into the staged tree as `90101-...` but **never applied**:
-  the base's `build-adreno-metal-bridge.py` applies a fixed list of names, not every `*.patch`. No plug-in built here
-  has them. Left so on purpose (they change shader translation and no phone has run them); applying them is a change
-  for its own commit, behind a switch. `userland/metal/build.sh` says so now (its comment and its `stage` line).
+- `userland/metal/patches/metal2vulkan/0101` and `0102` are appended to the staged bridge's fixed patch list and are
+  now included in the built Metal plug-in. 0103 remains staged but unapplied: its allocator size is per-process, and
+  no safe policy selects it yet. The shader changes have not been booted on the S24 Ultra.
 - `build-turnip-darwin.py` re-uses an existing `build/mesa-tu-ios27` with `meson configure` (options only), so a
   changed cross file never reached it (the helper of fix/gpu-blobs removed the directory by hand). `build.sh turnip`
   now keeps the cross file's inputs (the SDK, the four tools `xcrun --find` gives, the script's `cksum`) in

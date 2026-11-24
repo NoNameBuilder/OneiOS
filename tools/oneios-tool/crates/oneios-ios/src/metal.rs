@@ -105,8 +105,8 @@ pub fn stage_edit(root: &Path, hooks: &Path, jobs: &str, knows: bool, rt: bool) 
             ("timeout=1800)", "timeout=10800)".into(), "a longer limit for the fat-LTO Rust build"),
             (
                 "\n\ndef git_tree(*steps):",
-                "\n\nPATCHES.append(ROOT / 'patches/metal2vulkan/trace-metal-vulkan-init.patch')\nPATCHES.append(ROOT / 'patches/metal2vulkan/m2v-spare-command-pools.patch')\nPATCHES.append(ROOT / 'patches/metal2vulkan/m2v-idle-memory.patch')\n\n\ndef git_tree(*steps):".into(),
-                "record Vulkan initialization diagnostics in the translator patch stack; spare command pools follow their recent use (m2v-spare-command-pools.patch); the idle trim ages the spare image blocks, the memory census (m2v-idle-memory.patch)",
+                "\n\nPATCHES.append(ROOT / 'patches/metal2vulkan/trace-metal-vulkan-init.patch')\nPATCHES.append(ROOT / 'patches/metal2vulkan/m2v-spare-command-pools.patch')\nPATCHES.append(ROOT / 'patches/metal2vulkan/m2v-idle-memory.patch')\nPATCHES.append(ROOT / 'patches/metal2vulkan/90101-large-indexed-constants-to-blob.patch')\nPATCHES.append(ROOT / 'patches/metal2vulkan/90102-blob-constant-gep-pointers.patch')\n\n\ndef git_tree(*steps):".into(),
+                "record Vulkan initialization diagnostics; reuse command pools and trim idle GPU memory; apply Adreno shader fixes for large indexed constants and constant GEP pointers (0101/0102)",
             ),
         ],
     )?;

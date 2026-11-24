@@ -80,16 +80,13 @@ stage() {
   mkdir -p "$R/drivers" "$R/kits" "$R/.cache/gpu-reference" "$R/.cache/mesa-venv/bin" "$R/.cache/mesa-tools/bin" "$R/build"
   rsync -a --delete "$BASE/scripts/" "$R/scripts/"
   rsync -a --delete "$BASE/patches/" "$R/patches/"
-  # This project's extra metal2vulkan patches (userland/metal/patches/metal2vulkan: the Adreno-generic shader
-  # translation fixes of hakios-arm64e-dada, rebased on the pin): copied as 9xxx. NOT APPLIED (found 2026-11-23,
-  # fix/gpu-blobs): the base's build-adreno-metal-bridge.py applies a fixed list of names, not *.patch, so these copies
-  # are in no list and no plug-in built here has them. Left so on purpose: applying them is a change to the shaders
-  # no phone has run, for its own commit with a switch (docs/switches.md). `.github/workflows/gpu-patch-check.yml`
-  # checks only that they apply to the pin.
+  # Adreno-generic shader fixes rebased on the pinned metal2vulkan. Patches 0101 and 0102 are appended to the bridge's
+  # patch list and built into the plug-in; 0103 stays staged but unapplied because its allocator tuning has no safe
+  # per-process policy wired in yet.
   if ls "$HERE"/patches/metal2vulkan/*.patch >/dev/null 2>&1; then
     mkdir -p "$R/patches/metal2vulkan"
     for p in "$HERE"/patches/metal2vulkan/*.patch; do cp "$p" "$R/patches/metal2vulkan/9$(basename "$p")"; done
-    say "copied $(ls "$HERE"/patches/metal2vulkan/*.patch | wc -l) metal2vulkan patches of OneiOS (9xxx: in no list of the base's script, not applied)"
+    say "copied $(ls "$HERE"/patches/metal2vulkan/*.patch | wc -l) OneiOS metal2vulkan patches (0101/0102 applied; 0103 staged only)"
   fi
   # Lasting debug tooling, off by default (each patch only logs when its environment variable is set:
   # ONEIOS_VK_INIT, ONEIOS_SURFACE_TRACE): the trace patches staged beside the base's own, applied by the
