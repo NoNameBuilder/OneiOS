@@ -7,9 +7,9 @@
 use crate::pod::Pod;
 use std::io::{self, Read, Write};
 
-/// 2 (2026-11-23): the OPEN's input format, the OPEN_REPLY's coding, ENC_MSG_LOG. xnuhost and the helper ship together;
-/// a HELLO of another version is refused.
-pub const ENC_LINK_VERSION: u32 = 2;
+/// 2 (2026-11-23): the OPEN's input format, the OPEN_REPLY's coding, ENC_MSG_LOG. 3 (2026-11-24): the decoder (the
+/// pool, DEC_MSG_*). xnuhost and the helper ship together; a HELLO of another version is refused.
+pub const ENC_LINK_VERSION: u32 = 3;
 
 /// helper -> device at start: a = ENC_LINK_VERSION
 pub const ENC_MSG_HELLO: u32 = 1;
@@ -32,6 +32,28 @@ pub const ENC_MSG_ERROR: u32 = 9;
 /// helper -> device: session 0, a = 1 an error (0 news), payload = a line for xnuhost's log (the helper's own: its
 /// binder threads, its warm-up, an open that takes long and where it waits)
 pub const ENC_MSG_LOG: u32 = 10;
+
+// The decoder (2026-11-24, version 3). A decoder session's id is from the same counter as an encoder's; ENC_MSG_DRAIN,
+// ENC_MSG_CLOSE, ENC_MSG_OPEN_REPLY and ENC_MSG_EOS serve both.
+/// device -> helper, right after the HELLO, always: the media pool, as the RAM's memfd (SCM_RIGHTS on this header;
+/// none when there is no pool), its file offset in pts, its size in a and b (low, high 32 bits). The helper maps it and writes the
+/// decoded pictures into it.
+pub const ENC_MSG_POOL: u32 = 11;
+/// device -> helper: session, a = codec FourCC (H264, HEVC, VP90, AV01), b = width, c = height; ENC_MSG_OPEN_REPLY
+pub const DEC_MSG_OPEN: u32 = 12;
+/// device -> helper: session, pts = the guest's frame id, payload = one compressed frame
+pub const DEC_MSG_FEED: u32 = 13;
+/// device -> helper: session, a = CAPTURE index, pts = its offset in the pool, b = its size
+pub const DEC_MSG_CAPTURE: u32 = 14;
+/// device -> helper: session (the CAPTURE buffers were taken back)
+pub const DEC_MSG_RESET: u32 = 15;
+/// device -> helper: session (frames again after a drain)
+pub const DEC_MSG_START: u32 = 16;
+/// helper -> device: session, a = width, b = height, c = stride (the pictures' layout from now on)
+pub const DEC_MSG_FORMAT: u32 = 17;
+/// helper -> device: session, a = CAPTURE index, b = bytes used, c = 1 an error (no picture), pts = the frame id,
+/// payload = the decode time in us (u32 LE)
+pub const DEC_MSG_FRAME: u32 = 18;
 
 /// Every message: this header, then `len` payload bytes (`struct enc_msg`).
 #[repr(C)]

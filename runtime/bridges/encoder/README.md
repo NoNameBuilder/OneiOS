@@ -1,4 +1,4 @@
-# runtime/bridges/encoder: the host video encoder
+# runtime/bridges/encoder: the host video encoder and decoder
 
 Owner: the encoder agent. The iOS/guest side: `kernel/patches/oneios-hosted/codec`. The whole path and the route:
 `docs/hardware.md` section 7g ("Video encoder"). This is the host end of iOS's paravirtualized VideoToolbox
@@ -33,7 +33,7 @@ cargo build --release --target aarch64-linux-android -p oneencoder --bins   # th
 | Module | What |
 |---|---|
 | `proto.rs` | the wire layout of the `droidvm,virtio-media` device: the commandq (OPEN/CLOSE/IOCTL/MMAP), the eventq (DQBUF/EVENT), and the V4L2 structs (`v4l2_buffer`, `v4l2_format`) as UniXNU-droidvm's `DroidVMVirtioMedia.c`/`DroidVMVTHost.cpp` read them (the C's `media_proto.h`; no C side any more: checked by `tests/encoder.rs`'s round trips) |
-| `media_device.rs` | xnuhost's stateful V4L2 **encoder** device on `xh_core::virtio` (`create`, `stats`): OUTPUT = tightly packed NV12 or P010 (2026-11-23), CAPTURE = HEVC/H.264 Annex-B. Each guest session gets a slice of the media pool (`media-host-pool`); a worker thread turns coded access units into CAPTURE DQBUF events. Linked statically into xnuhost |
+| `media_device.rs` | xnuhost's stateful V4L2 **encoder** device (and decoder, 2026-11-24: "The decoder") on `xh_core::virtio` (`create`, `stats`): OUTPUT = tightly packed NV12 or P010 (2026-11-23), CAPTURE = HEVC/H.264 Annex-B. Each guest session gets a slice of the media pool (`media-host-pool`); a worker thread turns coded access units into CAPTURE DQBUF events. Linked statically into xnuhost |
 | `backend.rs` | the backend interface (`open`/`feed`/`drain`/`poll`/`close`) as the `Backend` and `Session` traits (the C's `encoder.h`); since 2026-11-23 `open` takes the input format (NV12 or P010), a session says its `Coding` (8-bit, Main10, 10-bit as 8-bit), and `prepare` (a guest's virtio-media OPEN) lets the helper backend start its helper early |
 | `backend_helper.rs` | the device-side backend that runs the real encoder in the **oneios-encoder helper process** (`HelperBackend::new`; xnuhost is static; MediaCodec is a shared library, as for the camera and audio helpers). Spawns the helper, multiplexes sessions over a UNIX socket (`link.rs`, the C's `encoder_link.h`), buffers coded AUs for `poll()`. **Never waits for the helper without a limit** (a vCPU calls it): the HELLO and each write 1 s, an open's reply `OPEN_MS` (2.5 s; `HelperBackend::with_open_ms` for another); a helper that misses one is killed (`encoder: the helper (pid N) did not answer an open in 2500 ms (state S, waiting in W): killed (1 of 2); the next open starts a new one`), the next open starts a new one, twice a session at most (then `encoder: the helper hung 2 times: no more helpers this session ...`, once); `backend_helper::stop()` (xnuhost's stop; `HelperBackend::stop` for one backend) kills it without waiting. Session ids are never reused. `ONEIOS_ENCODER_STUB_HANG_OPEN=1` in the helper's environment makes the stand-in's open hang (`tests/hung_helper.rs`) |
 | `helper.rs` → `bin/oneios-encoder.rs` → `oneios-encoder` | the helper: reads the device's messages, runs the backend, streams the bitstream back. Dynamic. Since 2026-11-23 it starts its binder threads, warms MediaCodec up, and names a slow open's MediaCodec call ("10-bit pictures and the helper's open", below) |
@@ -44,6 +44,10 @@ cargo build --release --target aarch64-linux-android -p oneencoder --bins   # th
 | `tests/encoder.rs` | the device's test (below; the C's `test_encoder.c`) |
 | `tests/hung_helper.rs` | a helper that hangs in its open: bounded, killed, a new one, none after two hangs, a stop not a hang (the C's `test_hung_helper` in `test_encoder.c`; a test binary of its own, since it sets the hang switch in its process's environment) |
 | `tests/headers.rs` | MediaCodec's numbers and `AMediaCodecBufferInfo`'s layout against the NDK's headers (a probe built with the NDK's clang, run under qemu-aarch64; skipped with a line without them) |
+| `decoder.rs` | the **decoder** (2026-11-24, "The decoder" below): the `Decoder` and `DecodeBackend` traits, `DecEvent` (a picture's layout, a picture placed, a drain's end) to a `DecodeSink`, `PoolMem` (the pool as this process maps it), `OutLayout` (MediaCodec's output format, the picture's copy into a CAPTURE buffer: two copies for NV12, row by row when cropped or P010), `stream_headers` (the parameter sets or AV1 sequence header kept for after a drain), `Core` (the logic every backend shares), and the stand-in decoder (`StubDecodeBackend`) |
+| `decode_ndk.rs` | the real decoder (Android): `AMediaCodec` in asynchronous mode over `Core`, in the helper (and in `encctl decode`) |
+| `encctl_decode.rs` | `encctl decode FILE`: the decoder's phone test (an IVF or Annex-B file through the device and MediaCodec) |
+| `tests/decoder.rs` | the decoder's test (below) |
 
 ## The stand-in encoder (`backend_stub.rs`)
 
@@ -239,8 +243,103 @@ onecamera's. The commands are at the top of this file.
 
 ## Switches (2026-11-23, docs/switches.md)
 
+The decoder's (2026-11-24): `decoder=auto|off` and `decoder-codecs=h264,hevc,vp9,av1`, set once by xnuhost
+(`switches::set_decoder`); the device reads them (its card, ENUM_FMT, S_FMT), the helper never sees them.
+
 `switches.rs`: `encoder-10bit=main10|8bit|nv12` and `encoder-warmup=0|1` of xnuhost's config, set once before the
 device is made. `nv12`: the device lists no P010 at ENUM_FMT and refuses it at S_FMT (the guest sends NV12, its high
 bytes); `8bit`: P010 is taken and coded 8-bit, Main10 never tried (`backend_ndk`). The helper gets them on its command
 line: `oneios-encoder 3 [no-main10] [no-warmup]`; `no-warmup` skips the warm-up thread and `prepare()` (the helper starts
 at the first encode). The binder threads start either way.
+
+## The decoder (fix/hw-decode, 2026-11-24)
+
+**Why:** YouTube in Safari decoded on the CPU, and the phone got hot. The device was an encoder only, so iOS's
+paravirtualized decoder had nothing to use. The guest's side and 24A446's messages are in
+`kernel/patches/oneios-hosted/codec/README.md`, "The decoder".
+
+**The device (`media_device.rs`).**
+- A session is a decoder when its OUTPUT S_FMT is `H264`, `HEVC`, `VP90` or `AV01` (one of `decoder-codecs=`; 96 to
+  4096 a side, at most 4096x2304; OUTPUT buffers 1 to 4 MiB, the guest asks 2).
+- The decoder opens at OUTPUT's STREAMON, on the vCPU, as the encoder does. A refusal is that ioctl's EIO, and the
+  guest's `dsta` fails, so VideoToolbox decodes in software.
+- The decoder's first result is its pictures' layout: the device's SOURCE_CHANGE. Then come G_FMT (NV12 at the
+  decoder's stride), G_CTRL (MIN_BUFFERS_FOR_CAPTURE 2) and REQBUFS of CAPTURE (as many as fit the pool, two at
+  least).
+- Each CAPTURE QBUF gives the buffer to the decoder. Each picture is a CAPTURE DQBUF with its frame id as timestamp,
+  and an error is `V4L2_BUF_FLAG_ERROR`.
+- `DECODER_CMD` STOP drains, ending with EOS; START takes frames again.
+- The buffers of every session come from one first-fit allocator (`Alloc`) over the pool. Four sessions at a time.
+- The card is `oneios-encoder+decoder`; ENUM_FMT lists the codecs (OUTPUT) and NV12 (CAPTURE); ENUM_FRAMESIZES gives
+  the sizes. With `decoder=off` all of this is as before.
+
+**No polling.**
+- A decoder gives its results to a `DecodeSink`: the device queues them and wakes its worker. The worker turns them
+  into events.
+- With only decoder sessions open the worker sleeps until woken. The 1 ms busy look and the 50 ms idle look are for
+  encoder sessions alone, whose backend has no callback.
+- In the helper, MediaCodec runs in asynchronous mode. Its callbacks feed the waiting frames and place the waiting
+  pictures. The helper's main thread only reads the socket.
+
+**The pictures' copies.**
+- The helper maps the media pool: xnuhost sends its RAM memfd by SCM_RIGHTS in the first message after the HELLO
+  (`ENC_MSG_POOL`, link version 3: the file offset of the pool and its size; `HelperBackend::set_pool`).
+- Each picture is copied once on the host, from MediaCodec's output buffer into the guest's CAPTURE buffer. That is
+  two `copy_from_slice`s for NV12 at MediaCodec's stride; row by row when cropped at the left or top, or for P010,
+  whose high bytes are taken.
+- It is copied once in the guest, into the IOSurface, through a kernel mapping kept per surface.
+- Only the compressed frames cross the socket.
+- Not zero-copy: MediaCodec's ByteBuffer mode copies its own graphic buffer once more inside Codec2 [I]. A
+  Surface/AHardwareBuffer output would need the guest's surfaces imported as dma-bufs (udmabuf, as the GPU's); not
+  done.
+
+**After a drain.**
+- MediaCodec ends a drain with an EOS buffer. In asynchronous mode it then wants a flush and a start.
+- After a flush it no longer has the stream's parameter sets, and the guest sends them only before its first frame.
+- So `Core` keeps the last parameter sets a frame carried (H.264 SPS/PPS, HEVC VPS/SPS/PPS, AV1's sequence header;
+  `stream_headers`) and puts them before the next frame.
+- A drain mid-stream still loses the references: the next frame must be a key frame. VideoToolbox drains at the
+  end and at a seek [I].
+
+**Counters.** `Stats` has `dec_sessions`, `dec_refused`, `decoded[4]`, `dec_fed`, `dec_dropped` and `dec_us`/`dec_timed`.
+`dec_dropped` counts pictures with an error, and frames fed but not out by a drain's end or the session's. Every 60 s
+while frames are decoded:
+`decoder: 60 s: decoded H.264 N, HEVC N, VP9 N, AV1 N of N fed; decode time avg A ms, max M ms; dropped N; sessions
+N, opens refused N (mediacodec-helper)`. The decode time is a frame's time from its feed to its picture, the codec's
+reordering included.
+
+**Tests [F, the build laptop, 2026-11-24].**
+- `cargo test -p oneencoder`: `decoder.rs`'s unit tests (the layouts, the headers of each codec, the stand-in one
+  frame late, a drain, the headers after a restart, a picture that waits for a CAPTURE buffer) and the device's
+  (the 60 s line, the allocator).
+- `tests/decoder.rs` runs the staged DroidVMVTHost.cpp's decoder sequence over the real transport. VP9 and H.264
+  go through the helper process (the pool a memfd the helper maps); AV1 and HEVC run with the stand-in in-process.
+  The pictures are read back from the guest's buffers; there is a drain and a start; every pool buffer comes back.
+  Then `decoder=off` and `decoder-codecs=vp9`.
+- `encctl decode` runs on an IVF and an Annex-B file with the stand-in. Until 2026-11-24 it failed 1 run in 3
+  ("nothing from the decoder for 5 s: 4 of 5 frames out", v0.1.21's first release run, and 1 of 3 runs alone on
+  the build laptop). The stand-in dropped a picture when all 4 of its output buffers were taken. That happened when
+  the drain came before the guest had queued its CAPTURE buffers, and then the last picture, which carries the end,
+  was lost. Now pictures wait for a buffer in order, as MediaCodec keeps them
+  (`the_stand_in_keeps_a_picture_while_every_output_buffer_is_taken`). Only the stand-in had this fault. The phone's
+  NDK backend did not.
+- `runtime/build.sh`: the helper and encctl link with `decode_ndk.rs`, and elf-check finds every NDK symbol in the
+  API 30 stubs.
+
+**On the phone (not yet run):**
+
+```sh
+# on the Mac: test files (any size up to 4096x2304)
+ffmpeg -f lavfi -i testsrc2=s=1920x1080:r=30 -t 4 -c:v libvpx-vp9 -b:v 4M t-vp9.ivf
+ffmpeg -f lavfi -i testsrc2=s=1920x1080:r=30 -t 4 -c:v libaom-av1 -cpu-used 8 -b:v 3M t-av1.ivf
+ffmpeg -f lavfi -i testsrc2=s=1920x1080:r=30 -t 4 -c:v libx264 -bsf:v h264_mp4toannexb t.h264
+adb push t-vp9.ivf t-av1.ivf t.h264 /data/local/tmp/
+adb shell su -c 'cd /data/local/tmp/oneios/runtime/bin && ./encctl decode /data/local/tmp/t-vp9.ivf'
+adb shell su -c 'cd /data/local/tmp/oneios/runtime/bin && ./encctl decode /data/local/tmp/t-av1.ivf'
+adb shell su -c 'cd /data/local/tmp/oneios/runtime/bin && ./encctl decode /data/local/tmp/t.h264 1920 1080 /data/local/tmp/t.nv12'
+adb pull /data/local/tmp/t.nv12 && ffmpeg -f rawvideo -pix_fmt nv12 -s 1920x1080 -i t.nv12 -frames:v 1 t.png
+```
+
+A pass prints the decoder's name and its open time (`encctl: decoder: VP9 1920x1080: c2.qti.vp9.decoder, opened in
+N ms`), MediaCodec's output format, and `encctl: decode ...: 120 of 120 frames decoded in S s (N a second), pictures
+1920x1080 at a stride of S, decode time avg A ms, dropped 0; ok`. The CLI has no `encctl` command: this is adb.

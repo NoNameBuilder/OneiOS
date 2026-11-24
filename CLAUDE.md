@@ -28,6 +28,12 @@ kernel. Read first: [README.md](README.md) (status), [docs/architecture.md](docs
 > with a background task and wait for its completion notice; follow a live log with `oneios-tool phone log --follow`
 > under a filter. Never a polling loop, in the foreground or the background.
 
+> **No qemu boots: test on the phone (2026-11-24).** Do not boot the kernel or the runtime under qemu (the 25-minute
+> test-kernel or `--mode bench` boots) to check a change, unless the owner asks for it. Run the fast host tests
+> (`runtime/host-tests.sh`, whose qemu `boot` part now runs only with `QEMU=1`; `kernel/tests/host.sh`, unit tests), build, and hand the files
+> to the Mac for a phone boot: the phone is the test. A helper on the build laptop says "not booted" and gives the
+> Mac what to stage and the proof lines.
+
 - **No Python.** Retired 2026-11-21: no `.py` file, no `python3` in a script, CI or a doc's commands. Tools are
   `oneios-tool` (Rust) or plain POSIX shell; JSON in a script is `oneios-tool json`. Only other projects' pinned code
   (UniXNU, Droid-VM, Mesa) still runs Python inside the kernel and Metal builds (`tools/oneios-tool/todo_rust.md` 7).
@@ -107,3 +113,19 @@ no command yet (say so, and add the command).
 - Forks for other phones send pull requests to `akshaynexus/OneiOS` `main` ([CONTRIBUTING.md](CONTRIBUTING.md)); keep
   device code behind a backend option or a per-device profile, never change the S24 Ultra defaults. `docs/forks.md`
   maps the forks.
+
+## The iOSOnAnd tracker (2026-11-24)
+
+The public per-phone status of every iOS-on-Android port is on the iOSOnAnd tracker
+(<https://hackios.appaiproxy.com>). This repo is tracked as `akshaynexus/OneiOS`, phone `s24-ultra`, maintained by
+the owner. The `/track` skill (`.claude/skills/track/SKILL.md`) has the commands and the rules.
+
+- **Agents update it.** When a phone boot proves an area works, or shows it broken or changed (boot, touch, wifi,
+  gpu, thermal, audio, ...), update that area's state with `status-set`: what was seen, the phone, the date, and a
+  public source (the pushed commit or doc that records the boot). Do it after the docs are pushed. A change that is
+  only built or host-tested changes no state.
+- **Only claim what the repo or a log shows.** Ask the owner before you change a state the owner set by hand.
+- **Sign in with the gist proof only** (`node cli.mjs login`); never `login --token`. Read `cli.mjs` before the first
+  run. No email address, no personal detail, no Apple file in anything sent to the tracker.
+- Not signed in on this machine (`whoami` gives 401): skip the update and tell the owner to run `/track` once.
+- A contributor who ports a phone (CONTRIBUTING.md "Add a device") is pointed at `/track` for their own fork and phone.

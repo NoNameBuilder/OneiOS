@@ -7,6 +7,8 @@
 #                                                          (same | DIFFERENT), then the counts; exit 1 when one differs
 #   UPDATE=1 ...                                           write golden/cases.txt from this run instead
 # (the golden was frozen from pack.py at the last commit that had it, then checked with the command)
+# (2026-11-24: the three manifest cases' runtime.json hashes are the command's, which adds "metal": null and
+# "camera": null, the guest plug-ins of lib/guest/; the rest is pack.py's. The archive case differed on main before.)
 #
 # Every stage is made here: files of a few made-up bytes with the names and the first bytes the rules look at (a
 # Mach-O header of 32 bytes, an Image4 tag, a UDIF trailer's four letters). No Apple file is read.

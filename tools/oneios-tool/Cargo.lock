@@ -1275,9 +1275,12 @@ dependencies = [
  "libc",
  "oneios-common",
  "oneios-image",
+ "oneios-ios",
  "oneios-prelink",
+ "oneios-testkit",
  "oneios-tweaks",
  "rayon",
+ "sha2 0.10.9",
 ]
 
 [[package]]
@@ -1388,6 +1391,8 @@ dependencies = [
  "anyhow",
  "clap",
  "oneios-common",
+ "oneios-testkit",
+ "oneios-tweaks",
  "sha2 0.10.9",
  "tar",
 ]

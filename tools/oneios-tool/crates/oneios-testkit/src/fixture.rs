@@ -10,6 +10,10 @@
 //!                   that are kept, a folder entry, a link and a file outside them; the second has a Kernel.h in
 //!                   KernelSupport, an entry after that folder, and then bytes that are no cpio record (a reader
 //!                   that does not stop after the folder fails on them).
+//!   guest-bundle    a signed arm64e MH_BUNDLE for iOS 27 (ad hoc, org.oneios.test.bundle), guest-dylib the same as an
+//!                   MH_DYLIB (org.oneios.test.dylib), guest-execute as an MH_EXECUTE, apple-dylib an MH_DYLIB that is not
+//!                   ad hoc and says com.apple.test.dylib: what the runtime package takes under lib/guest/ and what it
+//!                   refuses (runtime/package/test.sh; `signed_macho`)
 
 use std::io::Write as _;
 
@@ -116,11 +120,64 @@ fn kdk_pkg() -> Result<Vec<u8>> {
     Ok(out)
 }
 
+
+/// A minimal signed arm64e Mach-O of FILETYPE (2 MH_EXECUTE, 6 MH_DYLIB, 8 MH_BUNDLE): an LC_BUILD_VERSION for iOS
+/// 27.0, PAYLOAD as its code, an embedded signature with one SHA-256 code directory of IDENTIFIER (4 KiB pages; ad
+/// hoc when `adhoc`). Returns the bytes and the CDHash (the directory's SHA-256, first 20 bytes, hex): what
+/// `oneios-tweaks`' macho::describe reads back. The tests of the runtime package's guest code (oneios-package) and
+/// runtime/package/test.sh use it.
+pub fn signed_macho(identifier: &str, filetype: u32, adhoc: bool, payload: &[u8]) -> (Vec<u8>, String) {
+    use sha2::Digest as _;
+    let mut ident = identifier.as_bytes().to_vec();
+    ident.push(0);
+    let hash_offset = 44 + ident.len() as u32;
+    let code_hash = sha2::Sha256::digest(payload).to_vec();
+    let mut fields = Vec::new();
+    for v in [0x20400u32, if adhoc { 0x2 } else { 0 }, hash_offset, 44, 0, 1, payload.len() as u32] {
+        fields.extend_from_slice(&v.to_be_bytes());
+    }
+    fields.extend_from_slice(&[32, 2, 0, 12]);
+    fields.extend_from_slice(&0u32.to_be_bytes());
+    let mut directory = Vec::new();
+    directory.extend_from_slice(&0xFADE_0C02u32.to_be_bytes());
+    directory.extend_from_slice(&((8 + fields.len() + ident.len() + code_hash.len()) as u32).to_be_bytes());
+    directory.extend_from_slice(&fields);
+    directory.extend_from_slice(&ident);
+    directory.extend_from_slice(&code_hash);
+    let mut superblob = Vec::new();
+    for v in [0xFADE_0CC0u32, 20 + directory.len() as u32, 1, 0, 20] {
+        superblob.extend_from_slice(&v.to_be_bytes());
+    }
+    superblob.extend_from_slice(&directory);
+    let mut build = Vec::new();
+    for v in [0x32u32, 24, 2, 27 << 16, 27 << 16, 0] {
+        build.extend_from_slice(&v.to_le_bytes());
+    }
+    let commands_size = build.len() as u32 + 16;
+    let signature_offset = 32 + commands_size + payload.len() as u32;
+    let mut data = Vec::new();
+    for v in [0xFEED_FACFu32, 0x0100_000C, 0x8000_0002, filetype, 2, commands_size, 0, 0] {
+        data.extend_from_slice(&v.to_le_bytes());
+    }
+    data.extend_from_slice(&build);
+    for v in [0x1Du32, 16, signature_offset, superblob.len() as u32] {
+        data.extend_from_slice(&v.to_le_bytes());
+    }
+    data.extend_from_slice(payload);
+    data.extend_from_slice(&superblob);
+    let cdhash = sha2::Sha256::digest(&directory)[..20].iter().map(|b| format!("{b:02x}")).collect();
+    (data, cdhash)
+}
+
 pub fn run(name: &str, out: &str) -> Result<i32> {
     let bytes = match name {
         "hosted-kernel" => hosted_kernel(),
         "kdk-pkg" => kdk_pkg()?,
-        other => bail!("debug fixture: no fixture {other} (hosted-kernel, kdk-pkg)"),
+        "guest-bundle" => signed_macho("org.oneios.test.bundle", 8, true, b"made-up bundle code").0,
+        "guest-dylib" => signed_macho("org.oneios.test.dylib", 6, true, b"made-up library code").0,
+        "guest-execute" => signed_macho("org.oneios.test.tool", 2, true, b"made-up program code").0,
+        "apple-dylib" => signed_macho("com.apple.test.dylib", 6, false, b"made-up: signed as if by Apple").0,
+        other => bail!("debug fixture: no fixture {other} (hosted-kernel, kdk-pkg, guest-bundle, guest-dylib, guest-execute, apple-dylib)"),
     };
     std::fs::write(out, bytes).with_context(|| out.to_string())?;
     Ok(0)

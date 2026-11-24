@@ -15,7 +15,9 @@ use crate::blk::Blk;
 use crate::config::{self, Config, Encoder, Gpu, Pen};
 use crate::imageset::{DiskIdentity, ImageSet, Verify};
 use crate::ramfix::{self, Huge};
-use crate::{cpu, display, gic, gpu3d, hostcalls, input, input_script, mem, pen, sysreg, task, uart, virtio_blk};
+use crate::{
+    cpu, display, gic, gpu3d, gpu3d_amdgpu, hostcalls, input, input_script, mem, pen, sysreg, task, uart, virtio_blk,
+};
 use crate::{virtio_gpu, virtio_input};
 
 /// The pool behind /arm-io/virtio-gpu drm-host-pool, as Droid-VM's boards size it (--pre-alloc drm-host-mb=8):
@@ -236,7 +238,27 @@ impl Session {
         // hosted_pa_in_gpu_pool, up to 64 MiB): GPU_POOL_BYTES + MEDIA_POOL_BYTES must stay under that.
         let (fb_width, fb_height) = (self.fb.0, self.fb.1);
         let fb_bytes = (fb_width as u64 * fb_height as u64 * 4 + 0x1f_ffff) & !0x1f_ffff;
-        let pool_bytes = if config.gpu != Gpu::TwoD { GPU_POOL_BYTES } else { 0 };
+        // An amdgpu host without KGSL (the Galaxy A56) under gpu=auto whose kernel's gpuaddon has no A56 plug-in is laid
+        // out as gpu=2d: no GPU pool, the window and device tree of today's 2D session (gpu3d_amdgpu::early_2d). The
+        // addon read here is kept for the GPU's choice and the kernel's sidecar below.
+        let node = if config.gpu_node.is_empty() { gpu3d_amdgpu::DEFAULT_NODE } else { config.gpu_node.as_str() };
+        let kgsl = std::path::Path::new("/dev/kgsl-3d0").exists();
+        let mut addon_read: Option<Option<Vec<u8>>> = None;
+        let early_2d = gpu3d_amdgpu::early_2d(
+            config.gpu == Gpu::Auto,
+            kgsl,
+            !kgsl && config.gpu == Gpu::Auto && gpu3d_amdgpu::node_check(&gpu3d_amdgpu::System, node).is_ok(),
+            || {
+                let addon = sidecar(&config.kernel, "gpuaddon", 64 << 20);
+                let found = gpu3d_amdgpu::plugin_in_addon(addon.as_deref(), None);
+                addon_read = Some(addon);
+                found
+            },
+        );
+        if let Some(why) = &early_2d {
+            logi!("gpu: 2D only: {}", why);
+        }
+        let pool_bytes = if config.gpu != Gpu::TwoD && early_2d.is_none() { GPU_POOL_BYTES } else { 0 };
         let media_bytes = if config.encoder != Encoder::Off { MEDIA_POOL_BYTES } else { 0 };
         let window = config.ram_bytes - fb_bytes - pool_bytes - media_bytes;
         // 2 MiB host pages for the RAM where this kernel allows them (fix-ram-hugepages; ramfix huge_choose): shmem THP
@@ -326,6 +348,20 @@ impl Session {
         gic::map();
         uart::init(xm::BOARD_UART);
         self.image_set_open(config)?;
+        // iOS 16.5 (20F66, the Galaxy A56's userland): the kernel's 16.5 switches the image set's xnuhost.conf may not
+        // name yet (kernel 0103-0105, config::IOS16_BOOT_ARGS), so an image made before them needs no remake.
+        if self.image_set.as_ref().is_some_and(|s| s.build == "20F66") {
+            match config::ios16_boot_args(&mut config.boot_args, config::BOOT_ARGS_SIZE) {
+                Ok(added) if added.is_empty() => {
+                    logi!("ios16: image set 20F66: the boot arguments name every iOS 16.5 switch already")
+                }
+                Ok(added) => logi!("ios16: image set 20F66: added to the boot arguments: {}", added),
+                Err(_) => {
+                    loge!("ios16: image set 20F66: no room in the boot arguments for the iOS 16.5 switches");
+                    return Err(BootFailed);
+                }
+            }
+        }
         // A writable disk's flush on a thread of its own when the guest's driver takes it (virtio_blk.rs).
         logi!(
             "disk: a flush of a writable disk runs {} (blk-late-flush={})",
@@ -425,8 +461,11 @@ impl Session {
             logi!("pen: pen=off: the input script's pen lines are left out");
         }
         // The GPU: the 2D scanout always; with it the 3D half on the phone's Adreno (drm2kgsl on KGSL), when the host
-        // has it.
+        // has it, or on an amdgpu host without KGSL (the Galaxy A56's Xclipse) the amdgpu renderer when the kernel's
+        // gpuaddon carries the A56's Metal plug-in and the renderer's self-test passes (gpu3d_amdgpu::choose,
+        // docs/a56-gpu.md 2); then the guest is told with oneios-gpu-amd=1 (K5).
         let mut gpu = None;
+        let mut gl_bundle = false; // the gpuaddon carries OneiOSRadeonGL and the amdgpu renderer was picked
         if pool_bytes != 0 {
             // The GPU's level and priorities (gpu3d_kgsl, drm2kgsl patch 0008; docs/gpu.md 2.2b) read these.
             std::env::set_var("ONEIOS_GPU_LEVEL", config.gpu_level.as_str());
@@ -435,14 +474,102 @@ impl Session {
             }
             let m = mem::state();
             let pool = mem::ram(phys + window, pool_bytes).map_or(std::ptr::null_mut(), |p| p.as_ptr());
-            // the memfd from its offset 0 (mem.rs)
-            match gpu3d::kgsl_open(m.fd, m.fd_phys, m.head + m.size, pool, phys + window, pool_bytes, gpu_log) {
-                Ok(g) => gpu = Some(g),
-                Err(why) if config.gpu == Gpu::ThreeD => {
+            let sys: std::sync::Arc<dyn gpu3d_amdgpu::Dev> = std::sync::Arc::new(gpu3d_amdgpu::System);
+            let build = self.image_set.as_ref().map(|s| s.build.clone());
+            let kernel = config.kernel.clone();
+            let choice = gpu3d_amdgpu::choose(
+                config.gpu == Gpu::ThreeD,
+                kgsl,
+                if kgsl { Err(String::new()) } else { gpu3d_amdgpu::node_check(&*sys, node) },
+                || {
+                    // the layout's read when it made one (an amdgpu host), else now
+                    let addon = addon_read.take().unwrap_or_else(|| sidecar(&kernel, "gpuaddon", 64 << 20));
+                    let found = gpu3d_amdgpu::plugin_in_addon(addon.as_deref(), build.as_deref());
+                    addon_read = Some(addon);
+                    found
+                },
+                || gpu3d_amdgpu::selftest::run(sys.clone(), node, gpu_log),
+            );
+            let fail = |why: String| {
+                if config.gpu == Gpu::ThreeD {
                     loge!("gpu: no 3D: {}", why);
                     return Err(BootFailed);
                 }
-                Err(why) => logi!("gpu: 2D only: {}", why),
+                logi!("gpu: 2D only: {}", why);
+                Ok(())
+            };
+            match choice {
+                // the memfd from its offset 0 (mem.rs)
+                gpu3d_amdgpu::Choice::Kgsl => {
+                    match gpu3d::kgsl_open(m.fd, m.fd_phys, m.head + m.size, pool, phys + window, pool_bytes, gpu_log) {
+                        Ok(g) => gpu = Some(g),
+                        Err(why) if config.gpu == Gpu::ThreeD => {
+                            loge!("gpu: no 3D: {}", why);
+                            return Err(BootFailed);
+                        }
+                        Err(why) => logi!("gpu: 2D only: {}", why),
+                    }
+                }
+                gpu3d_amdgpu::Choice::Amdgpu(target) => {
+                    let opened = gpu3d::amdgpu_open(
+                        node,
+                        m.fd,
+                        m.fd_phys,
+                        m.head + m.size,
+                        pool,
+                        phys + window,
+                        pool_bytes,
+                        gpu_log,
+                    );
+                    match opened {
+                        Err(why) => fail(why)?,
+                        Ok(_) if add_boot_arg(&mut config.boot_args, "oneios-gpu-amd=1").is_err() => {
+                            fail("no room in the boot arguments for oneios-gpu-amd=1".into())?
+                        }
+                        Ok(g) => {
+                            logi!(
+                                "gpu: 3D on amdgpu ({}): the gpuaddon's {} plug-in ({}) and the self-test passed; {}",
+                                node,
+                                gpu3d_amdgpu::PLUGIN,
+                                target,
+                                if config.boot_args.split(' ').any(|w| w == "oneios-gpu-amd=1") {
+                                    "oneios-gpu-amd=1"
+                                } else {
+                                    "the command line's oneios-gpu-amd= is kept"
+                                }
+                            );
+                            // OpenGL ES for CoreAnimation (docs/a56-gpu.md 4a): when the same gpuaddon carries the
+                            // A56's GL bundle, the kernel names it for every process (oneios-gpu-amd-gl=1) and the
+                            // render server composites on it; without it, CPU composition as before.
+                            let addon = addon_read.as_ref().and_then(|a| a.as_deref());
+                            match gpu3d_amdgpu::gl_in_addon(addon, build.as_deref()) {
+                                // a kernel that does not read the switch (an A56 kernel before 5966e71ce2aa) would
+                                // name no GL driver for SpringBoard, whose CoreImage then needs the fixup: no GL
+                                Ok(_) if !gpu3d_amdgpu::kernel_knows_gl(&image) => logi!(
+                                    "gpu: OpenGL ES: the kernel does not read oneios-gpu-amd-gl (an A56 kernel before 5966e71ce2aa): Metal alone, CPU composition, the CoreImage fixup kept"
+                                ),
+                                Ok(gl) if add_boot_arg(&mut config.boot_args, "oneios-gpu-amd-gl=1").is_ok() => {
+                                    gl_bundle = true;
+                                    logi!(
+                                        "gpu: OpenGL ES: the gpuaddon's {} ({}, {} files); {}",
+                                        gpu3d_amdgpu::GL_PLUGIN,
+                                        gl.target,
+                                        gl.files,
+                                        if config::amd_gl_on(&config.boot_args) {
+                                            "oneios-gpu-amd-gl=1: CoreAnimation composites on it"
+                                        } else {
+                                            "the command line's oneios-gpu-amd-gl= is kept: no GL, CPU composition"
+                                        }
+                                    )
+                                }
+                                Ok(_) => logi!("gpu: OpenGL ES: no room in the boot arguments for oneios-gpu-amd-gl=1"),
+                                Err(why) => logi!("gpu: OpenGL ES: {}: Metal alone, CPU composition", why),
+                            }
+                            gpu = Some(g);
+                        }
+                    }
+                }
+                gpu3d_amdgpu::Choice::TwoD(why) | gpu3d_amdgpu::Choice::Refuse(why) => fail(why)?,
             }
         }
         let have_3d = gpu.is_some();
@@ -524,6 +651,19 @@ impl Session {
                                                   // The cameras iOS is told about (the loader's /arm-io/isp and /product/camera): the roles the helper lists;
                                                   // with them cameracaptured's owner-hide-vmm and /product unique-model (camera-vm=, camera-model=).
         self.bridges.describe_cameras(config, &mut machine);
+        // iOS 16.5 (20F66) finds its product by /product product-id (the iPhone X's) and shows the root's serial-number:
+        // without them bluetoothd had no chip and crashed every 10 s, and About had no model name and no serial
+        // (docs/userland.md, "The iOS 16.5 identity"). iOS 27 reads neither, so its tree is unchanged.
+        let build = self.image_set.as_ref().map(|s| s.build.as_str());
+        if build == Some("20F66") {
+            machine.product_id = Some(config::IOS16_PRODUCT_ID);
+            machine.serial_number = Some(config::IOS16_SERIAL.into());
+            logi!(
+                "ios16: /product product-id {} (the iPhone X's, MobileGestalt's product), serial-number {}",
+                config::IOS16_PRODUCT_ID.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+                config::IOS16_SERIAL
+            );
+        }
         machine.display_width = fb_width;
         machine.display_height = fb_height;
         machine.display_scale = config.scale;
@@ -538,6 +678,26 @@ impl Session {
                 config.scale,
                 &mut config.text_fixups,
             );
+        }
+        // iOS 16.5: CoreImage's OpenGL ES fallback answers no context (no GL driver here; docs/gpu.md). Not with the
+        // A56's OpenGL ES (its bundle in this boot's gpuaddon and oneios-gpu-amd-gl=1 in the guest's boot arguments,
+        // docs/a56-gpu.md 4a): the bundle answers CoreImage's EAGLContext (on radeonsi, or on softpipe without it), and
+        // CoreImage draws instead of a blank.
+        if config.ios16_fixup && config::ios16_gl_driver(gl_bundle, &config.boot_args) {
+            if build == Some("20F66") {
+                logi!(
+                    "ios16: CoreImage's GL fallback fixup left out: oneios-gpu-amd-gl=1, {} answers its EAGLContext",
+                    gpu3d_amdgpu::GL_PLUGIN
+                );
+            }
+        } else if config.ios16_fixup {
+            let added = config::ios16_fixups(build, &mut config.text_fixups);
+            if added != 0 {
+                logi!(
+                    "ios16: {} text fixup(s) added: CoreImage's GL fallback answers no context (ios16-fixup=0: off)",
+                    added
+                );
+            }
         }
         if !config.text_fixups.is_empty() {
             machine.text_fixups = Some(config.text_fixups.to_bytes());
@@ -559,12 +719,15 @@ impl Session {
         }
         let ramdisk = sidecar(&config.kernel, "ramdisk", 1 << 30);
         let mut trust = sidecar(&config.kernel, "trustcache", 16 << 20);
-        // The boot addon: the one staged beside the image's kernel, else the runtime's own (addon.rs). The image's is
-        // the phone's choice and its CDHashes sit in the set's owner-trust.json; the runtime's brings its CDHashes for
-        // this boot's trust cache.
-        let addon = match sidecar(&config.kernel, "gpuaddon", 64 << 20) {
-            Some(blob) => Some(crate::addon::Addon { blob, cdhashes: Vec::new() }),
-            None => crate::addon::runtime_addon(&config.runtime),
+        // The boot addon: one the GPU's choice read already (an amdgpu host), else the one staged beside the image's
+        // kernel, else the runtime's own (addon.rs). The image's is the phone's choice and its CDHashes sit in the
+        // set's owner-trust.json; the runtime's brings its CDHashes for this boot's trust cache.
+        let addon = match addon_read.take() {
+            Some(read) => read.map(|blob| crate::addon::Addon { blob, cdhashes: Vec::new() }),
+            None => match sidecar(&config.kernel, "gpuaddon", 64 << 20) {
+                Some(blob) => Some(crate::addon::Addon { blob, cdhashes: Vec::new() }),
+                None => crate::addon::runtime_addon(&config.runtime),
+            },
         };
         let policies = sidecar(&config.kernel, "vroot", 128 << 20);
         // Apple's trust caches of the set (IM4P) and the owner module, as the sidecar the kernel takes, unless one is

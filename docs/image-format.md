@@ -279,6 +279,39 @@ Data seed, a file in `overlay/`, or kernel policy. Hook API 1:
 | `ONEIOS_OWNERS` | file to append owner rules to: `PATH<tab>UID<tab>GID<tab>MODE` and an optional `<tab>R` for the whole tree below. `PATH` is relative to `ONEIOS_DATA`, `MODE` octal or `-` |
 | `ONEIOS_INFO` | file to write one JSON value to; it becomes `tweaks.info` in the manifest |
 | `ONEIOS_EPOCH`, `ONEIOS_DATA_UUID` | the profile's `[data]` values |
+| `ONEIOS_ALLOW_NO_METAL=1` | explicitly allow an intentionally CPU-only S24 Ultra image: `scripts/image/build.sh` skips its Metal check, and the hook places no bundle |
+
+For `ONEIOS_DEVICE=iPhone18,2`, the built-in hook checks a given `NativeAdrenoMetal.bundle`: its `oneios-target`
+and the adjacent `NativeAdrenoMetal.build.json` must name `<device> <build>`, or the hook stops before it replaces
+the image set (a bundle built for another image, or one with no target or record, is refused). A missing bundle is
+not refused by the hook. On a PC, `scripts/image/build.sh` refuses an S24 Ultra image with no matching bundle before
+it mounts anything; set `ONEIOS_ALLOW_NO_METAL=1` there only when CPU composition is intentional. `--no-hook` /
+`--no-tweaks` still explicitly skips the hook.
+
+**The Metal plug-in of an image made on the phone (2026-11-24).** The OneOS app's Make iOS image (`serve
+make-image`) sends no `metal_plugin` or `camera_plugin`. The runtime package carries both since this change
+(`lib/guest/NativeAdrenoMetal.bundle` with its build record, `lib/guest/camera/H9ISP.mediacapture`; runtime.json
+`metal` and `camera`; [releases.md](releases.md)), and `make-image` takes the staged runtime's when the request
+gives none and the bundle's `oneios-target` is the image's `<device> <build>` (`Tweak::for_image` in
+`crates/oneios-imagebuild`). The hook then seeds them as a PC build does: the bundle in
+`/private/var/oneios/addons/Extensions`, the capture plug-in in `/private/var/oneios/addons/MediaCapture`, their
+CDHashes in `overlay/userland/owner-trust.json`. The build says where its plug-in came from in one line, `Metal
+plug-in: ...`, and in its `ok` event's `metal` field:
+
+| Line | When |
+| --- | --- |
+| `Metal plug-in: STAGE/runtime/lib/guest/NativeAdrenoMetal.bundle (the staged runtime's, for iPhone18,2 24A446)` | the request gave none and the runtime's is for this image |
+| `Metal plug-in: none: the staged runtime's (...) is for iPhone18,2 24A446, this image is D B (CPU composition)` | a runtime for the S24 Ultra's iOS 27 and an image of another iOS (another phone's fork): neither plug-in is placed, the build goes on |
+| `Metal plug-in: none: none given, and the staged runtime carries none (CPU composition)` | a runtime before this change, one released with `--no-metal`, or `"runtime_plugins": false` in the request |
+| `Metal plug-in: PATH (given)` | the request's `metal_plugin` (the preflight above checks it) |
+| `Metal plug-in: none (ONEIOS_ALLOW_NO_METAL=1)`, `none (no root tweaks)` | as they say |
+
+Why a phone-made image without a bundle is still not refused (decided 2026-11-24): the phone cannot build the
+bundle, so a refusal would stop Make iOS image on every runtime without one, while the image without it boots and
+composites on the CPU, as every phone-made image did before. The line above and the `ok` event's `metal` say it.
+A runtime update with a new plug-in reaches an image made before it only by making the image again, or by the boot
+add-on (`oneios-tool phone addon`, [gpu.md](gpu.md)); the switch does not stage the runtime's plug-in as the add-on
+(gpu.md says why).
 
 `oneios-tool image tweaks hook` also reads `ONEIOS_OS_IMAGE`: the OS volume's raw image, read with the tool's own
 APFS reader instead of the mounted `ONEIOS_OS_ROOT` (the phone mounts nothing; the same seed). The hooks read only

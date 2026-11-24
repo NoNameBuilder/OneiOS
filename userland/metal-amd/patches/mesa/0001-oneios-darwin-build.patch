@@ -1,0 +1,477 @@
+diff --git a/meson.build b/meson.build
+index 75bed36..8788a07 100644
+--- a/meson.build
++++ b/meson.build
+@@ -809,6 +809,7 @@ endif
+ allow_fallback_for_libdrm = get_option('allow-fallback-for').contains('libdrm')
+ 
+ with_gallium_drisw_kms = false
++_oneios_darwin_drm = false
+ if system_has_kms_drm
+   dep_libdrm = dependency(
+     'libdrm', version : '>=' + _drm_ver,
+@@ -820,6 +821,30 @@ if system_has_kms_drm
+       'amdgpu' : _libdrm_checks['amdgpu']['enabled'].to_string('enabled', 'disabled'),
+     },
+   )
++elif host_machine.system() == 'darwin' and get_option('oneios-libdrm-dir') != ''
++  # OneiOS: Darwin has no DRM. The headers are libdrm's own (the release of -Doneios-libdrm-dir), the
++  # xf86drm functions are src/oneios/oneios_drm.c (one GPU, reached through the Darwin vdrm backend,
++  # src/virtio/vdrm/vdrm_darwin.c), and libdrm_amdgpu is libdrm's amdgpu library built against them:
++  # its VA manager is what the amdgpu virtio context uses; its ioctl paths answer ENODEV.
++  _oneios_drm_dir = get_option('oneios-libdrm-dir')
++  # amdgpu.h is in libdrm's amdgpu folder: drm_hw.h (the vdrm capset) takes it from dep_libdrm, as on Linux.
++  _inc_oneios_drm = include_directories(_oneios_drm_dir, join_paths(_oneios_drm_dir, 'include', 'drm'),
++                                        join_paths(_oneios_drm_dir, 'amdgpu'))
++  # Headers here; the libraries are made after the project's arguments (below add_project_arguments).
++  dep_libdrm = declare_dependency(include_directories : [_inc_oneios_drm, include_directories('src/oneios')])
++  _oneios_amdgpu_files = []
++  foreach f : ['amdgpu_asic_id.c', 'amdgpu_bo.c', 'amdgpu_cs.c', 'amdgpu_device.c', 'amdgpu_gpu_info.c',
++               'amdgpu_vamgr.c', 'amdgpu_vm.c', 'handle_table.c', 'amdgpu_userq.c']
++    _oneios_amdgpu_files += files(join_paths(_oneios_drm_dir, 'amdgpu', f))
++  endforeach
++  _inc_oneios_amdgpu = include_directories(join_paths(_oneios_drm_dir, 'amdgpu'))
++  dep_libdrm_amdgpu = declare_dependency(include_directories : _inc_oneios_amdgpu)
++  _oneios_darwin_drm = true
++  # vdrm and the amdgpu virtio context take the Darwin backend (src/virtio/vdrm/vdrm_darwin.c).
++  pre_args += '-DHAVE_VDRM_DARWIN'
++  # AMD's addrlib reads __APPLE__ as Apple's own driver build (its addrExtDef.h, not public); HAVE_TSERVER is
++  # addrlib's switch for the standard headers and types, as on Linux.
++  pre_args += '-DHAVE_TSERVER'
+ else
+   # We should prevent libdrm from being available when the target doesn't have it to avoid transitive
+   # dependencies (such as vk-runtime) linking to it
+@@ -832,9 +857,9 @@ if dep_libdrm.found()
+   endif
+ endif
+ 
+-# Then get each libdrm module
++# Then get each libdrm module (OneiOS: on Darwin they are the ones made above)
+ foreach name, d : _libdrm_checks
+-  if d['enabled']
++  if d['enabled'] and not _oneios_darwin_drm
+     set_variable(
+       'dep_libdrm_' + name,
+       dependency(
+@@ -1083,6 +1108,7 @@ with_gfx_compute = [
+   with_clc,
+   with_gallium_va and with_video_encode,
+   with_gallium_mediafoundation and with_video_encode,
++  get_option('oneios-radeonsi-screen'),
+ ].contains(true)
+ if with_gfx_compute
+   pre_args += '-DHAVE_GFX_COMPUTE'
+@@ -2160,7 +2186,8 @@ if not with_platform_windows and not dep_elf.found()
+ endif
+ if dep_elf.found()
+   pre_args += '-DUSE_LIBELF'
+-elif with_gallium_radeonsi and with_gfx_compute
++elif with_gallium_radeonsi and with_gfx_compute and amd_with_llvm
++  # OneiOS: with ACO alone radeonsi makes raw binaries, never ELF; ac_rtld.c then answers that it has no ELF reader.
+   error('Gallium driver radeonsi requires libelf')
+ elif with_nouveau_vk
+   error('NVK requires libelf')
+@@ -2465,6 +2492,32 @@ endif
+ add_project_arguments(c_args,   language : ['c'])
+ add_project_arguments(cpp_args, language : ['cpp'])
+ 
++# OneiOS: the Darwin stand-in for libdrm (see the dep_libdrm above): its xf86drm functions and libdrm's amdgpu
++# library, made here because a build target must follow the project's arguments.
++if _oneios_darwin_drm
++  _liboneios_drm = static_library(
++    'oneios_drm', files('src/oneios/oneios_drm.c'),
++    include_directories : [_inc_oneios_drm, include_directories('src/oneios')],
++    gnu_symbol_visibility : 'hidden',
++  )
++  _liboneios_drm_amdgpu = static_library(
++    'oneios_drm_amdgpu', _oneios_amdgpu_files,
++    include_directories : [_inc_oneios_drm, _inc_oneios_amdgpu],
++    c_args : ['-DHAVE_LIBDRM_ATOMIC_PRIMITIVES=1', '-DHAVE_VISIBILITY=1', '-DHAVE_ALLOCA_H=1',
++              '-DHAVE_SECURE_GETENV=0', '-DAMDGPU_ASIC_ID_TABLE="/usr/share/libdrm/amdgpu.ids"', '-w'],
++    link_with : _liboneios_drm,
++    gnu_symbol_visibility : 'hidden',
++  )
++  dep_libdrm = declare_dependency(
++    include_directories : [_inc_oneios_drm, include_directories('src/oneios')],
++    link_with : _liboneios_drm,
++  )
++  dep_libdrm_amdgpu = declare_dependency(
++    include_directories : _inc_oneios_amdgpu,
++    link_with : _liboneios_drm_amdgpu,
++  )
++endif
++
+ gl_priv_reqs = []
+ 
+ if with_glx == 'xlib'
+diff --git a/meson.options b/meson.options
+index 93a60e3..84580e1 100644
+--- a/meson.options
++++ b/meson.options
+@@ -915,3 +915,20 @@ option(
+   value : false,
+   description : 'Build panfrost Rust components.'
+ )
++
++option(
++  'oneios-libdrm-dir',
++  type : 'string',
++  value : '',
++  description : 'OneiOS: on Darwin (iOS), the unpacked libdrm release whose headers and amdgpu library ' +
++                'radeonsi and the amdgpu virtio context are built against; the DRM calls themselves ' +
++                'go to src/oneios/oneios_drm.c (there is no DRM on Darwin)',
++)
++
++option(
++  'oneios-radeonsi-screen',
++  type : 'boolean',
++  value : false,
++  description : 'OneiOS: build src/gallium/targets/oneios-radeonsi (oneios_radeonsi_screen_create: ' +
++                'the radeonsi pipe_screen over the amdgpu virtio context, with no GL or Vulkan frontend)',
++)
+diff --git a/src/oneios/oneios_drm.c b/src/oneios/oneios_drm.c
+new file mode 100644
+index 0000000..0e1ce8a
+--- /dev/null
++++ b/src/oneios/oneios_drm.c
+@@ -0,0 +1,302 @@
++/*
++ * OneiOS: libdrm's xf86drm functions for a Darwin (iOS) process (oneios_drm.h says what the descriptor is).
++ *
++ * The declarations are libdrm's own xf86drm.h (the release -Doneios-libdrm-dir names). Only what Mesa's
++ * radeonsi, its amdgpu winsys, the amdgpu virtio context and libdrm_amdgpu call is here. Everything that
++ * would be an ioctl on a DRM node answers ENODEV: on Darwin the amdgpu virtio context (src/amd/common/
++ * virtio) talks to the GPU through the vdrm backend, never through these. Syncobjs answer ENOSYS: the
++ * Darwin vdrm backend gives the winsys its own sync provider (vdrm_darwin_get_sync). Buffers and fences as
++ * descriptors (PRIME, sync files) do not exist here.
++ *
++ * The approach (a descriptor that means the one GPU connection of the process) is the one of Jesvi-iOS's
++ * tools/mesa/redwood-drm/redwood_drm.c (MIT); no code of it is used.
++ *
++ * Copyright 2026 OneiOS contributors
++ * SPDX-License-Identifier: MIT
++ */
++#include <errno.h>
++#include <fcntl.h>
++#include <stdarg.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/stat.h>
++#include <unistd.h>
++
++#include <xf86drm.h>
++
++#include "oneios_drm.h"
++
++#define ONEIOS_DRM_NAME "virtio_gpu"
++#define ONEIOS_DRM_NODE "oneios-virtgpu"
++
++int
++oneios_drm_open(void)
++{
++   return open("/dev/null", O_RDWR | O_CLOEXEC);
++}
++
++bool
++oneios_drm_is_device(int fd)
++{
++   struct stat a, b;
++
++   if (fd < 0 || fstat(fd, &a) != 0 || !S_ISCHR(a.st_mode))
++      return false;
++   if (stat("/dev/null", &b) != 0)
++      return false;
++   return a.st_rdev == b.st_rdev;
++}
++
++static char *
++dup_text(const char *text, int *len)
++{
++   char *copy = strdup(text);
++   if (len)
++      *len = copy ? (int)strlen(copy) : 0;
++   return copy;
++}
++
++drmVersionPtr
++drmGetVersion(int fd)
++{
++   if (!oneios_drm_is_device(fd)) {
++      errno = ENODEV;
++      return NULL;
++   }
++   drmVersionPtr v = calloc(1, sizeof(*v));
++   if (!v)
++      return NULL;
++   /* virtio_gpu's own numbers; the amdgpu ones come from the capset (vdrm caps.version_*). */
++   v->version_major = 0;
++   v->version_minor = 1;
++   v->version_patchlevel = 0;
++   v->name = dup_text(ONEIOS_DRM_NAME, &v->name_len);
++   v->date = dup_text("0", &v->date_len);
++   v->desc = dup_text("OneiOS virtio GPU (Darwin vdrm)", &v->desc_len);
++   if (!v->name || !v->date || !v->desc) {
++      drmFreeVersion(v);
++      return NULL;
++   }
++   return v;
++}
++
++void
++drmFreeVersion(drmVersionPtr v)
++{
++   if (!v)
++      return;
++   free(v->name);
++   free(v->date);
++   free(v->desc);
++   free(v);
++}
++
++int
++drmIoctl(int fd, unsigned long request, void *arg)
++{
++   (void)fd;
++   (void)request;
++   (void)arg;
++   errno = ENODEV;
++   return -1;
++}
++
++int
++drmCommandWrite(int fd, unsigned long index, void *data, unsigned long size)
++{
++   (void)fd;
++   (void)index;
++   (void)data;
++   (void)size;
++   return -ENODEV;
++}
++
++int
++drmCommandWriteRead(int fd, unsigned long index, void *data, unsigned long size)
++{
++   (void)fd;
++   (void)index;
++   (void)data;
++   (void)size;
++   return -ENODEV;
++}
++
++int
++drmCloseBufferHandle(int fd, uint32_t handle)
++{
++   (void)fd;
++   (void)handle;
++   return -ENODEV;
++}
++
++int
++drmGetCap(int fd, uint64_t capability, uint64_t *value)
++{
++   (void)fd;
++   (void)capability;
++   (void)value;
++   return -EINVAL;
++}
++
++int
++drmGetMagic(int fd, drm_magic_t *magic)
++{
++   (void)fd;
++   (void)magic;
++   return -EINVAL;
++}
++
++int
++drmGetNodeTypeFromFd(int fd)
++{
++   if (!oneios_drm_is_device(fd)) {
++      errno = ENODEV;
++      return -1;
++   }
++   return DRM_NODE_RENDER;
++}
++
++char *
++drmGetPrimaryDeviceNameFromFd(int fd)
++{
++   return oneios_drm_is_device(fd) ? strdup(ONEIOS_DRM_NODE) : NULL;
++}
++
++char *
++drmGetRenderDeviceNameFromFd(int fd)
++{
++   (void)fd;
++   return NULL;   /* nothing to open(): the descriptor is all there is */
++}
++
++char *
++drmGetDeviceNameFromFd2(int fd)
++{
++   return oneios_drm_is_device(fd) ? strdup(ONEIOS_DRM_NODE) : NULL;
++}
++
++/* A PCI device at 0000:00:00.0 with no ids (the guest sees no PCI bus: the GPU is the host's, behind virtio). */
++struct oneios_drm_device {
++   drmDevice device;
++   drmPciBusInfo bus;
++   drmPciDeviceInfo info;
++   char *nodes[DRM_NODE_MAX];
++   char render[sizeof(ONEIOS_DRM_NODE)];
++};
++
++int
++drmGetDevice2(int fd, uint32_t flags, drmDevicePtr *device)
++{
++   (void)flags;
++   if (!oneios_drm_is_device(fd))
++      return -ENODEV;
++   struct oneios_drm_device *d = calloc(1, sizeof(*d));
++   if (!d)
++      return -ENOMEM;
++   memcpy(d->render, ONEIOS_DRM_NODE, sizeof(ONEIOS_DRM_NODE));
++   d->nodes[DRM_NODE_RENDER] = d->render;
++   d->device.nodes = d->nodes;
++   d->device.available_nodes = 1 << DRM_NODE_RENDER;
++   d->device.bustype = DRM_BUS_PCI;
++   d->device.businfo.pci = &d->bus;
++   d->device.deviceinfo.pci = &d->info;
++   *device = &d->device;
++   return 0;
++}
++
++void
++drmFreeDevice(drmDevicePtr *device)
++{
++   if (device && *device) {
++      free(*device);   /* the device is the first member of struct oneios_drm_device */
++      *device = NULL;
++   }
++}
++
++int
++drmGetDevices2(uint32_t flags, drmDevicePtr devices[], int max_devices)
++{
++   (void)flags;
++   (void)devices;
++   (void)max_devices;
++   return 0;   /* nothing to enumerate: a process asks oneios_drm_open() */
++}
++
++void
++drmFreeDevices(drmDevicePtr devices[], int count)
++{
++   for (int i = 0; devices && i < count; i++)
++      drmFreeDevice(&devices[i]);
++}
++
++int
++drmGetDeviceFromDevId(dev_t dev_id, uint32_t flags, drmDevicePtr *device)
++{
++   (void)dev_id;
++   (void)flags;
++   (void)device;
++   return -ENODEV;
++}
++
++char *
++drmGetFormatModifierName(uint64_t modifier)
++{
++   (void)modifier;
++   return NULL;
++}
++
++void
++drmMsg(const char *format, ...)
++{
++   va_list args;
++   va_start(args, format);
++   vfprintf(stderr, format, args);
++   va_end(args);
++}
++
++int
++drmPrimeFDToHandle(int fd, int prime_fd, uint32_t *handle)
++{
++   (void)fd;
++   (void)prime_fd;
++   (void)handle;
++   errno = ENOSYS;
++   return -ENOSYS;
++}
++
++int
++drmPrimeHandleToFD(int fd, uint32_t handle, uint32_t flags, int *prime_fd)
++{
++   (void)fd;
++   (void)handle;
++   (void)flags;
++   (void)prime_fd;
++   errno = ENOSYS;
++   return -ENOSYS;
++}
++
++/* Syncobjs: the winsys's are vdrm_darwin_get_sync()'s; these are only libdrm_amdgpu's own wrappers. */
++#define NO_SYNCOBJ() do { errno = ENOSYS; return -ENOSYS; } while (0)
++
++int drmSyncobjCreate(int fd, uint32_t flags, uint32_t *handle) { (void)fd; (void)flags; (void)handle; NO_SYNCOBJ(); }
++int drmSyncobjDestroy(int fd, uint32_t handle) { (void)fd; (void)handle; NO_SYNCOBJ(); }
++int drmSyncobjHandleToFD(int fd, uint32_t handle, int *obj_fd) { (void)fd; (void)handle; (void)obj_fd; NO_SYNCOBJ(); }
++int drmSyncobjFDToHandle(int fd, int obj_fd, uint32_t *handle) { (void)fd; (void)obj_fd; (void)handle; NO_SYNCOBJ(); }
++int drmSyncobjImportSyncFile(int fd, uint32_t handle, int sync_file_fd) { (void)fd; (void)handle; (void)sync_file_fd; NO_SYNCOBJ(); }
++int drmSyncobjExportSyncFile(int fd, uint32_t handle, int *sync_file_fd) { (void)fd; (void)handle; (void)sync_file_fd; NO_SYNCOBJ(); }
++int drmSyncobjReset(int fd, const uint32_t *handles, uint32_t count) { (void)fd; (void)handles; (void)count; NO_SYNCOBJ(); }
++int drmSyncobjSignal(int fd, const uint32_t *handles, uint32_t count) { (void)fd; (void)handles; (void)count; NO_SYNCOBJ(); }
++int drmSyncobjTimelineSignal(int fd, const uint32_t *handles, uint64_t *points, uint32_t count)
++{ (void)fd; (void)handles; (void)points; (void)count; NO_SYNCOBJ(); }
++int drmSyncobjWait(int fd, uint32_t *handles, unsigned num, int64_t timeout, unsigned flags, uint32_t *first)
++{ (void)fd; (void)handles; (void)num; (void)timeout; (void)flags; (void)first; NO_SYNCOBJ(); }
++int drmSyncobjTimelineWait(int fd, uint32_t *handles, uint64_t *points, unsigned num, int64_t timeout, unsigned flags,
++                           uint32_t *first)
++{ (void)fd; (void)handles; (void)points; (void)num; (void)timeout; (void)flags; (void)first; NO_SYNCOBJ(); }
++int drmSyncobjQuery(int fd, uint32_t *handles, uint64_t *points, uint32_t count)
++{ (void)fd; (void)handles; (void)points; (void)count; NO_SYNCOBJ(); }
++int drmSyncobjQuery2(int fd, uint32_t *handles, uint64_t *points, uint32_t count, uint32_t flags)
++{ (void)fd; (void)handles; (void)points; (void)count; (void)flags; NO_SYNCOBJ(); }
++int drmSyncobjTransfer(int fd, uint32_t dst, uint64_t dst_point, uint32_t src, uint64_t src_point, uint32_t flags)
++{ (void)fd; (void)dst; (void)dst_point; (void)src; (void)src_point; (void)flags; NO_SYNCOBJ(); }
+diff --git a/src/oneios/oneios_drm.h b/src/oneios/oneios_drm.h
+new file mode 100644
+index 0000000..186e45e
+--- /dev/null
++++ b/src/oneios/oneios_drm.h
+@@ -0,0 +1,32 @@
++/*
++ * OneiOS: the DRM device of a Darwin (iOS) process, for Mesa's radeonsi over the amdgpu virtio context.
++ *
++ * Darwin has no DRM. Mesa still knows its GPU by a file descriptor, so a process gets one that means
++ * "the virtio GPU of this guest": a descriptor of /dev/null, which oneios_drm.c's xf86drm functions
++ * recognise (drmGetVersion says "virtio_gpu", so radeonsi_screen_create takes the virtio path). The
++ * connection itself is made by the Darwin vdrm backend (src/virtio/vdrm/vdrm_darwin.c) when the
++ * amdgpu virtio device is initialised: IOKit's accelerator user client, open type 0x4149.
++ *
++ * Copyright 2026 OneiOS contributors
++ * SPDX-License-Identifier: MIT
++ */
++#ifndef ONEIOS_DRM_H
++#define ONEIOS_DRM_H
++
++#include <stdbool.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++/* A new descriptor that names the guest's virtio GPU (close it with close()); -1 and errno on failure. */
++int oneios_drm_open(void);
++
++/* Whether fd is such a descriptor (any descriptor of /dev/null: there is one GPU in a process). */
++bool oneios_drm_is_device(int fd);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif

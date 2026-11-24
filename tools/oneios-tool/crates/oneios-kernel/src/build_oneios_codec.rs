@@ -11,8 +11,9 @@
 //!                           xnuhost's /arm-io/virtio-media-0 and its media-host-pool (runtime/bridges/encoder)
 //!   DroidVMVTHost.cpp       UniXNU-droidvm's session logic (the host half of VideoToolbox's paravirtualized decoder
 //!                           and encoder, played in the guest's kernel over the virtio-media device), staged with
-//!                           one edit (staged/codec.rs): the hvcC's profile, tier and level are taken from the SPS
-//!                           without the stream's emulation prevention bytes
+//!                           the edits of staged/codec.rs (the encoder: the hvcC's profile, tier and level, the
+//!                           tile session, 10-bit pictures) and staged/codec_decode.rs (the decoder: VP9 and AV1,
+//!                           dcap, dcan, the surfaces' kernel mappings kept, its counters)
 //!   DroidVMVTParavirt.cpp   UniXNU-droidvm's AppleVideoToolboxParavirtualizationDriver and its user client,
 //!                           unchanged; its static initializer is taken out of __mod_init_func and made global:
 //!                           droidvm_vt_paravirt_attach runs it inside its own module load, after the kernel's
@@ -32,6 +33,7 @@
 
 use crate::gen::{self, fail, Compile, Ctx};
 use crate::staged::codec::CODEC_HOST;
+use crate::staged::codec_decode::CODEC_DECODER;
 use anyhow::Result;
 use oneios_common::json::Value;
 use std::path::{Path, PathBuf};
@@ -43,11 +45,12 @@ pub const REQUIRED: [&str; 4] = ["_oneios_codec_start", "_droidvm_media_start", 
 /// without one of them is not the three files together.
 pub const SESSION: [&str; 4] = ["_droidvm_vthost_available", "_droidvm_vthost_message", "_droidvm_media_ioctl", "_droidvm_media_mmap"];
 
-/// DroidVMVTHost.cpp with the hvcC's profile, tier and level taken without emulation prevention bytes.
+/// DroidVMVTHost.cpp with the encoder's edits (staged/codec.rs: 1 to 5) and the decoder's (staged/codec_decode.rs: 6).
 pub fn staged_text(text: String) -> Result<String> {
-    gen::replace_once(text, CODEC_HOST, |anchor| {
+    let gone = |anchor: &str| {
         format!("build-oneios-codec: DroidVMVTHost.cpp no longer has exactly one `{}`", gen::first(anchor.trim(), 90))
-    })
+    };
+    gen::replace_once(gen::replace_once(text, CODEC_HOST, gone)?, CODEC_DECODER, gone)
 }
 
 /// The same file name, in the archive's folder (its own includes come from the package folder: -I).

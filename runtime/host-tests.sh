@@ -17,11 +17,18 @@
 #             has no binderfs), the camera, the encoder (its stand-in streams decoded by ffmpeg when it is there)
 #   lint      cargo fmt --check and cargo clippy --workspace --all-targets -D warnings, on the host and (with the NDK) for
 #             aarch64-linux-android
-#   boot      runtime/xnuhost/check-arm64.sh smoke check: the vCPU machinery alone, then the static Android xnuhost
+#   boot      only with QEMU=1 (skipped by default, CLAUDE.md 2026-11-24): runtime/xnuhost/check-arm64.sh smoke check: the vCPU machinery alone, then the static Android xnuhost
 #             booting the Rust test kernel three times (the normal boot, ram=auto, the restart loop) under qemu-aarch64 on
 #             an x86_64 PC, as it is on an arm64 host (the container on a Mac: check only, with the Mac's binaries)
 #   port      scripts/port/test-verify-host.sh: the read-only phone preflight against stand-in phones (S24 Ultra, S25
 #             Ultra, S25, S26 Ultra, A56, and refusals)
+#   metal-amd only with METAL_AMD=1: the Galaxy A56's guest GPU stack. On Linux, userland/metal-amd/host-test.sh (the
+#             guest Mesa: its patches apply to Mesa cecc0e9, Mesa builds for Linux with radeonsi and the amdgpu virtio
+#             context, and the Darwin vdrm backend against a fake of the kernel's user client); then
+#             userland/metal-amd/air/host-test.sh (Jesvi-iOS's AIR frontend and air_metal on Mesa cecc0e9, driven through
+#             air_metal.h on softpipe; docs/a56-gpu.md sections 3 and 4); then userland/metal-amd/gl/host-test.sh (the
+#             A56's OpenGL ES for CoreAnimation, OneiOSRadeonGL: Mesa's GLES on softpipe driven through EAGL's GLI entries and
+#             the 1036-slot dispatch table, over stand-in IOSurfaces in place and copied; docs/a56-gpu.md section 4a)
 #   links     runtime/package/elf-check-test.sh, when the NDK is there (on a Mac: on the Mac, after the container): the
 #             link rule of Android shared objects (-z defs) and runtime/package/elf-check.sh, on a library linked without
 #             it (must fail) and on a stage of runtime/build.sh
@@ -86,7 +93,11 @@ suite() {
   if ndk_ok; then part lint-android sh -c 'cd runtime && cargo clippy --workspace --all-targets --locked --target aarch64-linux-android -- -D warnings'; fi
   # PREBUILT=1 (the Mac's container): the Mac built the static xnuhost and the test image with its NDK just before, and
   # the container has no NDK: check-arm64.sh boots those as they are and builds nothing.
-  if [ "${PREBUILT:-0}" = 1 ]; then
+  # QEMU=1 runs the boot part. By default it is skipped: the phone is the test (CLAUDE.md, the owner's rule of
+  # 2026-11-24); a helper hands the build to the Mac for a phone boot instead.
+  if [ "${QEMU:-0}" != 1 ]; then
+    results+=("boot: skipped (the qemu boot runs only with QEMU=1: the phone is the test, CLAUDE.md 2026-11-24)")
+  elif [ "${PREBUILT:-0}" = 1 ]; then
     if [ -f "$PREBUILT_XNUHOST" ] && [ -f "$PREBUILT_IMAGE/kernel.kc" ]; then
       part boot env XNUHOST="$PREBUILT_XNUHOST" IMAGE="$PREBUILT_IMAGE" runtime/xnuhost/check-arm64.sh check
     else results+=("boot: FAIL: no $PREBUILT_XNUHOST or $PREBUILT_IMAGE: the Mac builds them before the container"); fi
@@ -94,6 +105,16 @@ suite() {
     part boot runtime/xnuhost/check-arm64.sh smoke check
   else results+=("boot: skipped (no NDK here: the static xnuhost and the test kernel need it)"); fi
   part port sh scripts/port/test-verify-host.sh
+  # METAL_AMD=1: the A56's guest Mesa and its Metal layer (Mesa builds of several minutes each and about 1.7 GB in
+  # out/metal-amd, so not by default; they need external/mesa-droidvm). The guest Mesa test is Linux only.
+  if [ "${METAL_AMD:-0}" != 1 ]; then
+    results+=("metal-amd: skipped (runs only with METAL_AMD=1: userland/metal-amd/host-test.sh, userland/metal-amd/air/host-test.sh, userland/metal-amd/gl/host-test.sh)")
+  else
+    if [ "$(uname -s)" = Linux ]; then part metal-amd sh userland/metal-amd/host-test.sh
+    else results+=("metal-amd: skipped (Linux only: it builds Mesa for Linux)"); fi
+    part metal-amd-air sh userland/metal-amd/air/host-test.sh
+    part metal-amd-gl sh userland/metal-amd/gl/host-test.sh
+  fi
   if ndk_ok; then
     part links runtime/package/elf-check-test.sh
     part package runtime/package/test.sh

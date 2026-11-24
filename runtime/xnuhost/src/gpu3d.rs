@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 //! virtio-gpu 3D: what virtio_gpu.rs asks of the renderer behind it (VirtIO 1.2 5.7 with crosvm's DRM native
-//! context), and guest pages as dma-bufs. The real renderer is gpu3d_kgsl.rs: Droid-VM's drm2kgsl (virglrenderer's
-//! msm protocol served on /dev/kgsl-3d0), linked into xnuhost (static; no helper process). The unit tests put a fake
+//! context), and guest pages as dma-bufs. The real renderers are gpu3d_kgsl.rs: Droid-VM's drm2kgsl (virglrenderer's
+//! msm protocol served on /dev/kgsl-3d0), linked into xnuhost (static; no helper process), and on the Galaxy A56
+//! gpu3d_amdgpu.rs (the amdgpu protocol on an amdgpu render node, in Rust). The unit tests put a fake
 //! one here and drive the device with generated command streams.
 //!
 //! /dev/udmabuf makes a dma-buf from ranges of a memfd; guest RAM is one memfd (mem.rs), so a blob's guest segments
@@ -113,7 +114,23 @@ pub fn kgsl_open(
     crate::gpu3d_kgsl::open(ram_fd, ram_phys, ram_size, pool_host, pool_pa, pool_size, log)
 }
 
-// ---- guest pages as dma-bufs (/dev/udmabuf) ---------------------------------------------------------------------------
+/// The amdgpu native context on the render node `node` (gpu3d_amdgpu.rs: the Galaxy A56's Xclipse), over the same
+/// RAM and pool as [`kgsl_open`]. Err(why) when the node is not amdgpu or cannot be probed.
+#[allow(clippy::too_many_arguments)]
+pub fn amdgpu_open(
+    node: &str,
+    ram_fd: RawFd,
+    ram_phys: u64,
+    ram_size: u64,
+    pool_host: *mut u8,
+    pool_pa: u64,
+    pool_size: u64,
+    log: LogFn,
+) -> Result<Box<dyn Gpu3d>, String> {
+    crate::gpu3d_amdgpu::open(node, ram_fd, ram_phys, ram_size, pool_host, pool_pa, pool_size, log)
+}
+
+// ---- guest pages as dma-bufs (/dev/udmabuf)---------------------------------------------------------------------------
 // The kernel caps one udmabuf at size_limit_mb MiB and list_limit runs of pages (64 and 1024 by default, and on the
 // Galaxy S24 Ultra), so a blob becomes as many udmabufs ("chunks") as it needs, in the blob's order: a chunk ends where
 // the next page would pass either limit. Adjacent segments are joined. The limits used are the kernel's

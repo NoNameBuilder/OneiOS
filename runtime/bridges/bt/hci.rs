@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 //! Bluetooth bridge, the part every back end shares: one HCI controller with packet checks and a state the guest's
-//! transport (drivers/bluetooth) follows. The back end for the phone is [`super::hci_hidl`] (HIDL, the S24 Ultra) or
-//! [`super::hci_aidl`] (stable AIDL, Android 16+); [`super::hci_sim`] stands in for it on a PC.
+//! transport (drivers/bluetooth) follows. The back end for the phone is [`super::hci_hidl`] (HIDL on the S24 Ultra, or
+//! stable AIDL when the phone has only that HAL, from Android 16 on); [`super::hci_sim`] stands in for it on a PC.
 //! Packet types are the H4 indicators: 1 command, 2 ACL, 3 SCO, 4 event, 5 ISO. C: bt/hci.c.
 
 use super::le_scan::{LeScan, Verdict};

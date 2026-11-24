@@ -38,6 +38,8 @@ window) around a ustar archive of regular files, `runtime.json` first, no top fo
 | `scripts/*` | `runtime/scripts/*`, when there are any |
 | `kernel/xnu.macho`, `kernel/xnu.macho.build.json` | the XNU that `kernel/` builds from Apple's open source, and its build record. Only when a kernel was built |
 | `kernel/gpuaddon`, `kernel/gpuaddon.cdhashes` | the boot addon `ONEIOS_GPUADDON` packs (`oneios-tool ios addon`'s `NGPUADD2` sidecar: the Metal plug-in under `addons/`, the capture plug-in under `camera/`) and the CDHashes of its files. Only with a kernel, and only when the packager is given one. xnuhost hands it to the kernel when the image set has no `kernel.kc.gpuaddon` of its own, and adds its CDHashes to that boot's trust cache ([booter.md](booter.md), [gpu.md](gpu.md)) |
+| `lib/guest/NativeAdrenoMetal.bundle/*`, `lib/guest/NativeAdrenoMetal.build.json`, `lib/guest/camera/H9ISP.mediacapture`, `lib/guest/NOTICE` | the guest's own iOS plug-ins (since 2026-11-24, when `runtime/package.sh` is given `METAL_DIR` and `CAMERA_DIR`; `scripts/release/release.sh` builds them from HEAD): the Metal plug-in as `userland/metal/build.sh` leaves it, with its build record (target, CDHashes, the sources' pins), and the capture plug-in. Our builds from source, linked against stubs of the SDK, signed ad hoc; no Apple code (the check below). The phone's Make iOS image seeds them into the image it makes when the bundle's `oneios-target` is that image's ([image-format.md](image-format.md), "The Metal plug-in of an image made on the phone"). `lib/guest/NOTICE`: the licences of the sources (metal2vulkan GPL-2.0-or-later or LGPL-3.0-or-later, Mesa MIT and the rest of its LICENSING.md, NativeMetal, NativeAdreno, AdrenoPM4 MIT, Droid-VM-UniXNU, NativeMobileDisplay BSD-2-Clause-Patent; their texts from `external/`) and where their source is (URL and commit). About 36 MB unpacked |
+| `lib/guest/OneiOSRadeonMetal.bundle/*`, `lib/guest/OneiOSRadeonGL.bundle/*` and their `.build.json` | the Galaxy A56's GPU plug-ins for iOS 16.5 (since 2026-11-25, when `runtime/package.sh` is given `METAL_AMD_DIR`, step 3c; `scripts/release/release.sh` builds them from HEAD, or `--metal-amd-dir DIR`, or leaves them out with `--no-metal-amd`): the Metal layer of Jesvi-iOS on Mesa radeonsi and the OpenGL ES layer (iOSPlus10's NegroniGL), each with its build record (`oneios-tool ios bundle-record`: target `iPhone10,3 20F66`, the CDHash of each Mach-O, the sources' pins). Beside the Adreno plug-in, never instead of it; checked by the same rule (our own ad hoc signed iOS code only, each file the CDHash its record lists). `lib/guest/NOTICE` adds Mesa's, Jesvi-iOS's (MIT), iOSPlus10's NegroniGL (MIT) and libdrm 2.4.133's (MIT) notices and sources. On the phone, Update the kernel (and Make iOS image) puts them into an iOS 16.5 set as `kernel.kc.gpuaddon` with their CDHashes in its `owner-trust.json` ([a56-gpu.md](a56-gpu.md) 6). About 37 MB unpacked |
 | `NOTICE`, `LICENSE` | licences; with a kernel, the APSL notice (`kernel/NOTICE.kernel`) |
 
 ## What is never in a release
@@ -57,6 +59,14 @@ enforces this on every package, and `runtime/package/test.sh` tests it:
   (`<name>.build.json`) written by `oneios-tool kernel build-record`: `builder` is `oneios-kernel`, `sha256` is the file's,
   `prelinked` and `kernelcache_kexts_added` are false, `apple_binary_inputs` is empty. A kernel collection
   (`MH_FILESET`) is refused with or without a record.
+- the other Mach-Os allowed are under `lib/guest/` only: our iOS plug-ins. Each must be a thin arm64 `MH_DYLIB` or
+  `MH_BUNDLE` (an executable, a kext, a kernel collection or a fat file is refused), signed ad hoc for iOS (Apple's
+  own code is never ad hoc signed) with an identifier that is not `com.apple.*`; a file of `NAME.bundle` must have the
+  CDHash that `NAME.build.json` beside the bundle lists for it. The Metal bundle goes whole (its `oneios-target`
+  and a record of the same target), the capture plug-in only with it. On the bundle the laptop built on
+  2026-11-24 (main c62f974) and on the capture plug-in the check passes; `oneios-package`'s tests and
+  `runtime/package/test.sh` part 5 refuse a `com.apple.*` library that is not ad hoc, an executable, an unsigned
+  library, a bundle file whose CDHash is not its record's, and a bundle without its record or target.
 
 A refusal ends with exit code 3 and no package. CI also refuses firmware-like names, Mach-O files and files over
 5 MiB in git (`.github/scripts/check-tracked-files.sh`), and a package with a member outside `runtime.json`,
@@ -132,7 +142,12 @@ The first seven keys and `files` are the fork's format 1. Added by this reposito
 package was built from; `dirty` when `runtime/` or `kernel/` had uncommitted changes), `min_oneos_fork`
 (`runtime/package/min-oneos-fork`: the lowest version of the fork that can run this package; the oneos agent
 raises it when the session ABI or the package layout changes), `placeholder` (true while `bin/xnuhost` is the
-placeholder), `kernel` (null without one). `files` lists every file except `runtime.json`.
+placeholder), `kernel` (null without one), `metal` (`{"bundle": "lib/guest/NativeAdrenoMetal.bundle", "record":
+"lib/guest/NativeAdrenoMetal.build.json", "target": "iPhone18,2 24A446", "cdhashes": [...]}`, null without one) and `camera`
+(`{"path": "lib/guest/camera", "cdhash": "..."}`, null without one): what the phone's `serve make-image` takes; and `metal_a56`
+(since 2026-11-25: `{"target": "iPhone10,3 20F66", "metal": {"bundle": "lib/guest/OneiOSRadeonMetal.bundle", "record": ...},
+"gl": {"bundle": "lib/guest/OneiOSRadeonGL.bundle", "record": ...}, "cdhashes": [...]}`, null without them): the Galaxy A56's
+GPU plug-ins, of which the phone makes an iOS 16.5 image's `kernel.kc.gpuaddon` ([a56-gpu.md](a56-gpu.md) 6). `files` lists every file except `runtime.json`.
 
 ## Versions
 
@@ -426,6 +441,77 @@ failures, `kernel/tests/host.sh` 8 of 8. **Booted on the phone before the releas
 0092's 134 jobs, the wallpaper gallery loads; that session ended in xnuhost's GPU renderer, the fault v0.1.18's
 runtime fixes, not in the kernel).
 
+The kernel of v0.1.22 (2026-11-24, built on the build laptop in the `release-kernel-a56` worktree and branch:
+`096f1e76`, the commit that pinned c889b14b24f3, plus main's 0004 (`a59eb64`) and 0012 (`54f47be`), uploaded from
+there with `kernel/publish.sh --hosted release-a56 --upload`): `xnu-12377.121.6-ios-27.0.1-24A446-7d540ae9e518`,
+`xnu.macho` 24,656,672 bytes, SHA-256 `0a37d06ed64d61b7e66d13f97fd90ca97348ff57c66f0f983685d1b83d8dbdf4`, the same
+hosted series to 0092 as v0.1.18's kernel, with one change: hosted 0004 runs `newfs_apfs` again without `-x` when it
+exits 64 (usage). iOS 16.5's `newfs_apfs` has no `-x`, and the Galaxy A56's first boot of our image panicked with
+"offline scratch Data mount failed: 5" (issue 73, [a56.md](a56.md)). 0012's hunk is moved onto that loop. Main's later
+patches (0093 to 0101) are left out on purpose: the S24 Ultra keeps the kernel it booted. Original corecrypto,
+`"releasable": true`, 177 patches. Archive 6,460,689 bytes, SHA-256 `4ffa3f609ff15f35c3de47d19561197629ad752c36a4c50b5819c65230cf3e64`,
+release `kernel-xnu-...-7d540ae9e518`. Its prelink (`out/kernel/24A446-release-a56/kernel.kc`, SHA-256
+`f5ddb36983d81c60...`): audit 2711 paired, 93 on the stub, 0 failures. **Not booted** on any phone before the release
+(the owner's 2026-11-24 rule: no qemu boot; the A56 user's boot is the test).
+
+The kernel pinned after v0.1.23 (2026-11-24, `port/a56-full`; for the next release; v0.1.23 has v0.1.22's kernel): built on the build laptop in the
+`release-kernel-a56` worktree and branch (`82fa3b0`: v0.1.22's kernel, 096f1e76's series to 0092 with main's 0004 and
+0012, plus the new hosted 0102-0107), `HOSTED_OUT=release-a56c ONEIOS_CRYPTO=original kernel/build-hosted.sh`, uploaded
+from there with `kernel/publish.sh --hosted release-a56c --upload`: `xnu-12377.121.6-ios-27.0.1-24A446-16bd44f9d737`,
+`xnu.macho` 24,675,504 bytes, SHA-256 `03a777fd9767e2c3bc89d1d84f6987c238b6fa265c5f956c346e4c25863cf5a7`, 183 patches,
+`"releasable": true`. Archive 6,449,789 bytes, SHA-256
+`6c198b67494ee366290bb126184a1c7d04b406d55784349ae58c05fd08736ba7` (downloaded again from the release and checked),
+release `kernel-xnu-...-16bd44f9d737`. What it adds: the other Galaxy A56 fork's iOS 16.5 kernel fixes (touch 0103,
+configd's IONetworkStack entitlement 0104, LaunchServices' keep 0105, logd's flush at a graceful return 0106, the
+queue-head dump 0102) and 0107, iOS 27's port policy left off for an iOS 16 userland (the EXC_GUARD kills of
+SpringBoard and the daemons in the A56 logs of 2026-11-24 20:05 and 20:31; [a56.md](a56.md) "The second port"). Each
+is off for iOS 27: 0103-0105 act on boot arguments xnuhost adds only for a 20F66 image set, 0107 on 0068's
+`oneios-legacy-registered-ports=1`, which only a 20F66 image passes, 0106 only on a graceful return (the galaxy-a56
+row), so the S24 Ultra runs v0.1.22's kernel code. Main's 0093-0101 are still left out. Its prelink
+(`out/kernel/24A446-release-a56c/kernel.kc`, SHA-256 `cb7d7e30287f3be5...`): audit 2711 paired, 93 on the stub, 0
+failures. `kernel/tests/host.sh` 12 of 12 (with 0103's conversion test). **Not booted** on any phone. (A first build
+without 0107, `...-8b2943c5003a`, was uploaded an hour before and deleted when 0107 came; nothing had pinned it.)
+
+The kernel pinned after v0.1.24 (2026-11-24, fix/a56-ios16-faults; for the next release; v0.1.24 has `16bd44f9d737`):
+built on the build laptop in the `a56-ios16-relk` worktree, branch `a56ios16/release-kernel-a56`, pushed as
+`release-kernel-a56` (`0888d97`): `16bd44f9d737`'s branch (`82fa3b0`) plus main's 0108 (`b5e706a` cherry-picked as
+`2786c3d`: the A56's GPU accelerator, the kernel part the a56-gpu work had prepared on `a56gpu/release-kernel-a56` as
+`f8def7dad866` and not published; this kernel carries it, so there is one A56 kernel) and hosted 0109 (an iOS 16
+userland's fat binaries run their arm64 slice: webbookmarksd's crash loop, [a56.md](a56.md) "The faults of the v0.1.24
+boot"). `GH_TOKEN=$(gh auth token) HOSTED_OUT=a56ios16-rel ONEIOS_CRYPTO=original kernel/build-hosted.sh` (325 s; the
+token because the DriverKit headers' GitHub API fetch had hit the anonymous rate limit), uploaded from there with
+`kernel/publish.sh --hosted a56ios16-rel --upload`: `xnu-12377.121.6-ios-27.0.1-24A446-181d8bf2d60a`, `xnu.macho`
+24,676,528 bytes, SHA-256 `3a57807cd4ec5a9e9ac93bbed620ac3bb97d23cfb921efd1623310bded645814`, 185 patches,
+`"releasable": true`. Archive 6,481,558 bytes, SHA-256 `e5ec24121664951a7f6f1c71a2a49996b5244519062642fc6b864f91be5122b0`
+(downloaded again from the release and checked), release `kernel-xnu-...-181d8bf2d60a`. Both new patches are off for
+iOS 27: 0108 acts only with `oneios-gpu-amd=1` on an AMDGPU capset, 0109 only with 0068's
+`oneios-legacy-registered-ports=1`, which only a 20F66 image passes. Its prelink
+(`out/kernel/24A446-a56ios16-rel/kernel.kc`, 96,288,768 bytes, SHA-256 `0dc78acf9d5df493...`): audit 2711 paired, 93 on
+the stub, 0 failures. `kernel/tests/host.sh` there 9 of 9. **Not booted** on any phone (no A56 here, no qemu boot).
+The runtime half of the same fixes (the CoreImage text fixup, the iOS 16.5 product-id and serial number) is xnuhost's,
+on main: the next runtime release carries both.
+
+
+The A56 kernel built after v0.1.25 (2026-11-25, the a56-gpu work; **uploaded and pinned** 2026-11-25 from the build
+laptop: the earlier upload attempts were refused by a session's permission check). In the `out/a56gl-relwt` worktree, branch
+`a56gl/release-kernel-a56`, pushed as `release-kernel-a56` (`4140abe`, a fast-forward on `0888d97`): `181d8bf2d60a`'s
+branch plus the kernel part of main's `dde7daa` (the A56's OpenGL ES for CoreAnimation: with `oneios-gpu-amd-gl=1` the
+A56 accelerator names `IOGLESBundleName` `OneiOSRadeonGL`, and the `oneios-gpu-amd-cpu` processes see that key while the
+Metal keys stay hidden; [a56-gpu.md](a56-gpu.md) 4a). `GH_TOKEN=$(gh auth token) HOSTED_OUT=a56gl-rel
+ONEIOS_CRYPTO=original kernel/build-hosted.sh` (360 s): `xnu-12377.121.6-ios-27.0.1-24A446-5966e71ce2aa`, `xnu.macho`
+24,656,856 bytes, SHA-256 `ce002f1cf41e9ebd01b9ad14188d0d2d684ba6d58a35e7ac1b557c0d68847d03`, 185 patches,
+releasable. `kernel/publish.sh --hosted a56gl-rel` packed `out/a56gl-relwt/out/kernel/publish/xnu-12377.121.6-ios-27.0.1-24A446-5966e71ce2aa.tar.zst`,
+SHA-256 `e64762251fb8c00a291b6295a4c13d18ee3ae817590482dc1e996350fc365a18`. Its prelink
+(`out/kernel/24A446-a56gl-rel/kernel.kc`, 96,272,384 bytes, SHA-256 `f9bf8f7a82ef1d05...`): audit 2711 paired, 93 on the
+stub, 0 failures. `kernel/tests/host.sh` there 9 of 9, the golden test 15 of 15. The new switch is off for iOS 27 and
+for an A56 without the GL bundle (xnuhost adds `oneios-gpu-amd-gl=1` only when the gpuaddon carries it). Published on the build
+laptop with `cd out/a56gl-relwt && kernel/publish.sh --hosted a56gl-rel --upload`: release
+[`kernel-xnu-12377.121.6-ios-27.0.1-24A446-5966e71ce2aa`](https://github.com/akshaynexus/OneiOS/releases/tag/kernel-xnu-12377.121.6-ios-27.0.1-24A446-5966e71ce2aa)
+(prerelease), archive 6,448,542 bytes, downloaded again with `gh release download` and checked: SHA-256
+`e64762251fb8c00a291b6295a4c13d18ee3ae817590482dc1e996350fc365a18` (GitHub's asset digest agrees). `kernel/release-kernel.txt`
+pins it in place of `181d8bf2d60a` (which had the Metal half, 0108, but not this GL key), so the next release's runtime
+names it and Update the kernel builds the A56's kernel.kc from it. **Not booted** on any phone.
+
 ## Released
 
 | Tag | Date | Commit | What |
@@ -442,6 +528,11 @@ runtime fixes, not in the kernel).
 | [`v0.1.18`](https://github.com/akshaynexus/OneiOS/releases/tag/v0.1.18) | 2026-11-23 | `973e8f7` | Published from the build laptop by `scripts/release/release.sh 0.1.18` in the main checkout at origin/main (exit 0; the first `--build-only` run failed in its runtime lane on a race between two `runtime/build.sh` at once, fixed by `973e8f7` and tested with two builds at once). **A new kernel**: `xnu-12377.121.6-ios-27.0.1-24A446-c889b14b24f3` (release `kernel-xnu-...-c889b14b24f3`, archive `60b86a55…`): `main`'s hosted series to 0092, so it brings 0088 (the camera's model name `OneiOSAP`: sound, volume and haptics, which the 0087 kernel of v0.1.16 and v0.1.17 lacked), 0089-0091 (the scheduler's completion step, no pull-back of spilled threads), 0090 (the boot add-on) and 0092 (every job but the crash loops); it is the kernel the phone booted on 2026-11-23 at 13:45. The runtime: drm2kgsl patch 0009 (a guest request naming id 0 no longer ends xnuhost: the wallpaper gallery's abort, docs/gpu.md 2.4a), each refused GPU blob logged with its check. Runtime `oneios-runtime-0.1.18-arm64.tar.zst`, 13,958,081 bytes, 29 files, SHA-256 `bfdcca48628f771a21116e1c27b4b45c81637628845ec9257a2b736a2b3e6a70`, `runtime.json` kernel `c889b14b24f3`; `oneios-tool-0.1.18-android-arm64`, 17,898,896 bytes, `20764b86…`. APK `OneOS-oneios-0.5.78-debug.apk`, the same app as v0.1.17 (versionCode 207, fork `4416d6f`), 85,997,625 bytes, `c1b4b4b6…`, the shared debug key. Checked after it: every asset against its `.sha256` (downloaded from the release), `runtime.json`'s version and kernel. The camera plug-in fix (`a5c244d`) is in the add-on, which is built on its own, not in this release. The release package itself not staged on a phone yet |
 | [`v0.1.19`](https://github.com/akshaynexus/OneiOS/releases/tag/v0.1.19) | 2026-11-23 | `f293cd5` | Published from the build laptop by `scripts/release/release.sh 0.1.19` (under `scripts/bg.sh`) in the main checkout at origin/main (exit 0; runtime, apk and tests lanes ok). **The switch fix**: the app at fork `6e3e387` (`oneios`), which has `6437eef`: `oneios_switch.sh` step [3/5] reads system_server's watchdog fds with one `ls -l` per process, not one `readlink` per fd (1522 fds took 48 s on the phone on 2026-11-23 18:19 with 0.5.78 and runtime 0.1.18, and the watcher returned to One UI with "the switch did not start xnuhost within 60 s"; the same script staged by hand at 18:24 booted iOS). **The versions line**: xnuhost logs `versions: runtime ... (git ...), kernel ..., kernel.kc ..., image ..., app versionCode N` at its start and again after `stopping:` ([booter.md](booter.md) 2.9b), and `oneios-tool log summary` prints it as its second line; the app passes its versionCode (`ONEIOS_APP_VERSION_CODE`, fork `6e3e387`). Same kernel as v0.1.18 (`xnu-12377.121.6-ios-27.0.1-24A446-c889b14b24f3`, `kernel/release-kernel.txt`). Runtime `oneios-runtime-0.1.19-arm64.tar.zst`, 13,963,784 bytes, SHA-256 `86c3515d710a5dc52ed2707b1e1ccb1f0915623b1e18cb2c4015cb727ef7e860`, `runtime.json` version 0.1.19, commit `f293cd5`, not dirty; `oneios-tool-0.1.19-android-arm64`, 17,906,640 bytes, `b343766a…`. APK `OneOS-oneios-0.5.80-debug.apk` (versionCode 209, fork `6e3e387`), 85,997,849 bytes, SHA-256 `71ce78ef4f12472bee768dd0c5ef2cc65f775668b57357b202e2dbc59bf5cf13`, the shared debug key `8b3be966…`. Checked after it: every asset downloaded from the release against its `.sha256`, `runtime.json`'s version, commit and kernel, the versions line's text in the packed `bin/xnuhost`. Not staged or booted on a phone yet (the Mac boots it) |
 | [`v0.1.20`](https://github.com/akshaynexus/OneiOS/releases/tag/v0.1.20) | 2026-11-23 | `410a6dc` | Published from the build laptop by `scripts/release/release.sh 0.1.20` (under `scripts/bg.sh`) in the main checkout at origin/main (exit 0; runtime, apk and tests lanes ok). The first two runs failed their apk lane on the fork's `OneiosScriptTest.theInnerShellWaitsForXnuhostAndRecordsHowItEnded`: SIGINT ignored in the lane, then in a Gradle daemon left by the first run. That was fixed in `3e2ee15` and `410a6dc` ("Releasing from a build machine"). For the **Galaxy A56** user of issue 73: the app at fork `47c5804` (`oneios`, which has `bd4bbf2`): the A56 path, which makes iOS 16.5 (20F66) with `lib/profiles/ios-16.5-a56.toml` (packed, the same bytes as `profiles/`). Our own 20F66 image, `image apfs-check` and `image verify` reading every compressed file as iOS does (`1b57c1a`, [a56.md](a56.md)). Since v0.1.19 also: drm2kgsl 0010 and the guest's 3D blob sizes (65532 entries, `78c4b86`); the Wi-Fi bridge's ring wait, 60 s traffic line and scans while joined (`cbf97ea`); `ram=auto` counting the iOS tasks, and a lasting host-short-of-memory line (`3b8742a`, merged to main by its helper during this release); pull-log's empty boot (`b05f335`); xnuhost's fatal-signal lines and never a kill of pid 0 (`df485a0`); the app's record of how xnuhost ended (fork `bd4bbf2`). Same kernel as v0.1.18 and v0.1.19 (`xnu-12377.121.6-ios-27.0.1-24A446-c889b14b24f3`, `kernel/release-kernel.txt`), which already has the A56 patches. **Main's later kernel changes are not in it** (0093, the Wi-Fi driver's RSSI event). Runtime `oneios-runtime-0.1.20-arm64.tar.zst`, 14,016,978 bytes, 29 files, SHA-256 `5a72d104d8bae7fb5dfe6e36581df61cbf1a41c1a54f1fd6e690844c87ef8a25`, `runtime.json` version 0.1.20, commit `410a6dc`, not dirty, kernel `c889b14b24f3` (`kernel/xnu.macho` `72b67dff…`); `oneios-tool-0.1.20-android-arm64`, 18,047,600 bytes, `fa036e3b…`. APK `OneOS-oneios-0.5.82-debug.apk` (versionCode 211, fork `47c5804`), 86,036,221 bytes, SHA-256 `353f805dc443c2bd70f4b7225b14c6ccbd7a70a31c81280475700b6995903986`, the shared debug key `8b3be966…`. Checked after it: every asset downloaded from the release against its `.sha256`; `runtime.json`'s version, commit and kernel; `lib/profiles/ios-16.5-a56.toml` in the package. The release notes carry the A56 install steps. **Nothing of it has been booted on a phone yet.** The A56 path is untested on an A56, and touch on the A56 is expected not to work (a56.md, "Not yet proven") |
+| [`v0.1.21`](https://github.com/akshaynexus/OneiOS/releases/tag/v0.1.21) | 2026-11-24 | `943ed26` | Published from the build laptop by `scripts/release/release.sh 0.1.21` in the main checkout at origin/main (exit 0 on the third run). The first run failed in its apk lane, with "SDK location not found" (fixed: `release.sh` exports `ANDROID_HOME`), and in its tests lane, because `encctl decode` failed 1 run in 3 (fixed: the stand-in decoder keeps a picture while every output buffer is taken, `bb41c75`). The second run failed on `cargo fmt` of that test (`943ed26`). For the **Galaxy A56** user of issue 73: the app at fork `85322d8` (`oneios`). The session's read-only remount names the source and the target, because three A56 switches stopped before xnuhost with "`mount: can't find /data/oneios_switch.sh in /proc/mounts`", status 70 ([a56.md](a56.md), "The first runs on an A56"). The two session scripts are checked read-only, and a failed remount prints its mountinfo line. Since v0.1.20, main's runtime also has the integration build of 2026-11-24 (every change behind a switch, [switches.md](switches.md)), **not yet booted on the phone**. Same kernel as v0.1.18 to v0.1.20 (`xnu-12377.121.6-ios-27.0.1-24A446-c889b14b24f3`, `kernel/release-kernel.txt`): main's hosted patches 0093 to 0101 are not in it. Runtime `oneios-runtime-0.1.21-arm64.tar.zst`, 14,133,442 bytes, SHA-256 `3df0bed069195d80e4ae534e1e1d626783bdacd01b8cd435ba27e963120ed99a`; `oneios-tool-0.1.21-android-arm64`, 18,087,056 bytes, `3155ae97…`. APK `OneOS-oneios-0.5.88-debug.apk` (versionCode 217, fork `85322d8`), 86,042,945 bytes, SHA-256 `8b652b1c2accd584ca89880d5b51c0c2618eb4386a6003bf9db27f808318bf38`, the shared debug key `8b3be966…`. Checked after it: the APK downloaded from the release against its `.sha256`, and its `assets/oneios/oneios_switch.sh` has the two-path remount. Not staged or booted on a phone yet |
+| [`v0.1.22`](https://github.com/akshaynexus/OneiOS/releases/tag/v0.1.22) | 2026-11-24 | `a7d059e` | Published from the build laptop by `scripts/release/release.sh 0.1.22` in the main checkout at origin/main (exit 0 on the first run). **A new kernel** for the **Galaxy A56** of issue 73: `xnu-12377.121.6-ios-27.0.1-24A446-7d540ae9e518` ("The kernel of v0.1.22" above). It is v0.1.18's series to 0092 with hosted 0004's `newfs_apfs` run again without `-x` on exit 64. iOS 16.5's `newfs_apfs` has no `-x`, and v0.1.21's A56 boot panicked with "offline scratch Data mount failed: 5" ([a56.md](a56.md)). The S24 Ultra gets the same kernel code as before, apart from that retry. The runtime is the same code as v0.1.21. The app is the same APK as v0.1.21 (`OneOS-oneios-0.5.88-debug.apk`, versionCode 217, fork `85322d8`), built again, 86,042,945 bytes. Runtime `oneios-runtime-0.1.22-arm64.tar.zst`, 14,132,703 bytes, SHA-256 `fe605ac28411ff9b18604dbdd94a9b701b2965d2f5ce58600748bae1c37b771a`, `runtime.json` version 0.1.22, kernel build id `...-7d540ae9e518` (`kernel/xnu.macho` `0a37d06e…`, with the retry's line). Checked after it: the runtime downloaded from the release against its `.sha256`, its `runtime.json` and `kernel/xnu.macho`. The A56 user takes it with Get the runtime, then Update the kernel and Activate the phone-built kernel. Not booted on a phone yet |
+| [`v0.1.23`](https://github.com/akshaynexus/OneiOS/releases/tag/v0.1.23) | 2026-11-24 | `4f59927` | Published from the build laptop by `scripts/release/release.sh 0.1.23 --no-metal` (exit 0 on the first run). **No Metal plug-in in the runtime** (`"metal": null`): the owner has not yet confirmed the licence terms of distributing metal2vulkan (GPL-2.0-or-later / LGPL-3.0-or-later), which `3c2be4e`'s Metal-in-the-runtime would bring. For the **Galaxy A56** of issue 73: the app at fork `976b1fc`: Update the kernel takes the A56's iOS 16.5 (20F66) set, whose kernel.kc is the 24A446 one by design (it refused "the staged image set is 20F66"); the page, the Switch button and the switching line name the staged set's iOS ("iOS 16.5 (OneiOS)"). Since v0.1.22 also: the fork orumanayurpanjayat-ux/OneiOS's scanout row reads (`6a5562d`) and the Metal target preflight with the missing-bundle refusal taken out (`a879630`, `c62f974`). Same kernel as v0.1.22 (`...-7d540ae9e518`). Runtime `oneios-runtime-0.1.23-arm64.tar.zst`, 14,160,291 bytes, SHA-256 `f7c82c11502399a22ba9f946fcd315ff1059b2ac26cc1e4aaddb1d76e2935692`; `oneios-tool-0.1.23-android-arm64`, 18,120,112 bytes. APK `OneOS-oneios-0.5.89-debug.apk` (fork `976b1fc`), 86,043,381 bytes, SHA-256 `87e3d977f3869835d7d5c38ec88f4b7485b9dd0ff400861ad4dcf30046a0649b`, the shared debug key. Checked after it: both downloaded from the release against their `.sha256`, `runtime.json`'s kernel and `metal`, the fix in the APK's dex. Not booted on a phone yet |
+| [`v0.1.24`](https://github.com/akshaynexus/OneiOS/releases/tag/v0.1.24) | 2026-11-24 | `6fa0b67` | Published from the build laptop by `scripts/release/release.sh 0.1.24` (exit 0 on the third run; the first stopped in the runtime lane on `cargo +1.98.0` with /usr/bin/cargo first in PATH, fixed in `fada0b6`; the second in the tests lane on test_hidl_binder's split log lines, fixed in `6fa0b67`). **The first release with the Metal plug-in in the runtime** (`lib/guest/`: NativeAdrenoMetal.bundle, its build record, the capture plug-in, NOTICE; `3c2be4e`): an image made on the phone for iPhone18,2 24A446 gets it. **A new A56 kernel** `xnu-12377.121.6-ios-27.0.1-24A446-16bd44f9d737` (v0.1.22's series plus hosted 0102-0107: touch for iOS 16.5, configd's Wi-Fi grant, the LaunchServices rule, logd's graceful stop, and 0107, iOS 16's port-policy fix for SpringBoard's EXC_GUARD kills; "The kernel of v0.1.24" above is the helper's paragraph). The second A56 port (`e3f2b86`: the 720x1560 @2x frame at 60 Hz from the galaxy-a56 row, the idle jobs, the AIDL vibrator) and the AIDL Bluetooth HAL client (`e449655`). iOS 27 on the A56 is not planned (no GPU path for the Xclipse). App unchanged (`OneOS-oneios-0.5.89-debug.apk`, fork `976b1fc`, SHA-256 `87e3d977f3869835d7d5c38ec88f4b7485b9dd0ff400861ad4dcf30046a0649b`). Runtime `oneios-runtime-0.1.24-arm64.tar.zst`, 23,645,031 bytes, SHA-256 `e548db39547ae55103537c05eb07153b852c5adf809cca0a75a891f47f4957c3`. Checked after it: the runtime downloaded from the release against its `.sha256`, `runtime.json`'s kernel, `lib/guest/`, the 0107 and oneios-hid16 strings in the kernel, the AIDL Bluetooth and iOS 16 boot-argument strings in xnuhost. Not booted on a phone yet |
+| [`v0.1.25`](https://github.com/akshaynexus/OneiOS/releases/tag/v0.1.25) | 2026-11-24 | `66c7cd9` | Published from the build laptop by `scripts/release/release.sh 0.1.25` (exit 0 on the first run), with the Metal plug-in in the runtime. For the **Galaxy A56** (issue 73, the v0.1.24 boot): the A56 kernel `xnu-12377.121.6-ios-27.0.1-24A446-181d8bf2d60a` (hosted 0108 and 0109: an iOS 16 userland's fat binaries run their arm64 slice, webbookmarksd's crash); for a 20F66 image xnuhost patches CoreImage's GL context maker to return none (SpringBoard's pc-0 crash with Bold Text: no GL and no Metal; `ios16-fixup=0` turns it off) and gives `/product` the iPhone X's product-id, a product-description and a made-up serial `ONEIOS16A56` (bluetoothd's chip factory, About's Model and Serial) (`a580aa4`); `oneios-tool sym find` and `sym callers` (`497a609`). App unchanged (0.5.89). Runtime `oneios-runtime-0.1.25-arm64.tar.zst`, 23,738,820 bytes, SHA-256 `1711a5d7c90862a0dcd5518f24be2b151653f8dbfa7d48e35bfa328142dd9bd7`. Checked after it: the runtime from the release against its `.sha256`, `runtime.json`'s kernel, `lib/guest/`, the 0109 string in the kernel and the 20F66 fixup and serial strings in xnuhost. Not booted on a phone yet |
 
 
 Every release above holds the runtime package only (the old `release.yml`); the fork's APK was published on the
@@ -472,9 +563,12 @@ fork may have downloaded it (the workflow refuses to: an asset with other bytes 
 
 `scripts/release/release.sh` builds the same files on this machine and publishes them, without waiting for the
 runners. It runs three lanes in parallel, each with its log in `out/release-local/VERSION/logs/`:
-- **runtime**: `runtime/package.sh` with the kernel pinned in `kernel/release-kernel.txt` (downloaded and checked
-  as CI does, cached in `out/release-local/kernel/`), then CI's package checks (drm2kgsl, `elf-check.sh`, the
-  members, `check-phone-tool.sh`);
+- **runtime**: the Metal plug-in and the capture plug-in built from HEAD (`userland/metal/build.sh` with
+  `METAL_OUT=out/release-local/VERSION/guest`, its work in `out/metal`; `userland/camera/build.sh`), then
+  `runtime/package.sh` with them (`METAL_DIR`, `CAMERA_DIR`, `REQUIRE_METAL=1`) and the kernel pinned in
+  `kernel/release-kernel.txt` (downloaded and checked as CI does, cached in `out/release-local/kernel/`), then CI's
+  package checks (drm2kgsl, `elf-check.sh`, the members, `check-phone-tool.sh`) and the bundle in runtime.json
+  (its target and CDHashes go into the notes);
 - **apk**: `app/` as it is checked out, signed with the debug key below, then `check-apk.sh`, plus a check that
   the APK's signer is that key;
 - **tests**: `check-tracked-files.sh`, `bash -n`, shellcheck when it is installed, and the host tests.
@@ -490,10 +584,30 @@ scripts/bg.sh release scripts/release/release.sh 0.1.14                # build, 
 scripts/bg.sh -s release                                               # its state and log (logs/release.log)
 ```
 
+The script exports `ANDROID_HOME` as the SDK it found, `~/Android/Sdk` included. Gradle reads the SDK from that
+variable or from `local.properties` only. A run under tmux started from ssh had neither, and v0.1.21's first run
+failed in the guest's build with "SDK location not found". It also puts `~/.cargo/bin` first in `PATH` when rustup
+is there: the Metal bridge's build runs `cargo +1.98.0`, which only rustup's proxy takes, and under tmux from ssh
+`/usr/bin/cargo` came first (v0.1.24's first run: "error: no such command: `+1.98.0`" in the runtime lane).
+
 Options:
 - `--runtime-only` and `--apk-only` are CI's "runtime only" and "apk only"; an APK-only release is not marked
   latest.
 - `--skip-tests` leaves out the tests lane.
+- `--metal-dir DIR` packs a Metal plug-in built before (`userland/metal/build.sh`'s output folder; `DIR/camera/` with
+  `H9ISP.mediacapture` packs the capture plug-in too) instead of building one; `--no-metal` makes a runtime without
+  them, and the notes say that an image made on the phone with it composites on the CPU. The Metal build needs the
+  iOS cross toolchain and the guest's stubs ([building.md](building.md) section 9: `scripts/setup/ios-toolchain.sh`
+  says "ok"); on the build laptop it took 7 minutes on 2026-11-24 with `out/metal` from an earlier build. A runtime
+  that CI builds (`release.yml`) has no `METAL_DIR`, so no Metal plug-in: publish runtimes from the build machine.
+- The Galaxy A56's GPU plug-ins (since 2026-11-25; [a56-gpu.md](a56-gpu.md) 6) go beside the Adreno one: built from HEAD
+  in the runtime lane (`userland/metal-amd/build.sh all` and `air/build.sh plugin` with `METAL_AMD_OUT=OUT/guest-a56`: Mesa
+  radeonsi, the Metal and the OpenGL ES layers; about 10 minutes and 1.5 GB the first time; it needs `out/ios16-tbd`,
+  `external/mesa-droidvm` and `external/Jesvi-iOS`), or `--metal-amd-dir DIR` packs ones built before (userland/metal-amd's
+  output folder, `out/metal-amd`: `OneiOSRadeonMetal.bundle`, `gl/OneiOSRadeonGL.bundle`, `libdrm-2.4.133/`), or
+  `--no-metal-amd` leaves them out (an A56 then stays on 2D). The lane checks `runtime.json`'s `metal_a56` and the notes
+  name its target and CDHashes. Not run as a whole release yet: the package with them is tested by
+  `runtime/package/test.sh` (part 6, made-up signed Mach-Os), and `--metal-amd-dir out/metal-amd` is the tested path.
 
 The script refuses:
 - uncommitted changes to tracked files, in OneiOS or in `app/`;

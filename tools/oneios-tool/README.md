@@ -546,10 +546,10 @@ stage.
 | `verify` | H | `set`, `quick` | `verify` | `image verify` of a set folder against its `manifest.json`; a file that is not the listed one: `refused`, `mismatch` |
 | `apfs-ls` | | `image`, `path`, `volume`, `newest`, `checkpoint` | | `row` `entry`: `name`, `mode`, `uid`, `gid`, `bytes`. `ok`: `entries` |
 | `apfs-copy` | H | `image`, `src`, `dst`, `volume`, `newest`, `checkpoint` | `scan`, `copy`, `place` | a file or a folder out of a raw APFS image, without a mount, the files in parallel, into `dst.part`, then renamed. `dst` must not exist. `ok`: `dst`, `files`, `bytes`, `compressed`, `skipped` |
-| `tweaks` | H | `data` (the copied Data tree, changed in place), `overlay` (the files go to `OVERLAY/userland`), `os_root` (the OS volume's files) **or** `os_image` (its raw image, read with our APFS reader, no mount; `os_volume` a number or a name, default the first), and optionally `build`, `helpers`, `metal_plugin`, `camera_plugin` (each used when it is what image-hook wants: a folder, a `.bundle` folder (its `NAME.build.json` beside it is checked), a folder holding `H9ISP.mediacapture`), `scale` (2 or 3), `config` (another `userland/config`; default the one built into the tool), `args` (more `apply` options, a list: `["--group", "fewest"]`), `owners`, `info` (the hook's `ONEIOS_OWNERS`, appended to, and `ONEIOS_INFO`) | `tweaks`, `place` | `image tweaks hook` in this process ("image tweaks", below): the root tweaks on the Data tree and `boot-contract.json`, `owner-trust.json`, `report.json`, `report.txt`, `tweaks.manifest.json`, `xnuhost.conf` (and `bin/oneios-seed` when the helpers have it) in `OVERLAY/userland`: build.sh's hook's bytes. One `space` event (the plug-ins and helpers it places, and 16 MiB). The report as `line`s; `row` `off`: `item`. A wrong input (not an iOS root, a file that is not a property list, a group that is not there, a helper that is not signed, a plug-in that is not its build record's): `refused`, `input`. `ok`: `out`, `build`, `disabled_jobs`, `owner_cdhashes`, `first_start_unpacker`, `off`, `not_found` |
+| `tweaks` | H | `data` (the copied Data tree, changed in place), `overlay` (the files go to `OVERLAY/userland`), `os_root` (the OS volume's files) **or** `os_image` (its raw image, read with our APFS reader, no mount; `os_volume` a number or a name, default the first), and optionally `build`, `device` (target identity; if absent, `ONEIOS_DEVICE`), `helpers`, `metal_plugin`, `camera_plugin` (each used when it is what image-hook wants: a folder, a `.bundle` folder (its `NAME.build.json` beside it is checked), a folder holding `H9ISP.mediacapture`), `scale` (2 or 3), `config` (another `userland/config`; default the one built into the tool), `args` (more `apply` options, a list: `["--group", "fewest"]`), `owners`, `info` (the hook's `ONEIOS_OWNERS`, appended to, and `ONEIOS_INFO`) | `tweaks`, `place` | `image tweaks hook` in this process ("image tweaks", below): the root tweaks on the Data tree and `boot-contract.json`, `owner-trust.json`, `report.json`, `report.txt`, `tweaks.manifest.json`, `xnuhost.conf` (and `bin/oneios-seed` when the helpers have it) in `OVERLAY/userland`: build.sh's hook's bytes. One `space` event (the plug-ins and helpers it places, and 16 MiB). The report as `line`s; `row` `off`: `item`. A wrong input (not an iOS root, a file that is not a property list, a group that is not there, a helper that is not signed, a plug-in that is not its build record's): `refused`, `input`. `ok`: `out`, `build`, `disabled_jobs`, `owner_cdhashes`, `first_start_unpacker`, `off`, `not_found` |
 | `prelink` | H | `kernel` (xnu.macho), `kernelcache`, `profile`, `reviewed`, `more_reviewed` (a list, optional), `pairs`, `stubs`, `xnuprelink` (the folder with XnuPrelink's files), `reference` (optional), `out` (a folder), `keep_work`, `oneios_commit`, `xnuprelink_commit` (for the record, optional) | `check`, `native-input`, `merge-reviewed`, `roots`, `hosted`, `match`, `align`, `kclasses`, `structors`, `vtables`, `emit`, `audit`, `stubs-check`, `record`, `hashes`, `place` | `prelink build`: the steps of `kernel/prelink/build.sh` in this process, in `OUT/work` (removed at the end unless `keep_work`); `kernel.kc`, its hash list and its three records are put into `OUT` only when the audit and the stub check pass (else `refused`, `audit`). A kernelcache that is not the profile's: `refused`, `mismatch`. `ok`: `kc`, `bytes`, `sha256` |
 | `stubs-check` | H | `kc` | `check` | `prelink stubs-check` alone; a bad stub: `refused`, `audit` |
-| `make-image` | H | `indir`, `out` (absent or an empty folder: root's `begin image` makes `image.new`), `work` (the build's own files go to `WORK/build`), `sums_list`, `ids_list` (the stage's lists, written whole; optional), and optionally `profile` (the OneOS app sends `STAGE/runtime/lib/profiles/ios-27.0.1-iPhone18-2.toml` since fork `62a2383`; default: the staged runtime's `lib/profiles/` when it holds one file, else the one `INDIR/inputs.json` names, else of the IPSW profiles there (`image profile` reads them; a host profile `host-*.toml` is not one) the only one, else the only one of the staged kernel's iOS (`runtime.json` `kernel.profile`, `ios-<version>-<build>`), else the only one of those for iPhone18,2; else `refused`, `usage`, naming them. Up to v0.1.16 the default was only a folder of one file, and every released runtime packs four or more, so the app's request without `profile` was refused `usage`: issue 75), `fetch` (default true), `source`, `resume` (default **true**: a stop keeps the fetch's parts), `tweaks` (default true: the root tweaks run, `oneios_tweaks::run_hook` on the OS image; false: the seed is the OS volume's own `/private/var`), `helpers`, `metal_plugin`, `camera_plugin`, `scale`, `tweaks_config`, `tweak_args` (the tweaks' optional inputs; none: the userland config built into the tool), `kc` (a `kernel.kc` to put in) or `no_kernel`, else `xnu` (default: the staged runtime's `runtime.json` `kernel.path`), `kb` (default `STAGE/kb`), `kernelcache` (default `KB/kernelcache.macho` when it is there, else the IPSW's member decoded), `keep_work`, `connections`, `give_up_s` | `check`, `directory`, `download`, `decrypt`, `place`, `data`, `tweaks`, `seed`, `kernelcache`, `kernel-check` ... `kernel-place` (`prelink build`'s sixteen), `manifest`, `verify`, `lists` | `image build` ("image build", below): the whole image set, `scripts/image/build.sh`'s steps in this process. **One `space` event** at `check`, for everything it writes (the fetch and the copies inside say none of their own); short: `refused`, `space`, before anything is fetched or written. An AEA image is decrypted (`decrypt`, since 2026-11-21); a wrong key or a changed byte: `refused`, `auth`; a plain image that is not the profile's `plain_sha256`: `refused`, `mismatch`. Pausable (`pause` holds the fetch at once and the build between steps). A stop or a failure removes `WORK/build`, the set's files and the lists' lines; INDIR keeps what was fetched. `ok`: `files` (the set's files with `manifest.json`: the lists' lines), `format`, `version`, `build` (root's `finish image <files> <format> <version> <build>`), `out`, `bytes`, `manifest_sha256`, `seed_sha256`, `kernel_sha256` |
+| `make-image` | H | `indir`, `out` (absent or an empty folder: root's `begin image` makes `image.new`), `work` (the build's own files go to `WORK/build`), `sums_list`, `ids_list` (the stage's lists, written whole; optional), and optionally `profile` (the OneOS app sends `STAGE/runtime/lib/profiles/ios-27.0.1-iPhone18-2.toml` since fork `62a2383`; default: the staged runtime's `lib/profiles/` when it holds one file, else the one `INDIR/inputs.json` names, else of the IPSW profiles there (`image profile` reads them; a host profile `host-*.toml` is not one) the only one, else the only one of the staged kernel's iOS (`runtime.json` `kernel.profile`, `ios-<version>-<build>`), else the only one of those for iPhone18,2; else `refused`, `usage`, naming them. Up to v0.1.16 the default was only a folder of one file, and every released runtime packs four or more, so the app's request without `profile` was refused `usage`: issue 75), `fetch` (default true), `source`, `resume` (default **true**: a stop keeps the fetch's parts), `tweaks` (default true: the root tweaks run, `oneios_tweaks::run_hook` on the OS image; false: the seed is the OS volume's own `/private/var`), `helpers`, `metal_plugin`, `camera_plugin`, `scale`, `tweaks_config`, `tweak_args` (the tweaks' optional inputs; none: the userland config built into the tool; without `metal_plugin` (`camera_plugin`), the staged runtime's `lib/guest/` bundle (capture plug-in), runtime.json `metal.bundle` (`camera.path`), when the bundle's `oneios-target` is the image's `<device> <build>`: docs/image-format.md, "The Metal plug-in of an image made on the phone"), `runtime_plugins` (default true; false: not the runtime's), `kc` (a `kernel.kc` to put in) or `no_kernel`, else `xnu` (default: the staged runtime's `runtime.json` `kernel.path`), `kb` (default `STAGE/kb`), `kernelcache` (default `KB/kernelcache.macho` when it is there, else the IPSW's member decoded), `keep_work`, `connections`, `give_up_s` | `check`, `directory`, `download`, `decrypt`, `place`, `data`, `tweaks`, `seed`, `kernelcache`, `kernel-check` ... `kernel-place` (`prelink build`'s sixteen), `manifest`, `verify`, `lists` | `image build` ("image build", below): the whole image set, `scripts/image/build.sh`'s steps in this process. **One `space` event** at `check`, for everything it writes (the fetch and the copies inside say none of their own); short: `refused`, `space`, before anything is fetched or written. An AEA image is decrypted (`decrypt`, since 2026-11-21); a wrong key or a changed byte: `refused`, `auth`; a plain image that is not the profile's `plain_sha256`: `refused`, `mismatch`. Pausable (`pause` holds the fetch at once and the build between steps). A stop or a failure removes `WORK/build`, the set's files and the lists' lines; INDIR keeps what was fetched. `ok`: `files` (the set's files with `manifest.json`: the lists' lines), `format`, `version`, `build` (root's `finish image <files> <format> <version> <build>`), `out`, `bytes`, `manifest_sha256`, `seed_sha256`, `metal` (where the seed's Metal plug-in came from, or why there is none: the build's `Metal plug-in: ...` line), `kernel_sha256` |
 | `package-check` | H | `dir` | `check` | `package check`: no Apple file in a runtime folder (else `refused`, `apple-file`) |
 | `ioslog-boots` | H | `source` (the Data store's image, a `.logarchive`, a folder), `volume` | `read` | `ioslog boots`: `row` `boot`: `uuid`, `start`, `first`, `last`, `entries`; and the table as `line`s |
 | `ioslog-show` | H | `source`, `out` (a file; without it the entries come as `line`s), `format` (`text`, `csv`, `jsonl`), `boot`, `since`, `until`, `proc` (a list), `pid`, `subsystem`, `category`, `type`, `grep`, `sort`, `volume` | `read` | `ioslog show`. `row` `shown`: `entries` (written), `of` (read). `ok`: `entries`, and with a file `out`, `bytes` |
@@ -695,13 +695,15 @@ section 9.
 ```sh
 oneios-tool ios sign [--identifier ID] [--entitlements PLIST] [--json] FILE...   # ad hoc, in place; CDHASH ARCH pages=4096 ID FILE
 oneios-tool ios macho-check [--tbd DIR | --sdk] [--local DYLIB]... [--arch A] FILE...  # will it load in the guest? exit 1 if not
-oneios-tool ios tbds [--cache DIR] [--image systemos.img] [--out DIR] [NAME...]   # the guest's .tbd stubs (out/ios27-tbd)
+oneios-tool ios tbds [--cache DIR] [--image systemos.img] [--out DIR] [NAME...]   # the guest's .tbd stubs (out/ios27-tbd; an arm64 cache, iOS 16.5's, gives arm64-ios stubs)
 oneios-tool ios tbd-diff [--a-listed] [--show N] A B                            # two stub trees, by what the linker reads
 oneios-tool ios codesign ARGS...                         # `codesign` for the Metal build's scripts (shim/codesign runs it)
-oneios-tool ios metal-stage-edit ROOT HOOKS JOBS KNOWS   # userland/metal/build.sh stage: the staged copy's changes (since 2026-11-23 also: m2v-spare-command-pools.patch in the bridge's list, the command pool row's calls in the plug-in)
+oneios-tool ios metal-stage-edit ROOT HOOKS JOBS KNOWS [--rt]   # userland/metal/build.sh stage: the staged copy's changes (since 2026-11-23 also: m2v-spare-command-pools.patch and m2v-idle-memory.patch in the bridge's list, turnip-idle-bo-cache.patch in the Mesa list, the command pool and GPU memory rows' calls in the plug-in; with --rt, METAL_RUNTIME=rt: the plug-in script links userland/metal/rt's bridge and does not build the old one)
 oneios-tool ios metal-record ROOT BUNDLE RECORD HOOKS TARGET   # build.sh finish: NativeAdrenoMetal.build.json
-oneios-tool ios gpuaddon BUNDLE OUTPUT                   # build.sh addon: the kernel.kc.gpuaddon sidecar (NGPUADD2)
-oneios-tool ios addon OUTPUT [--metal BUNDLE] [--camera DIR]   # the boot addon with the Metal and/or the capture plug-in, and OUTPUT.cdhashes (hosted 0090)
+oneios-tool ios bundle-record ROOT BUNDLE RECORD TARGET [NAME[=COMMIT]...]   # package.sh 3c: an A56 bundle's build record (CDHashes, pins)
+oneios-tool image a56-gpu-place --stage STAGE --out DIR   # the app at Update the kernel: an iOS 16.5 set's kernel.kc.gpuaddon, owner-trust.json, manifest.json
+oneios-tool ios gpuaddon BUNDLE OUTPUT [--gl GLBUNDLE]   # build.sh addon: the kernel.kc.gpuaddon sidecar (NGPUADD2); addons/NativeAdrenoMetal.bundle, or addons/OneiOSRadeonMetal.bundle for a folder of that name (the A56, userland/metal-amd); --gl: the A56's OneiOSRadeonGL.bundle beside it (userland/metal-amd/gl)
+oneios-tool ios addon OUTPUT [--metal BUNDLE] [--camera DIR] [--gl GLBUNDLE]   # the boot addon with the Metal and/or the capture plug-in (and the A56's OpenGL ES), and OUTPUT.cdhashes (hosted 0090)
 ```
 
 | Command | Was | Needs | Compared with the script (Linux PC, 2026-11-21) |
@@ -712,7 +714,7 @@ oneios-tool ios addon OUTPUT [--metal BUNDLE] [--camera DIR]   # the boot addon 
 | `codesign` | `userland/metal/shim/codesign` (Python) | `sign` | the four forms the base's scripts use; `--display` reads what `image tweaks cdhash` reads (the shim read it with roottweak's `macho.py`) |
 | `metal-stage-edit` | build.sh `stage`'s inline Python | nothing | on copies of the pinned Droid-VM-UniXNU and NativeMetal trees, with and without the clang-23 warning: the same staged tree (`diff -r`) and the same lines; a hooks file of another revision is refused with the same message |
 | `metal-record` | build.sh `finish`'s inline Python | scripts/ios/env.sh's variables | the same record and lines on the bundle in `out/userland`, but for its `check` text (`ios macho-check`) |
-| `gpuaddon` | build.sh `addon`'s inline Python | nothing | the same sidecar byte for byte (12,286,344 bytes, 5 files: flate2's zlib-rs writes zlib's level 9 stream) |
+| `gpuaddon` | build.sh `addon`'s inline Python | nothing | the same sidecar byte for byte (12,286,344 bytes, 5 files: flate2's zlib-rs writes zlib's level 9 stream). Since 2026-11-24 a bundle folder named `OneiOSRadeonMetal.bundle` (the Galaxy A56's plug-in, `userland/metal-amd`) keeps its name: `addons/OneiOSRadeonMetal.bundle/...` and `addons/OneiOSRadeonMetal.publish`; any other folder is `NativeAdrenoMetal` as before (unit test `the_a56_bundle_keeps_its_name_in_the_sidecar`). Since 2026-11-25 `--gl OneiOSRadeonGL.bundle` (also `ios addon --gl`) adds the A56's OpenGL ES after it: `addons/OneiOSRadeonGL.bundle/...`, no marker; a GL bundle given as the Metal one, or another folder as `--gl`, is refused (unit test `the_a56_gl_bundle_goes_beside_the_metal_plugin`) |
 | `addon` | nothing (new, 2026-11-23) | `image tweaks cdhash`'s Mach-O reader (oneios-tweaks) | new: its Metal part is `gpuaddon`'s byte for byte (unit test); the capture plug-in goes to `camera/MediaCapture/H9ISP.mediacapture`, which hosted 0090 mounts; `OUTPUT.cdhashes` has one `CDHASH NAME` line for each Mach-O file in it, for `phone addon`. `userland/camera/build.sh` makes `H9ISP.gpuaddon` with it |
 
 `tbds` writes TBD v4 as the 24A446 stubs were laid out (one item per line); weak definitions and thread-local
@@ -747,6 +749,7 @@ each module has the script's name and description, takes what it took and prints
 | `debug sym-make-log DSC_DIR OUT.log [--slide HEX] [--stacks N] [--seed N]`, `debug sym-cases WORK LOG...` | `tests/sym/make-log.py` and the address-set block of `tests/sym/compare-golden.sh` (2026-11-21) | `tests/sym/compare-golden.sh` | on the 24A446 cache: 4 of 4 logs the same after the version line (which names the command now), the same stdout and status, both errors status 1; the 12 set files the same; `compare-golden.sh` with them: **18 of 18** sets the same as the frozen golden (so the argument hashes, and the addresses drawn, are the script's) |
 | `debug mktar [--format pax\|gnu] OUT < SPEC` | new (2026-11-21): the tar `userland/tests/test_helpers.py`'s `seed()` wrote with Python's tarfile | `userland/tests/host.sh` (the oneios-seed cases) | 16 of 16 archives byte for byte with `seed()` (8 cases, pax and GNU: long names, modes, owners, xattrs, `..`, `/abs`, a file under a link, a hard link, a cut archive) |
 | `debug holes FILE [--map]` | new (2026-11-21): an inline block of `tests/phone/sparse-compare.sh` | `tests/phone/sparse-compare.sh` | the length, the blocks after an fsync, the SEEK_DATA/SEEK_HOLE regions; a unit test |
+| `debug fixture guest-bundle\|guest-dylib\|guest-execute\|apple-dylib OUT` | new (2026-11-24) | `runtime/package/test.sh` part 5; `signed_macho` in `crates/oneios-testkit/src/fixture.rs` is the fixture of `oneios-package`'s lib/guest/ tests | made-up signed arm64e Mach-Os for iOS 27 (ad hoc bundle, library, executable; one library not ad hoc and `com.apple.*`): what the runtime package takes under `lib/guest/` and what it refuses. `oneios-tweaks`' macho reader reads their CDHash back (the tests) |
 
 The sample of `ksym-compare` and the streams of `mkstream` are the ones the Python helpers drew: `pyrandom.rs` is
 CPython's `random.Random` on the `rand_mt` crate's MT19937 (`random`, `getrandbits(32)`, `randrange`, `choice`,
@@ -1662,6 +1665,23 @@ that copy (18.6 s) is byte for byte the index built through an apfs-fuse mount (
 `out/dsc/root/System/Library/Caches/com.apple.dyld`), but there every open of `.symbols` decompresses it again
 (2.5 s for its first 16 bytes), which is why `dsc.py` is so slow through it.
 
+**`sym find` and `sym callers` (2026-11-24, fix/a56-ios16-faults):** the other way round, for reading a crash's
+neighbourhood without IDA.
+
+```sh
+oneios-tool sym find [--slide HEX] NAME...       # every kept symbol whose name holds NAME: address, image, name
+oneios-tool sym callers [--slide HEX] ADDR...    # every b and bl of the cache's images that reaches ADDR, named
+```
+
+`find` answers from the index (the names `sym` would give: one per address of an image's `__TEXT`, local symbols
+included); an `_objc_msgSend$SELECTOR` stub names an image that sends SELECTOR, which is how a selector's callers are
+found (then `callers` of the stub). A NAME nothing holds is said, status 1. `callers` reads the cache itself (it needs
+`ONEIOS_DSC_DIR`): each image's `__TEXT` is scanned for `b`/`bl` whose target is ADDR (parallel; 0.5 s over 20F66's
+3.3 GB cache); a target nothing reaches is said too (an Objective-C method is reached through `objc_msgSend`, not by
+a branch). With `--slide` the addresses are given and printed slid. Used on 20F66 (`ONEIOS_DSC_DIR=out/ios16-cache`,
+the shared region's slide 0x2db08000) to follow SpringBoard's pc-0 crash from `CI::GLContext::init` back to
+`+[CIContext internalGLContextWithOptions:]` (docs/gpu.md 5.2). Tests: `tests/synthetic.rs` `find_names_and_callers`.
+
 ```sh
 ONEIOS_DSC_DIR=<cache folder> tools/oneios-tool/tests/sym/compare-golden.sh
 ```
@@ -2057,7 +2077,7 @@ oneios-tool phone sparse-write OUT [--gunzip] [--expect-size N]   # stdin to OUT
 
 **The host phone in `status` (2026-11-21).** After `root: yes`, one line: `host: galaxy-s24-ultra (Galaxy S24 Ultra
 (SM-S928, SM8650)), matched by ro.product.model=SM-S928B; defaults: none (today's)`, or for another known phone its
-defaults (`galaxy-s26-ultra ... defaults: ONEIOS_BRIGHT_MAX=2300`, `galaxy-a56 ... defaults: gpu=2d, panel-fallback=1080x2340@120`), or `host: unknown
+defaults (`galaxy-s26-ultra ... defaults: ONEIOS_BRIGHT_MAX=2300`, `galaxy-a56 ... defaults: gpu=auto, panel-fallback=1080x2340@120, width=720, height=1560, scale=2, hz=60, return-graceful-ms=4000, hw-backend-haptics=treble, hw-backend-fallback=1`), or `host: unknown
 phone (ro.product.model=... ...): xnuhost keeps today's defaults (host-device=NAME forces one)`. One `adb shell` call as
 the shell user: `getprop` of `ro.product.model`, `ro.product.device`, `ro.board.platform`, `ro.soc.model`,
 `ro.soc.manufacturer`, and `/sys/devices/soc0/{machine,soc_id}`, `/proc/device-tree/compatible`; matched in xnuhost's
@@ -3110,7 +3130,7 @@ stale (`stage_tool` in `kernel/lib/stage.sh`; `ONEIOS_TOOL=PATH` for another bin
 | `kernel gen net` | `.../net/build-oneios-net.py` | `build_oneios_net.rs` | **retired 2026-11-13**: deleted, its output frozen in `tests/kernelgen/golden/` |
 | `kernel gen hid` | `.../hid/build-oneios-hid.py` | `build_oneios_hid.rs` | **retired 2026-11-13**: deleted, its output frozen in `tests/kernelgen/golden/` |
 | `kernel gen audio` | `.../audio/build-oneios-audio.py` | `build_oneios_audio.rs` | **retired 2026-11-13**: deleted, its output frozen in `tests/kernelgen/golden/` |
-| `kernel gen codec` | none: written in Rust (hevc-guest, 2026-11-15) | `build_oneios_codec.rs`, `staged/codec.rs` | the video encoder's archive `liboneioscodec.a` (below); its staged file's hash and its line are in `tests/kernelgen/golden/` |
+| `kernel gen codec` | none: written in Rust (hevc-guest, 2026-11-15) | `build_oneios_codec.rs`, `staged/codec.rs`, `staged/codec_decode.rs` (2026-11-24) | the video encoder's archive `liboneioscodec.a` (below); its staged file's hash and its line are in `tests/kernelgen/golden/` |
 | `kernel gen gpu` | `.../gpu/build-oneios-gpu.py` | `build_oneios_gpu.rs`, `class_record.rs` | **retired 2026-11-13**: deleted, its output frozen in `tests/kernelgen/golden/` |
 | `kernel gen display` | `.../display/build-oneios-display.py` | `build_oneios_display.rs` | **retired 2026-11-13**: deleted, its output frozen in `tests/kernelgen/golden/` |
 | `kernel build-record finish --host linux\|macos --work DIR --config NAME --out OUT [--repo CHECKOUT]`, `kernel build-record --self-test` | `kernel/build-record.py` | `build_record.rs` | **retired 2026-11-13**: deleted, its output frozen in `tests/kernelgen/golden/` (the frozen record gained `"linked"` on 2026-11-21, below) |
@@ -3147,13 +3167,26 @@ checked by `the_edit_lists_write_what_the_python_functions_wrote`. Run on the Li
 fresh checkout (not caused by this change). `cargo test -p oneios-kernel` alone does not compile: `oneios-prelink`'s
 `toml` needs the `serde` feature, which only the whole workspace turns on.
 
+Since 2026-11-24 (a56-gpu, the Galaxy A56's Metal accelerator; `docs/a56-gpu.md` 5) `kernel gen gpu` also stages:
+- NativeAdreno's `NativeAdrenoAccelerator.cpp`, with the new edit list `staged/gpu.rs` `ACCELERATOR`: the A56
+  accelerator's open types and its CPU-composition filter in `copyProperty` and a new `serializeProperties`;
+  `staged_accelerator_text`, with the made-up `synthetic/accelerator.in`/`.out`;
+- two more edits of `GPU`: the Metal plug-in's names come from `OneiOSAdreno.cpp`;
+- two more edits of `GPU3D`: each DRM context made is reported to `OneiOSAdreno.cpp`.
+
+The archive's sources gain `gpu/OneiOSGpuChoice.h`. `the_gpu_edits_fit_the_pinned_sources` applies the three lists to
+the real pinned files, when `external/` has them. Run in this worktree on the build laptop: `cargo test -q --test
+golden` in `crates/oneios-kernel`, 15 of 15.
+
 **`kernel gen codec`** (hevc-guest, 2026-11-15; the tenth archive, after `audio` in `kernel/build-hosted.sh`) builds
 `build/oneios-codec/liboneioscodec.a`, the hosted kernel's video encoder: UniXNU-droidvm's virtio-media transport
 (`DroidVMVirtioMedia.c`, the Mach record, `-DDROIDVM_DEVICE_DYNAMIC=1`), its
 `AppleVideoToolboxParavirtualizationDriver` (`DroidVMVTParavirt.cpp`, the IOKit record; the late object without
 `__mod_init_func`, `__GLOBAL__sub_I_DroidVMVTParavirt.cpp` global), the sessions behind it (`DroidVMVTHost.cpp`,
-staged into the archive's folder with the one edit of `staged/codec.rs`: the hvcC's profile, tier and level bytes
-without the SPS's emulation prevention bytes) and `kernel/patches/oneios-hosted/codec/OneiOSCodec.c`. It requires
+staged into the archive's folder with the edits of `staged/codec.rs`, the encoder's 1 to 5 (the hvcC's profile,
+tier and level bytes without the SPS's emulation prevention bytes, the tile session, 10-bit pictures), and
+`staged/codec_decode.rs`, the decoder's 6 (2026-11-24: VP9 and AV1, `dcap`, `dcan`, the surfaces' kernel mappings
+kept, the decode counters; `kernel/patches/oneios-hosted/codec/README.md` "The decoder")) and `kernel/patches/oneios-hosted/codec/OneiOSCodec.c`. It requires
 eight definitions (the start, the transport, the registration and its initializer, and the four calls between the
 three files) and that neither C++ object has a static initializer left, and writes `objects.json`. It reads no
 record of the kernelcache and writes no bindings: the archive subclasses nothing of Apple's.
@@ -3267,7 +3300,7 @@ writes for the same build.
 | The staged copies of other projects' sources and of Apple's `IOBlockStorageDevice.cpp` (11: since hevc-guest, 2026-11-15, also `oneios-codec/DroidVMVTHost.cpp`) | SHA-256, size and name, `golden/staged.sha256` | `compare-golden.sh WORK` |
 | What the ten generators print (nine that were Python scripts, and `kernel gen codec`) | `golden/stdout.txt`, the tree's and the checkout's paths taken out | `compare-golden.sh WORK` |
 | Each edit list applied to a made-up source by the script's own staging function (8 lists; the Contact Identifier change of 2026-11-12 is in `hid_transport`) | `golden/synthetic/NAME.in` and `NAME.out` | `cargo test` |
-| The codec archive's edit list (`staged/codec.rs`, hevc-guest 2026-11-15; no Python original), on a made-up source and on the pinned `external/UniXNU-droidvm/package/DroidVMVTHost.cpp` | `golden/synthetic/codec.in` and `codec.out` (written by hand), and its results in the test | `cargo test` (`the_codec_edit_writes_its_frozen_text_and_fits_the_pinned_source`; the real file is skipped with a line when `external/` is not there) |
+| The codec archive's edit lists (`staged/codec.rs`, hevc-guest 2026-11-15; `staged/codec_decode.rs`, 2026-11-24; no Python original), on a made-up source and on the pinned `external/UniXNU-droidvm/package/DroidVMVTHost.cpp` | `golden/synthetic/codec.in` and `codec.out` (written by hand; the decoder's anchors and output added from the edit list, 2026-11-24), and its results in the test | `cargo test` (`the_codec_edit_writes_its_frozen_text_and_fits_the_pinned_source`; the real file is skipped with a line when `external/` is not there) |
 | The pen's edit list (`staged/hid_pen.rs`, spen 2026-11-15; no Python original), applied after `hid`'s to the pinned `external/NativeHidInput/NativeHidInput.cpp` | its anchors and results, in the test | `cargo test` (`the_pen_edits_fit_the_pinned_source`; skipped without `external/`) |
 | `drivers/build.py`'s command for a made-up record, C and C++ | `golden/synthetic/command.*.json` | `cargo test` |
 | `build-record.py`'s record of a made-up build (run from a made-up checkout; without the machine's part and the checkouts' commits) | `golden/synthetic/build-record.json`, `.series.txt` | `cargo test` |
@@ -3438,14 +3471,20 @@ workflows run that script).
   and `prelinked` both `false` (the JSON value, nothing else), `apple_binary_inputs` and `restricted_sources` both
   `[]`, and a `build_id`. A kernel collection (`MH_FILESET`) is refused with or without a record; a second kernel
   is refused.
+- Under `lib/guest/` (since 2026-11-24, not a rule of the script): a Mach-O is accepted only as our own iOS plug-in,
+  a thin arm64 `MH_DYLIB` or `MH_BUNDLE`, signed ad hoc for iOS (`oneios-tweaks`' macho reader) with an identifier
+  that is not `com.apple.*`; a file of `NAME.bundle/` must have the CDHash `NAME.build.json` beside the bundle
+  lists for it under `files`. `lib/guest/NativeAdrenoMetal.bundle` must hold `NativeAdrenoMetal` and `oneios-target`,
+  with `lib/guest/NativeAdrenoMetal.build.json` of the same `target`; `lib/guest/camera/H9ISP.mediacapture` only with
+  that bundle. `package manifest` names them in runtime.json as `metal` and `camera` (null without them).
 - By name (lower case, 19 patterns): `kernelcache*`, `*cryptex*`, `*.ipsw`, `*.dmg`, `*.aea`, `*.img`, `*.simg`,
   `*.erofs`, `*.im4p`, `*.img4`, `*.im4m`, `*.kc`, `*.trustcache`, `buildmanifest.plist`, `restore.plist`, `*.shsh*`,
   `dyld_shared_cache*`, `*.kext`, `*.dext`.
 
 ```sh
 tools/oneios-tool/tests/packagepy/compare-golden.sh     # 91 cases against pack.py's frozen output (made-up stages)
-runtime/package/test.sh                                 # 22 tests of the whole runtime/package.sh (needs the NDK; 19 until 2026-11-14: 3 are runtime/package/elf-check.sh's, docs/releases.md)
-cargo test -p oneios-package                            # 6 tests: every rule and its message
+runtime/package/test.sh                                 # 29 tests of the whole runtime/package.sh (needs the NDK; part 5, METAL_DIR and CAMERA_DIR, needs external/metal2vulkan and mesa-droidvm for the licence texts)
+cargo test -p oneios-package                            # 9 tests: every rule and its message (3 of them lib/guest/'s, on debug fixture's signed Mach-Os)
 ```
 
 Result on Linux x86_64, 2026-11-13: the golden was written with `IMPL=python UPDATE=1` from `pack.py`, then the

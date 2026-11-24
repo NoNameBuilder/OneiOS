@@ -12,5 +12,11 @@ clap.workspace = true
 sha2.workspace = true
 # runtime.json (json), repr() in the refusals
 oneios-common.workspace = true
+# lib/guest/: the CDHash, identifier and platform of our iOS plug-ins (their macho reader)
+oneios-tweaks.workspace = true
 # the package's tar
 tar = { version = "0.4", default-features = false }
+
+[dev-dependencies]
+# the signed Mach-Os of the lib/guest/ tests (debug fixture's signed_macho)
+oneios-testkit.workspace = true

@@ -61,7 +61,7 @@ pub enum Command {
         /// Appended after the file's last byte
         note: Option<String>,
     },
-    /// A made-up input for tests/kernelpy: hosted-kernel | kdk-pkg
+    /// A made-up input: hosted-kernel | kdk-pkg (tests/kernelpy), guest-bundle | guest-dylib | guest-execute | apple-dylib (runtime/package/test.sh)
     Fixture { name: String, out: String },
     /// The streams of tests/phone/sparse-compare.sh: runs|tail|zero|empty|lastbyte|dense | phone MIB DATA
     Mkstream {

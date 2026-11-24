@@ -583,8 +583,10 @@ fn set_switches(config: &Config) {
         Encoder10::Nv12 => oneencoder::switches::TenBit::Nv12,
     };
     oneencoder::switches::set(ten, config.encoder_warmup);
+    oneencoder::switches::set_decoder(config.decoder == crate::config::Decoder::Auto, config.decoder_codecs);
     crate::virtio_gpu::set_blob_entries(config.gpu_blob_entries);
     crate::cpu::UCLAMP_ALL.store(config.uclamp_rule == crate::config::UclampRule::All, Ordering::Relaxed);
+    crate::cpu::TIMER_COALESCE.store(config.timer_coalesce, Ordering::Relaxed);
     crate::gpu3d_kgsl::DOWN_AT_BOTTOM.store(config.gpu_down == GpuDown::Bottom, Ordering::Relaxed);
 }
 

@@ -42,6 +42,11 @@ path = "tests/encoder.rs"
 name = "hung_helper"
 path = "tests/hung_helper.rs"
 
+# The decoder (2026-11-24): the device decoding through the helper process and in-process, with the stand-in decoder.
+[[test]]
+name = "decoder"
+path = "tests/decoder.rs"
+
 # MediaCodec's numbers and AMediaCodecBufferInfo's layout against the NDK's headers.
 [[test]]
 name = "headers"

@@ -198,3 +198,162 @@ fn the_manifest_needs_an_executable_xnuhost() {
     assert!(document.get("kernel").is_some_and(Value::is_null));
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// A Metal bundle as userland/metal/build.sh leaves it under lib/guest/, with its record, and the capture plug-in:
+/// the files, and the CDHashes of the bundle's two Mach-Os.
+fn guest_files(target: &str, record_target: &str) -> (Vec<(String, Vec<u8>)>, [String; 2]) {
+    use oneios_testkit::fixture::signed_macho;
+    let (plugin, plugin_hash) = signed_macho("org.oneios.test.NativeAdrenoMetal", MH_BUNDLE, true, b"plug-in");
+    let (turnip, turnip_hash) = signed_macho("org.oneios.test.turnip", MH_DYLIB, true, b"turnip");
+    let (camera, _) = signed_macho("com.oneios.H9ISP", MH_DYLIB, true, b"camera");
+    let record = format!(
+        "{{\"bundle\": \"NativeAdrenoMetal.bundle\", \"target\": \"{record_target}\", \"files\": {{\"NativeAdrenoMetal\": {{\"cdhash\": \"{plugin_hash}\"}}, \"libvulkan_freedreno.dylib\": {{\"cdhash\": \"{turnip_hash}\"}}}}, \"cdhashes\": [\"{plugin_hash}\", \"{turnip_hash}\"]}}"
+    );
+    let files = vec![
+        ("bin/xnuhost".to_string(), b"#!/bin/sh\n".to_vec()),
+        (format!("{METAL_BUNDLE}/Info.plist"), b"<plist/>".to_vec()),
+        (format!("{METAL_BUNDLE}/NativeAdrenoMetal"), plugin),
+        (format!("{METAL_BUNDLE}/libvulkan_freedreno.dylib"), turnip),
+        (format!("{METAL_BUNDLE}/oneios-target"), format!("{target}\n").into_bytes()),
+        (METAL_RECORD.to_string(), record.into_bytes()),
+        (format!("{CAMERA_DIR}/H9ISP.mediacapture"), camera),
+    ];
+    (files, [plugin_hash, turnip_hash])
+}
+
+fn refusal_of(name: &str, files: &[(String, Vec<u8>)]) -> String {
+    let borrowed: Vec<(&str, &[u8])> = files.iter().map(|(p, b)| (p.as_str(), b.as_slice())).collect();
+    refusal(name, &borrowed)
+}
+
+#[test]
+fn our_guest_plugins_are_taken_and_named_in_the_manifest() {
+    let (files, hashes) = guest_files("iPhone18,2 24A446", "iPhone18,2 24A446");
+    assert_eq!(refusal_of("guest-ok", &files), "");
+    let borrowed: Vec<(&str, &[u8])> = files.iter().map(|(p, b)| (p.as_str(), b.as_slice())).collect();
+    let root = stage("guest-manifest", &borrowed);
+    std::fs::set_permissions(root.join("bin/xnuhost"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    manifest(&root, "0.1.0", "00", "0", "0.4.80", "0").unwrap();
+    let document = json::load(root.join(MANIFEST)).unwrap();
+    let metal = document.get("metal").unwrap();
+    assert_eq!(metal.get("bundle").and_then(Value::as_str), Some(METAL_BUNDLE));
+    assert_eq!(metal.get("record").and_then(Value::as_str), Some(METAL_RECORD));
+    assert_eq!(metal.get("target").and_then(Value::as_str), Some("iPhone18,2 24A446"));
+    let mut want = hashes.to_vec();
+    want.sort();
+    let listed: Vec<String> = metal.get("cdhashes").and_then(Value::as_list).unwrap().iter().map(str_value).collect();
+    assert_eq!(listed, want);
+    assert_eq!(document.get("camera").and_then(|c| c.get("path")).and_then(Value::as_str), Some(CAMERA_DIR));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn guest_code_that_is_not_ours_is_refused() {
+    use oneios_testkit::fixture::signed_macho;
+    let library = |id: &str, filetype: u32, adhoc: bool| signed_macho(id, filetype, adhoc, b"code").0;
+    let one = |name: &str, bytes: Vec<u8>| refusal_of(name, &[("lib/guest/x/lib.dylib".to_string(), bytes)]);
+    assert_eq!(one("apple", library("com.apple.test", MH_DYLIB, false)), "lib/guest/x/lib.dylib: not signed ad hoc (com.apple.test): our builds sign ad hoc, Apple's code never is");
+    assert_eq!(one("apple-adhoc", library("com.apple.test", MH_DYLIB, true)), "lib/guest/x/lib.dylib: signed as 'com.apple.test', not as our own code");
+    assert_eq!(one("execute", library("org.oneios.tool", MH_EXECUTE, true)), "lib/guest/x/lib.dylib: a Mach-O under lib/guest/ that is not an arm64 library or bundle (filetype 2)");
+    assert_eq!(one("fileset", library("org.oneios.kc", MH_FILESET, true)), "lib/guest/x/lib.dylib: a kernel collection (MH_FILESET) holds Apple's kexts; it belongs to the image set");
+    assert!(one("unsigned", macho(LE64, 0x0100_000c, MH_DYLIB)).starts_with("lib/guest/x/lib.dylib: a guest Mach-O without a readable signature ("));
+    // outside lib/guest/ a library is refused as before: only the kernel is taken there
+    assert_eq!(refusal_of("elsewhere", &[("lib/x.dylib".to_string(), library("org.oneios.x", MH_DYLIB, true))]), "lib/x.dylib: a Mach-O that is not an arm64 kernel executable");
+}
+
+#[test]
+fn a_metal_bundle_must_match_its_record() {
+    // a CDHash the record does not list (the bundle changed after its build)
+    let (mut files, _) = guest_files("iPhone18,2 24A446", "iPhone18,2 24A446");
+    files[3].1 = oneios_testkit::fixture::signed_macho("org.oneios.test.turnip", MH_DYLIB, true, b"rebuilt").0;
+    assert!(refusal_of("changed", &files).starts_with(&format!("{METAL_BUNDLE}/libvulkan_freedreno.dylib: CDHash ")));
+    // no record
+    let (files, _) = guest_files("iPhone18,2 24A446", "iPhone18,2 24A446");
+    let without: Vec<_> = files.iter().filter(|(p, _)| p != METAL_RECORD).cloned().collect();
+    assert_eq!(refusal_of("no-record", &without), format!("{METAL_BUNDLE}/NativeAdrenoMetal: a Mach-O in a bundle without its build record ({METAL_RECORD})"));
+    // oneios-target and the record name different targets
+    let (files, _) = guest_files("iPhone18,2 24A446", "iPhone17,1 23A341");
+    assert_eq!(refusal_of("target", &files), format!("{METAL_BUNDLE}: oneios-target says 'iPhone18,2 24A446', its record {METAL_RECORD} 'iPhone17,1 23A341'"));
+    // no oneios-target
+    let (files, _) = guest_files("iPhone18,2 24A446", "iPhone18,2 24A446");
+    let without: Vec<_> = files.iter().filter(|(p, _)| !p.ends_with("oneios-target")).cloned().collect();
+    assert_eq!(refusal_of("no-target", &without), format!("{METAL_BUNDLE}: not a whole Metal bundle (NativeAdrenoMetal and oneios-target)"));
+    // the capture plug-in alone
+    let (files, _) = guest_files("iPhone18,2 24A446", "iPhone18,2 24A446");
+    let camera_only: Vec<_> = files.iter().filter(|(p, _)| !p.starts_with("lib/guest/NativeAdrenoMetal")).cloned().collect();
+    assert_eq!(refusal_of("camera-only", &camera_only), format!("{CAMERA_DIR}/H9ISP.mediacapture: the capture plug-in without the Metal bundle, whose target says which iOS both are built for"));
+}
+
+/// The Galaxy A56's GPU plug-ins (lib/guest/OneiOSRadeonMetal.bundle and OneiOSRadeonGL.bundle, each with its record)
+/// beside the Adreno one: taken, and named in runtime.json "metal_a56" with every CDHash; "metal" stays the Adreno's.
+fn a56_files(metal_target: &str, gl_target: &str, gl_record_hash: Option<&str>) -> (Vec<(String, Vec<u8>)>, Vec<String>) {
+    use oneios_testkit::fixture::signed_macho;
+    let (plugin, plugin_hash) = signed_macho("OneiOSRadeonMetal", MH_BUNDLE, true, b"radeon metal");
+    let (air, air_hash) = signed_macho("libOneiOSRadeonAir.dylib", MH_DYLIB, true, b"radeon air");
+    let (gl, gl_hash) = signed_macho("OneiOSRadeonGL", MH_BUNDLE, true, b"radeon gl");
+    let metal_record = format!(
+        "{{\"bundle\": \"OneiOSRadeonMetal.bundle\", \"target\": \"{metal_target}\", \"files\": {{\"OneiOSRadeonMetal\": {{\"cdhash\": \"{plugin_hash}\"}}, \"libOneiOSRadeonAir.dylib\": {{\"cdhash\": \"{air_hash}\"}}}}}}"
+    );
+    let gl_record = format!(
+        "{{\"bundle\": \"OneiOSRadeonGL.bundle\", \"target\": \"{gl_target}\", \"files\": {{\"OneiOSRadeonGL\": {{\"cdhash\": \"{}\"}}}}}}",
+        gl_record_hash.unwrap_or(&gl_hash)
+    );
+    let mut files = vec![
+        ("bin/xnuhost".to_string(), b"#!/bin/sh\n".to_vec()),
+        (format!("{A56_METAL_BUNDLE}/Info.plist"), b"<plist/>".to_vec()),
+        (format!("{A56_METAL_BUNDLE}/OneiOSRadeonMetal"), plugin),
+        (format!("{A56_METAL_BUNDLE}/libOneiOSRadeonAir.dylib"), air),
+        (format!("{A56_METAL_BUNDLE}/oneios-target"), format!("{metal_target}\n").into_bytes()),
+        (A56_METAL_RECORD.to_string(), metal_record.into_bytes()),
+        (format!("{A56_GL_BUNDLE}/Info.plist"), b"<plist/>".to_vec()),
+        (format!("{A56_GL_BUNDLE}/OneiOSRadeonGL"), gl),
+        (format!("{A56_GL_BUNDLE}/oneios-target"), format!("{gl_target}\n").into_bytes()),
+        (A56_GL_RECORD.to_string(), gl_record.into_bytes()),
+    ];
+    let (adreno, _) = guest_files("iPhone18,2 24A446", "iPhone18,2 24A446");
+    files.extend(adreno.into_iter().filter(|(p, _)| p != "bin/xnuhost"));
+    let mut hashes = vec![plugin_hash, air_hash, gl_hash];
+    hashes.sort();
+    (files, hashes)
+}
+
+#[test]
+fn the_a56_gpu_plugins_are_taken_beside_the_adreno_one() {
+    let (files, hashes) = a56_files("iPhone10,3 20F66", "iPhone10,3 20F66", None);
+    assert_eq!(refusal_of("a56-ok", &files), "");
+    let borrowed: Vec<(&str, &[u8])> = files.iter().map(|(p, b)| (p.as_str(), b.as_slice())).collect();
+    let root = stage("a56-manifest", &borrowed);
+    std::fs::set_permissions(root.join("bin/xnuhost"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    manifest(&root, "0.1.0", "00", "0", "0.4.80", "0").unwrap();
+    let document = json::load(root.join(MANIFEST)).unwrap();
+    assert_eq!(document.get("metal").and_then(|m| m.get("target")).and_then(Value::as_str), Some("iPhone18,2 24A446"));
+    let a56 = document.get("metal_a56").unwrap();
+    assert_eq!(a56.get("target").and_then(Value::as_str), Some("iPhone10,3 20F66"));
+    assert_eq!(a56.get("metal").and_then(|m| m.get("bundle")).and_then(Value::as_str), Some(A56_METAL_BUNDLE));
+    assert_eq!(a56.get("gl").and_then(|m| m.get("record")).and_then(Value::as_str), Some(A56_GL_RECORD));
+    let listed: Vec<String> = a56.get("cdhashes").and_then(Value::as_list).unwrap().iter().map(str_value).collect();
+    assert_eq!(listed, hashes);
+    let _ = std::fs::remove_dir_all(&root);
+    // without the A56's bundles: "metal_a56" is null (every package before 2026-11-25)
+    let (adreno, _) = guest_files("iPhone18,2 24A446", "iPhone18,2 24A446");
+    let borrowed: Vec<(&str, &[u8])> = adreno.iter().map(|(p, b)| (p.as_str(), b.as_slice())).collect();
+    let root = stage("a56-none", &borrowed);
+    std::fs::set_permissions(root.join("bin/xnuhost"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    manifest(&root, "0.1.0", "00", "0", "0.4.80", "0").unwrap();
+    assert!(json::load(root.join(MANIFEST)).unwrap().get("metal_a56").is_some_and(Value::is_null));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a56_gpu_plugins_that_do_not_agree_are_refused() {
+    // the OpenGL ES bundle for another image than the Metal plug-in
+    let (files, _) = a56_files("iPhone10,3 20F66", "iPhone18,2 24A446", None);
+    assert_eq!(refusal_of("a56-targets", &files), format!("{A56_GL_BUNDLE}: for 'iPhone18,2 24A446', the Metal plug-in for 'iPhone10,3 20F66'"));
+    // a Mach-O whose CDHash is not its record's
+    let (files, _) = a56_files("iPhone10,3 20F66", "iPhone10,3 20F66", Some("0000000000000000000000000000000000000000"));
+    assert!(refusal_of("a56-cdhash", &files).starts_with(&format!("{A56_GL_BUNDLE}/OneiOSRadeonGL: CDHash ")));
+    // the OpenGL ES bundle alone
+    let (files, _) = a56_files("iPhone10,3 20F66", "iPhone10,3 20F66", None);
+    let gl_only: Vec<(String, Vec<u8>)> = files.into_iter().filter(|(p, _)| !p.starts_with(A56_METAL_BUNDLE) && p != A56_METAL_RECORD).collect();
+    assert_eq!(refusal_of("a56-gl-alone", &gl_only), format!("{A56_GL_BUNDLE}: the A56's OpenGL ES without its Metal plug-in ({A56_METAL_BUNDLE})"));
+}

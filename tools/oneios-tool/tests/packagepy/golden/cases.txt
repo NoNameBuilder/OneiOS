@@ -236,7 +236,7 @@ stderr: package: refused: a,b: path segment 'a,b' is outside [A-Za-z0-9_][A-Za-z
 status 3
 == manifest: a runtime without a kernel
 status 0
-sha256 769eda00022433557b7da43877659c3dfcf66b5dee7aee34c85bc7afb3a6cb0b runtime.json
+sha256 1b6fc6168a0b45a62afdde321be41bb68d9e3ce742e3e0a9ccf6cccdae130f9c runtime.json
 mode 644 ./NOTICE
 mode 755 ./bin/xnuhost
 mode 644 ./lib/oneios-display.dex
@@ -244,10 +244,10 @@ mode 644 ./runtime.json
 mode 755 ./scripts/run.sh
 == manifest: again over its own runtime.json
 status 0
-sha256 1ceb9aa1d829e1adb9861e4eab6e1130db8095bfed8b035289a5e9d563955789 runtime.json
+sha256 1d2279a761f909a42b9af36a10bdbb4b6e44f1e2b9a507ddc8df92eda60cca43 runtime.json
 == manifest: with our own kernel
 status 0
-sha256 7be04cad7b22d6a41e21fdf61d582b770b98177556db44f96fd7cfd00783b58f runtime.json
+sha256 e3bffbd7bfff1b05fd2739790662e1b4206711ca427b8bbf60a21212af8d4d62 runtime.json
   "kernel": {
     "path": "kernel/xnu.macho",
     "build_id": "test-1",

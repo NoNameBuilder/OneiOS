@@ -77,6 +77,8 @@ fn the_edit_lists_write_what_the_python_functions_wrote() {
     assert_eq!(build_oneios_gpu::staged_text(made_up("gpu")).unwrap(), expected("gpu"));
     assert_eq!(build_oneios_gpu::staged_3d_text(made_up("gpu3d")).unwrap(), expected("gpu3d"));   // no Python original
     assert!(build_oneios_gpu::staged_3d_text(made_up("gpu3d").repeat(2)).is_err());
+    assert_eq!(build_oneios_gpu::staged_accelerator_text(made_up("accelerator")).unwrap(), expected("accelerator"));   // no Python original
+    assert!(build_oneios_gpu::staged_accelerator_text(made_up("accelerator").repeat(2)).is_err());
     assert_eq!(build_oneios_display::staged_text(made_up("display")).unwrap(), expected("display"));
     assert_eq!(build_oneios_display::staged_scanout(made_up("display_scanout")).unwrap(), expected("display_scanout"));
 }
@@ -127,6 +129,22 @@ fn the_codec_edit_writes_its_frozen_text_and_fits_the_pinned_source() {
     assert!(at("uint32_t surfaceSampleBytes(") < at("bool feedFrame(Session *s)"));
     assert!(at("int openForPicture(") < at("int queueEncodeTile(") && at("int openForPicture(") < at("int queueEncodeFrame("));
     assert!(!staged.contains("view.format != cc(\"420v\") && view.format != cc(\"420f\")"));   // the 8-bit-only check is gone
+    // The decoder (2026-11-24, edit 6): dcap and dcan answered once each, VP9 and AV1 listed and started, the surface's
+    // kernel mapping kept, the counters; each helper before its first caller.
+    for case in ["case cc(\"dcap\"):", "case cc(\"dcan\"): {"] {
+        assert_eq!(staged.matches(case).count(), 1, "{case}");
+    }
+    for text in ["{\"vp09\", \"com.oneios.videodecoder.virtio-media.vp9\"", "{\"av01\", \"com.oneios.videodecoder.virtio-media.av1\"",
+                 "const int list = p->array(entries, count);", "f.pixelformat = decoderFourcc(d.codec);",
+                 "if (find(d.extensions, d.extensionsSize, cc(\"vpcC\"), record)) {", "w.plist(cc(\",cda\"), *p, capabilities);",
+                 "s->mappedSurfaces[s->mappedCount++] = {to.id, to.base, memory, map, surface};", "else refreshCapture(s);",
+                 "countDecoded(s, frame, bytesused != 0);", "volatile uint32_t oneios_decode_frames[4], oneios_decode_dropped[4];"] {
+        assert!(staged.contains(text), "{text}");
+    }
+    assert!(!staged.contains("decoderDevice() == ~0u ? 0 : 2"));
+    assert!(at("uint32_t decoderCodecs()") < at("void emitFrame(") && at("int codecIndex(") < at("void copyFrame("));
+    assert!(at("void countDecoded(") < at("void emitFrame(") && at("void refreshCapture(") < at("void workerMain("));
+    assert!(at("bool streamHeaders(") < at("int startSession(") && at("int32_t acceptFormat(") < at("int droidvm_vthost_message("));
 }
 
 #[test]
@@ -278,4 +296,29 @@ fn the_hosted_record_is_of_the_final_file() {
     // nothing below out/kernel/builds, no current link: the VM kernel's place is not touched
     assert!(!root.join("out/kernel/builds").exists() && !root.join("out/kernel/current").exists());
     let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn the_gpu_edits_fit_the_pinned_sources() {
+    // a56-gpu, 2026-11-24: the three edit lists of `kernel gen gpu` (staged/gpu.rs) on the real DroidVMGpu.cpp,
+    // DroidVMVirtioGpu3D.cpp and NativeAdrenoAccelerator.cpp where external/ has them: each anchor there exactly once, and
+    // the Adreno accelerator's names now asked of OneiOSAdreno.cpp, nowhere written as literals.
+    let package = repo().join("external/UniXNU-droidvm/package");
+    let accelerator = repo().join("external/NativeAdreno/NativeAdrenoAccelerator.cpp");
+    if !package.join("DroidVMGpu.cpp").exists() || !accelerator.exists() {
+        eprintln!("external/UniXNU-droidvm or external/NativeAdreno is not here: the gpu edits were checked on the synthetic sources only");
+        return;
+    }
+    let gpu = build_oneios_gpu::staged_text(std::fs::read_to_string(package.join("DroidVMGpu.cpp")).unwrap()).unwrap();
+    assert!(gpu.contains("accelerator->setProperty(\"MetalPluginName\", oneios_gpu_metal_plugin());"));
+    assert!(!gpu.contains("\"NativeAdrenoMetal\""));
+    // the GL stage (2026-11-24): OpenGL ES's bundle asked of OneiOSAdreno.cpp too (OneiOSRadeonGL with oneios-gpu-amd-gl=1)
+    assert!(gpu.contains("accelerator->setProperty(\"IOGLESBundleName\", oneios_gpu_gles_bundle());"));
+    assert!(!gpu.contains("\"AppleMetalGLRenderer\""));
+    let gpu3d = build_oneios_gpu::staged_3d_text(std::fs::read_to_string(package.join("DroidVMVirtioGpu3D.cpp")).unwrap()).unwrap();
+    assert_eq!(gpu3d.matches("oneios_gpu_context_made(context, in.capset_id)").count(), 1);
+    let staged = build_oneios_gpu::staged_accelerator_text(std::fs::read_to_string(&accelerator).unwrap()).unwrap();
+    // its declaration, the three copyProperty and serializeProperties' loop (one rule for both reads since the GL stage)
+    assert_eq!(staged.matches("oneios_gpu_discovery_hidden(").count(), 5);
+    assert!(staged.contains("if(oneios_gpu_open_refused(type))return kIOReturnUnsupported;"));
 }

@@ -403,3 +403,43 @@ fn the_index_is_built_once_and_found_again() {
     let names: Vec<&str> = syms.iter().filter(|s| s.0 == A + 0x200).map(|s| s.1.as_ref()).collect();
     assert_eq!(names, ["_a_same", "_b_same", "_z_local_same"]);
 }
+
+#[test]
+fn find_names_and_callers() {
+    let f = fixture("find");
+    // find: every kept symbol whose name holds the text, with its image and address (unslid, or slid by --slide);
+    // at one address the index keeps one name (dsc.py's), so "_a_same" and "_b_same" are not there, "_z_local_same" is.
+    let (status, out, _) = f.run(&["find", "same", "_beta"]);
+    assert_eq!(status, 0);
+    assert_eq!(out, "0x180001200  libalpha.dylib  _z_local_same\n0x180010800  Beta  _beta_fn\n");
+    let (status, out, _) = f.run(&["find", "--slide", "0x8000", "_x"]);
+    assert_eq!((status, out.as_str()), (0, "0x180009500  libalpha.dylib  _x2\n"));
+    // a name nothing holds: said, status 1
+    let (status, out, _) = f.run(&["find", "_alpha", "_nothing_here"]);
+    assert_eq!(status, 1);
+    assert_eq!(out, "0x180001100  libalpha.dylib  _alpha_start\n_nothing_here: no symbol of the cache's images holds it\n");
+    let (status, _, err) = f.run(&["find"]);
+    assert!(status == 1 && err.contains("give the name"), "{err}");
+    // callers: the bl at A + 0x104 (imm26 0x10: A + 0x144), named; a target nothing reaches is said. The bl at
+    // BASE + 0x5104 is in no image's __TEXT and is not scanned.
+    let (status, out, _) = f.run(&["callers", &hex(A + 0x144), &hex(A + 0x150)]);
+    assert_eq!(status, 0);
+    assert_eq!(
+        out,
+        "0x180001150  (libalpha.dylib  _alpha_start + 0x50): no b or bl reaches it\n\
+         0x180001104  libalpha.dylib  _alpha_start + 0x4  -> bl 0x180001144\n"
+    );
+    let (status, out, _) = f.run(&["callers", "--slide", "0x8000", &hex(A + 0x244 + SLIDE)]);
+    assert_eq!((status, out.as_str()), (0, "0x180009204  libalpha.dylib  _z_local_same + 0x4  -> bl 0x180009244\n"));
+    // callers reads the cache: without one it says so
+    let no_cache = Locate { dsc: None, index_parent: Some(f.index.clone()) };
+    let (status, _, err) = f.run_in(no_cache, &["callers", "0x180001144"], "");
+    assert!(status == 1 && err.contains("ONEIOS_DSC_DIR"), "{err}");
+    // the branch decoder: bl and b forward and back, nothing else
+    use oneios_sym::cache::branch_target;
+    assert_eq!(branch_target(0x9400_0010, 0x1000), Some((0x1040, true)));
+    assert_eq!(branch_target(0x17ff_ffff, 0x1000), Some((0xffc, false)));
+    assert_eq!(branch_target(0x97ff_fffe, 0x1000), Some((0xff8, true)));
+    assert_eq!(branch_target(NOP, 0x1000), None);
+    assert_eq!(branch_target(BLR, 0x1000), None);
+}

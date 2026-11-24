@@ -79,6 +79,13 @@ pub const MEDIA_EVENT_EOS: u32 = 2;
 pub const MEDIA_EVENT_SOURCE_CHANGE: u32 = 5;
 pub const MEDIA_ENC_CMD_START: u32 = 0;
 pub const MEDIA_ENC_CMD_STOP: u32 = 1;
+/// V4L2_DEC_CMD_START and _STOP (VIDIOC_DECODER_CMD; 2026-11-24: the decoder's drain and its start again).
+pub const MEDIA_DEC_CMD_START: u32 = 0;
+pub const MEDIA_DEC_CMD_STOP: u32 = 1;
+/// V4L2_CID_MIN_BUFFERS_FOR_CAPTURE (VIDIOC_G_CTRL: the decoder's CAPTURE buffers the guest adds two to).
+pub const MEDIA_CID_MIN_BUFFERS_FOR_CAPTURE: u32 = 0x0098_0927;
+/// V4L2_FRMSIZE_TYPE_STEPWISE (VIDIOC_ENUM_FRAMESIZES).
+pub const MEDIA_FRMSIZE_TYPE_STEPWISE: u32 = 3;
 
 /// A FourCC pixel format (little-endian, as V4L2 keeps them).
 pub const fn fourcc(a: u8, b: u8, c: u8, d: u8) -> u32 {
@@ -100,6 +107,28 @@ pub fn picture_bytes(input: u32, width: u32, height: u32) -> u64 {
 }
 pub const MEDIA_PIXFMT_H264: u32 = fourcc(b'H', b'2', b'6', b'4');
 pub const MEDIA_PIXFMT_HEVC: u32 = fourcc(b'H', b'E', b'V', b'C');
+/// V4L2_PIX_FMT_VP9 and xnuhost's own 'AV01' (2026-11-24): the decoder's two other OUTPUT formats (DroidVMVTHost.cpp's
+/// staged edit 6 asks for them as VideoToolbox's 'vp09' and 'av01').
+pub const MEDIA_PIXFMT_VP9: u32 = fourcc(b'V', b'P', b'9', b'0');
+pub const MEDIA_PIXFMT_AV1: u32 = fourcc(b'A', b'V', b'0', b'1');
+/// The decoder's codecs in the order of its switch bits and counters (decoder-codecs=; DroidVMVTHost.cpp codecIndex).
+pub const DECODER_CODECS: [u32; 4] = [MEDIA_PIXFMT_H264, MEDIA_PIXFMT_HEVC, MEDIA_PIXFMT_VP9, MEDIA_PIXFMT_AV1];
+
+/// A codec's place in [`DECODER_CODECS`].
+pub fn decoder_index(codec: u32) -> Option<usize> {
+    DECODER_CODECS.iter().position(|c| *c == codec)
+}
+
+/// A decoder codec's name in log lines.
+pub fn codec_name(codec: u32) -> &'static str {
+    match codec {
+        MEDIA_PIXFMT_H264 => "H.264",
+        MEDIA_PIXFMT_HEVC => "HEVC",
+        MEDIA_PIXFMT_VP9 => "VP9",
+        MEDIA_PIXFMT_AV1 => "AV1",
+        _ => "?",
+    }
+}
 
 /// struct v4l2_plane (one, after the buffer).
 #[repr(C)]

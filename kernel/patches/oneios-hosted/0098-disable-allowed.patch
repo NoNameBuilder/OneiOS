@@ -1,0 +1,188 @@
+diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -10379,6 +10379,164 @@
+ 	    mode == 2 ? ", oneios-mg-cache=2: at every boot" : "", native_gestalt_cache_status, written);
+ }
+ #endif /* XNU_HOSTED */
++#if XNU_HOSTED
++/*
++ * OneiOS hosted (0098, fix/disable-allowed, 2026-11-24): the daemon policy's disabled jobs stay off although iOS 27 marks
++ * them DisableAllowed = false. launchd reads each job's jetsam properties from
++ * /System/Library/LaunchDaemons/com.apple.jetsamproperties.<product type>.plist (V54 on iPhone18,2) and, for a job whose
++ * entry has DisableAllowed = false, logs "Ignoring disabled state because DisableAllowed=false: LABEL" and runs it whatever
++ * disabled.plist says. 24A446 marks 19 jobs so, among them com.apple.osanalytics.osanalyticshelper and its .agent,
++ * diagnosticextensionsd and symptomsd-diag (the policy's telemetry group, 0093/0094), com.apple.OTATaskingAgent and
++ * com.apple.mobile.softwareupdated (its replace group). Found: the session of 2026-11-24 01:17 logged "oneios-jobs:
++ * com.apple.osanalytics.osanalyticshelper: disabled there already" and then osanalyticshelper[263] at 31-77% of a CPU
++ * for minutes (oneios-cpu), started after the first crash by ReportCrash; its 15 MB limit (the same plist) killed it
++ * and launchd started it again as [441] at 54-85%. The image tool's sealed layout could only name the labels
++ * (tools/oneios-tool/crates/oneios-tweaks/src/tweaks.rs "DisableAllowed"); vphone's rw root removes the mark.
++ * What: before launchd, the sealed plist (a binary plist, about 130 KiB) is read, every key string "DisableAllowed"
++ * (the ASCII string object 0x5e + 14 bytes; the writer did not unique them: 19 copies) becomes "OneiOSDisAllow", of
++ * the same length, so no offset of the plist moves and every other property (priorities, memory limits) stays. The
++ * copy is written to /private/var/ngpu/daemons, which 0031 shows over /System/Library/LaunchDaemons as a read-only
++ * union (the sealed files stay visible beside it). Only the labels disabled.plist disables change: launchd now honours
++ * the policy as written. No job is disabled that disabled.plist does not name.
++ * oneios-disable-allowed=0: nothing written, an earlier boot's copy removed (iOS's own rule again);
++ * oneios-disable-allowed=NAME: the plist of product type NAME (default V54). One line, e.g.
++ *   oneios-disable-allowed: com.apple.jetsamproperties.V54.plist: 19 DisableAllowed marks renamed (written 0), launchd
++ *       sees 19 renamed through /System/Library/LaunchDaemons (daemons mount stage 4, status 2)
++ * (stage 4 status 2 is the union mounted, its own probe 0031's adrenoprobed plist absent: expected).
++ */
++static char oneios_disable_allowed_name[96];
++static uint8_t *oneios_disable_allowed_data;
++static uint32_t oneios_disable_allowed_size;
++static int oneios_disable_allowed_marks = -1;
++static int oneios_disable_allowed_written = 0;
++/* The file's bytes (kalloc_data of *size), or NULL. */
++static uint8_t *
++oneios_disable_allowed_read(const char *path, uint32_t *size, vfs_context_t ctx)
++{
++	vnode_t vp = NULLVP;
++	if (vnode_open(path, FREAD | O_NOFOLLOW, 0, 0, &vp, ctx) != 0) {
++		return NULL;
++	}
++	off_t length = -1;
++	(void)vnode_size(vp, &length, ctx);
++	uint8_t *data = NULL;
++	int resid = 0;
++	if (length > 0 && length <= 1024 * 1024) {
++		data = kalloc_data((size_t)length, Z_WAITOK);
++	}
++	if (data != NULL && (vn_rdwr(UIO_READ, vp, (caddr_t)data, (int)length, 0, UIO_SYSSPACE, IO_NOAUTH, vfs_context_ucred(ctx),
++	    &resid, vfs_context_proc(ctx)) != 0 || resid != 0)) {
++		kfree_data(data, (size_t)length);
++		data = NULL;
++	}
++	vnode_close(vp, FREAD, ctx);
++	if (data != NULL) {
++		*size = (uint32_t)length;
++	}
++	return data;
++}
++/* How many key strings of `from` (0x5e + 14 bytes) the plist holds; with `to`, each replaced by `to` (14 bytes). */
++static int
++oneios_disable_allowed_marks_in(uint8_t *data, uint32_t size, const char *from, const char *to)
++{
++	int marks = 0;
++	if (size < 8 || memcmp(data, "bplist00", 8) != 0) {
++		return -1;
++	}
++	for (uint32_t i = 8; i + 15 <= size; i++) {
++		if (data[i] == 0x5e && memcmp(data + i + 1, from, 14) == 0) {
++			if (to != NULL) {
++				memcpy(data + i + 1, to, 14);
++			}
++			marks++;
++			i += 14;
++		}
++	}
++	return marks;
++}
++/* Before 0031's daemons mount: the renamed copy in /private/var/ngpu/daemons (or none, with the switch off). */
++static void
++oneios_disable_allowed(proc_t p, user_addr_t scratch)
++{
++	char type[32] = "V54";
++	char value[32] = "";
++	vfs_context_t ctx = vfs_context_current();
++	bool off = false;
++	if (PE_parse_boot_argn("oneios-disable-allowed", value, sizeof(value) - 1) && value[0] != 0) {
++		if (!strcmp(value, "0")) {
++			off = true;
++		} else if (strcmp(value, "1") != 0) {
++			bool plain = true;
++			for (const char *c = value; *c; c++) {
++				plain = plain && ((*c >= 'A' && *c <= 'Z') || (*c >= 'a' && *c <= 'z') || (*c >= '0' && *c <= '9'));
++			}
++			if (plain) {
++				strlcpy(type, value, sizeof(type));
++			} else {
++				printf("oneios-disable-allowed: \"%s\" is no product type: V54 taken\n", value);
++			}
++		}
++	}
++	snprintf(oneios_disable_allowed_name, sizeof(oneios_disable_allowed_name), "com.apple.jetsamproperties.%s.plist", type);
++	char sealed[160], copy[160];
++	snprintf(sealed, sizeof(sealed), "/System/Library/LaunchDaemons/%s", oneios_disable_allowed_name);
++	snprintf(copy, sizeof(copy), "/private/var/ngpu/daemons/%s", oneios_disable_allowed_name);
++	if (off) {
++		vnode_t vp = NULLVP;
++		int removed = -1;
++		if (vnode_lookup(copy, VNODE_LOOKUP_NOFOLLOW, &vp, ctx) == 0) {
++			vnode_put(vp);
++			removed = oneios_kern_unlink(copy, ctx);
++		}
++		printf("oneios-disable-allowed: off (oneios-disable-allowed=0): launchd runs the jobs marked DisableAllowed = false "
++		    "although disabled (an earlier boot's copy: %s %d)\n", removed < 0 ? "none" : "removed", removed < 0 ? 0 : removed);
++		return;
++	}
++	uint32_t size = 0;
++	uint8_t *data = oneios_disable_allowed_read(sealed, &size, ctx);
++	if (data == NULL) {
++		printf("oneios-disable-allowed: %s not read: nothing changed\n", sealed);
++		return;
++	}
++	const int marks = oneios_disable_allowed_marks_in(data, size, "DisableAllowed", "OneiOSDisAllow");
++	if (marks <= 0) {
++		printf("oneios-disable-allowed: %s: %s: nothing written\n", oneios_disable_allowed_name,
++		    marks < 0 ? "not a binary plist" : "no DisableAllowed mark");
++		kfree_data(data, size);
++		return;
++	}
++	int written = native_gpu_addon_parents(p, scratch, copy);
++	if (written == 0) {
++		written = native_gpu_addon_write(copy, data, size, 0644, ctx);
++	}
++	oneios_disable_allowed_data = data;          /* checked through the mount, then freed (oneios_disable_allowed_seen) */
++	oneios_disable_allowed_size = size;
++	oneios_disable_allowed_marks = marks;
++	oneios_disable_allowed_written = written;
++}
++/* After 0031's daemons mount: what launchd will read there, and the one line. */
++static void
++oneios_disable_allowed_seen(void)
++{
++	if (oneios_disable_allowed_data == NULL) {
++		return;
++	}
++	char sealed[160];
++	snprintf(sealed, sizeof(sealed), "/System/Library/LaunchDaemons/%s", oneios_disable_allowed_name);
++	uint32_t size = 0;
++	int seen = -1;
++	uint8_t *data = oneios_disable_allowed_read(sealed, &size, vfs_context_current());
++	if (data != NULL) {
++		seen = oneios_disable_allowed_marks_in(data, size, "OneiOSDisAllow", NULL);
++		kfree_data(data, size);
++	}
++	printf("oneios-disable-allowed: %s: %d DisableAllowed marks renamed (written %d; -1: the same as before), launchd sees %d "
++	    "renamed through /System/Library/LaunchDaemons (daemons mount stage %d, status %d)\n", oneios_disable_allowed_name,
++	    oneios_disable_allowed_marks, oneios_disable_allowed_written, seen, native_gpu_addon2_stage, native_gpu_addon2_status);
++	kfree_data(oneios_disable_allowed_data, oneios_disable_allowed_size);
++	oneios_disable_allowed_data = NULL;
++}
++#endif /* XNU_HOSTED */
+ static void
+ native_gpu_addon_prepare(proc_t p, user_addr_t scratch)
+ {
+@@ -10401,6 +10559,9 @@
+ 	}
+ #endif
+ 	native_gpu_addon_install(p, scratch);
++#if XNU_HOSTED
++	oneios_disable_allowed(p, scratch);           /* 0098: before the daemons mount below */
++#endif
+ 	static const char extensions_source[] = "/private/var/ngpu/addons", extensions_point[] = "/System/Library/Extensions";
+ 	static const char daemons_source[] = "/private/var/ngpu/daemons", daemons_point[] = "/System/Library/LaunchDaemons";
+ #if XNU_HOSTED
+@@ -10431,6 +10592,9 @@
+ 	native_gpu_addon_mount(p, scratch, 0x600, daemons_source, sizeof(daemons_source), daemons_point, sizeof(daemons_point),
+ 	    "/System/Library/LaunchDaemons/com.apple.backboardd.plist",
+ 	    "/System/Library/LaunchDaemons/org.blu-sharky.adrenoprobed.plist", &native_gpu_addon2_stage, &native_gpu_addon2_status);
++#if XNU_HOSTED
++	oneios_disable_allowed_seen();                /* 0098 */
++#endif
+ 	/* The default iPadOS 17 wallpaper's layered animation with PNG images in place of its HEIC ones (no hardware HEVC decoder here).
+ 	 * The overlay carries the animation's documents and the PNG images; the sealed assets directory stays visible below it. */
+ 	static const char wallpaper_source[] = "/private/var/ngpu/wallpaper",

@@ -10,7 +10,7 @@ use std::time::Duration;
 use onebridges::audio::{AudioBackend, AudioHelper, NullAudio};
 use onebridges::battery::{self, Battery};
 use onebridges::brightness::{self, Bright};
-use onebridges::bt::{hci, hci_aidl, hci_hidl, hci_sim};
+use onebridges::bt::{hci, hci_hidl, hci_sim};
 use onebridges::cpu::{self as bcpu, CpuPlan, Cpufreq, Topology};
 use onebridges::devices::{self, bridge_dev, virtio_net, virtio_snd, BridgeConfig};
 use onebridges::haptics::{self, Haptic};
@@ -20,6 +20,7 @@ use onebridges::thermal::{self, Thermal};
 use onecamera::link::Camera;
 use onecamera::proto::{OC_ROLE_FRONT, OC_ROLE_TELE5, OC_ROLE_WIDE};
 use oneencoder::backend::Backend as EncoderBackend;
+use oneencoder::decoder::{DecodeBackend, PoolMem, StubDecodeBackend};
 use xh_core::{loge, logi};
 use xnuloader::machine::{self as xm, Cluster, DeviceKind, Mac, Machine};
 
@@ -392,10 +393,7 @@ fn audio_latency_arg(config: &mut Config, audio: &dyn AudioBackend) {
         logi!("audio: ONEIOS_AUDIO_PROBE=0: the kernel's default output latency");
         return;
     }
-    // 3 s: on a dead MMAP stream the helper gives up as soon as its writer has counted 600 ms of timeouts (about a
-    // second), and its fallback opens a mixer track without waiting on that track (the probe's 1.5 s are only spent on
-    // a stream that reads but gives no timestamp). The old 2 s left too little room for the fallback's open.
-    let frames = match audio.probe_latency(3000) {
+    let frames = match audio.probe_latency(2000) {
         Ok(f) if f > 0 => f,
         Ok(_) => {
             logi!(
@@ -436,12 +434,21 @@ fn encoder_boot_argument(config: &mut Config) {
     }
 }
 
-/// The encoder device over a backend, in the media pool.
-fn encoder_device(slots: &mut Slots, machine: &mut Machine, pool: MediaPool, backend: Arc<dyn EncoderBackend>) -> bool {
+/// The encoder device over a backend, in the media pool, decoding with what `decoder` makes over the pool's host
+/// mapping (2026-11-24: the helper's MediaCodec in a session, the stand-in on a PC boot; none: an encoder only).
+fn encoder_device(
+    slots: &mut Slots,
+    machine: &mut Machine,
+    pool: MediaPool,
+    backend: Arc<dyn EncoderBackend>,
+    decoder: impl FnOnce(PoolMem) -> Option<Arc<dyn DecodeBackend>>,
+) -> bool {
     let host = crate::mem::ram(pool.pa, pool.bytes).map_or(std::ptr::null_mut(), |p| p.as_ptr());
-    let (base, spi) = slots.next();
     // SAFETY: the media pool is guest RAM mapped for the process's life (mem::map), pool.bytes long at `host`.
-    let dev = unsafe { oneencoder::media_device::create(base, spi, Some(backend), host, pool.pa, pool.bytes) };
+    let decoder = unsafe { PoolMem::new(host, pool.bytes) }.and_then(decoder);
+    let (base, spi) = slots.next();
+    // SAFETY: as above.
+    let dev = unsafe { oneencoder::media_device::create(base, spi, Some(backend), decoder, host, pool.pa, pool.bytes) };
     if dev.is_none() {
         return false;
     }
@@ -496,7 +503,8 @@ impl Bridges {
         // the phone. Never in a session on the phone (the bridges on) unless encoder=sim asks for it.
         if pool.bytes != 0 && (encoder_sim || !config.bridges) {
             let stub: Arc<dyn EncoderBackend> = Arc::new(oneencoder::backend_stub::StubBackend);
-            if !slots.full() && encoder_device(slots, machine, pool, stub) {
+            let standin = |pool| Some(Arc::new(StubDecodeBackend::new(pool)) as Arc<dyn DecodeBackend>);
+            if !slots.full() && encoder_device(slots, machine, pool, stub, standin) {
                 encoder_boot_argument(config);
                 logi!(
                     "encoder: the stand-in encoder ({}): no MediaCodec; every frame is coded as it is (I_PCM), no compression",
@@ -547,18 +555,15 @@ impl Bridges {
         pen_ic: bool,
         encoder_sim: bool,
     ) {
-        // Bluetooth: the phone's controller through its HAL (HIDL on the S24 Ultra, stable AIDL on the S25 and S25
-        // Ultra), or none (virtual). auto: the HAL when it is registered; the HAL itself is opened only when
-        // bluetoothd connects.
+        // Bluetooth: the phone's controller through its HAL (hidl), or none (virtual). auto: hidl when the HAL is
+        // registered; the HAL itself is opened only when bluetoothd connects.
         let sim = config.bluetooth == Bluetooth::Sim;
+        let mut hidl = config.bluetooth == Bluetooth::Hidl;
         let mut hal = 0;
-        if matches!(config.bluetooth, Bluetooth::Auto | Bluetooth::Hidl) {
-            hal = if config.bluetooth == Bluetooth::Hidl { hci_hidl::probe() } else { hci_hidl::probe_quiet() };
-            if hal <= 0 {
-                hal = hci_aidl::probe();
-            }
+        if config.bluetooth == Bluetooth::Auto {
+            hal = hci_hidl::probe();
+            hidl = hal > 0;
         }
-        let phone_hal = config.bluetooth == Bluetooth::Hidl || (config.bluetooth == Bluetooth::Auto && hal > 0);
         // Haptics: the phone's force-feedback device (auto), none (off), or the stand-in actuator (sim).
         // haptics-native-impacts (config.rs checked treble, no fallback, and put oneios_native_impacts=1 in the boot
         // arguments): the bridge asks the HAL for its presets and offers OB_HAPTIC_IMPACT only when TICK, CLICK and
@@ -593,9 +598,7 @@ impl Bridges {
         if let Some(t) = &self.thermal {
             t.on_cap(Some(Arc::new(thermal_step)));
         }
-        let factory: Option<devices::HciFactory> = if hal == 20 {
-            Some(Box::new(hci_aidl::open_aidl))
-        } else if phone_hal {
+        let factory: Option<devices::HciFactory> = if hidl {
             Some(Box::new(hci_hidl::open_hidl))
         } else if sim {
             Some(Box::new(hci_sim::open_sim))
@@ -615,7 +618,7 @@ impl Bridges {
             bt_sim_on(machine);
         } else if sim {
             logi!("bluetooth: off: no bridge device for the stand-in controller's packets");
-        } else if phone_hal && have_bridge {
+        } else if hidl && have_bridge {
             // The phone's controller, H4 over the bridge. bluetoothd's encodings (24A446, read from the binary): 1 H4,
             // 2 H4DS, 3 H4BC, 10 virtual. Plain H4 is the one UniXNU carries to this bluetoothd over the same Skywalk
             // UART pipe (drivers/bluetooth/oneios_bt_sk.c); the boot argument bt-transport-override=N tries another.
@@ -628,13 +631,13 @@ impl Bridges {
                 match hal {
                     11 => " 1.1",
                     10 => " 1.0",
-                    20 => " (AIDL)",
+                    hci_hidl::PROBE_AIDL => " (AIDL)",
                     _ => "",
                 },
                 mac_text(&machine.bt_mac),
                 if address.is_some() { "" } else { " (made up: /mnt/vendor/efs/bluetooth/bt_addr not read)" }
             );
-        } else if phone_hal {
+        } else if hidl {
             logi!("bluetooth: off: no bridge device for the controller's packets");
         } else {
             logi!(
@@ -709,8 +712,15 @@ impl Bridges {
             match runtime_bin(&config.runtime, "oneios-encoder").filter(|_| !slots.full()) {
                 Some(helper) => {
                     onebridges::hw::select(Bridge::Encoder, Backend::Unset);
-                    let backend: Arc<dyn EncoderBackend> = oneencoder::backend_helper::HelperBackend::new(&helper);
-                    if encoder_device(slots, machine, pool, backend) {
+                    let helper = oneencoder::backend_helper::HelperBackend::new(&helper);
+                    // the decoder's pictures go straight into the pool: the helper maps it from the RAM's memfd
+                    let m = crate::mem::state();
+                    if m.fd >= 0 && pool.pa >= m.fd_phys {
+                        helper.set_pool(m.fd, pool.pa - m.fd_phys, pool.bytes);
+                    }
+                    let decoder = Some(helper.clone() as Arc<dyn DecodeBackend>);
+                    let backend: Arc<dyn EncoderBackend> = helper;
+                    if encoder_device(slots, machine, pool, backend, |_| decoder) {
                         encoder_boot_argument(config);
                     }
                 }

@@ -1,0 +1,24 @@
+OneiOS 5001: build the AIR frontend of Jesvi-iOS (its tools/mesa/air-frontend.patch) as part of Mesa.
+
+src/compiler/air is userland/metal-amd/air of OneiOS, copied there by
+userland/metal-amd/air/build.sh: the frontend that reads Apple's shader bitcode (AIR) and makes NIR.
+This patch is only the meson line that reaches it; a tree without the directory builds as before
+(Jesvi's patch had no guard: its build scripts always copied the directory first).
+
+diff --git a/src/compiler/meson.build b/src/compiler/meson.build
+index 68f0832..6500233 100644
+--- a/src/compiler/meson.build
++++ b/src/compiler/meson.build
+@@ -65,6 +65,12 @@ subdir('nir')
+ 
+ subdir('spirv')
+ 
++# OneiOS (userland/metal-amd/air): the AIR frontend of Jesvi-iOS, copied here by
++# userland/metal-amd/air/build.sh. A tree without it builds as before.
++if fs.is_dir('air')
++  subdir('air')
++endif
++
+ if with_clc
+   subdir('clc')
+ endif

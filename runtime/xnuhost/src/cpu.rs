@@ -145,6 +145,9 @@ pub struct Vcpu {
     timer: AtomicI32,
     pub timer_armed: AtomicBool,
     pub timer_deadline: AtomicU64,
+    /// timer-coalesce: the deadline the host timer was last armed for, 0 when it is not armed or has fired (its signal
+    /// clears it first). Written on the vCPU's own thread only (timer_set and the timer signal).
+    pub timer_host_at: AtomicU64,
     /// 1 while in cpu_idle
     pub idle: AtomicU32,
     pub sys: SysregState,
@@ -180,6 +183,7 @@ impl Vcpu {
             timer: AtomicI32::new(-1),
             timer_armed: AtomicBool::new(false),
             timer_deadline: AtomicU64::new(0),
+            timer_host_at: AtomicU64::new(0),
             idle: AtomicU32::new(0),
             sys: SysregState::new(),
             stat: CpuStats::new(),
@@ -323,6 +327,15 @@ pub fn release_floor(hint: u32, request: u32, boost: u32) -> u32 {
 /// goes on every vCPU thread ([`drm2kgsl_vcpu_uclamp`]) and on every iOS thread that is not background; the cpufreq
 /// device sets the vCPU thread's clamp itself; a vCPU thread keeps its clamp while idle ([`own_uclamp`] does nothing).
 pub static UCLAMP_ALL: AtomicBool = AtomicBool::new(false);
+
+/// timer-coalesce (fix/unmap-fanout, 2026-11-24; docs/switches.md; session.rs sets it once at the start). The phone
+/// (2026-11-24 01:17) made 497,376 timer_set calls per 30 s, 495,092 of them a timer_settime: XNU sets its next
+/// deadline at nearly every dispatch (the new thread's quantum), each later than the one before. On: a deadline later
+/// than the one the host timer is armed for, and a cancel, leave the host timer as it is; its signal then finds the
+/// deadline not reached (or nothing armed) and arms the host timer for the deadline instead of raising the line (one
+/// timer_settime per early signal, no interrupt). An earlier deadline arms the host timer at once, as before. Off: every
+/// new deadline and every cancel is a timer_settime, and every timer signal raises the line (before).
+pub static TIMER_COALESCE: AtomicBool = AtomicBool::new(true);
 
 /// The release floor of uclamp-rule=all (before 03d85ac): the request or the boost, the higher; a background thread
 /// 0; a UI or realtime thread at least its class's floor.
@@ -600,10 +613,6 @@ mod machine {
     }
 
     pub fn timer_set(v: &Vcpu, deadline: u64) {
-        let mut spec: libc::itimerspec = libc::itimerspec {
-            it_interval: libc::timespec { tv_sec: 0, tv_nsec: 0 },
-            it_value: libc::timespec { tv_sec: 0, tv_nsec: 0 },
-        };
         let index = v.index();
         v.perf.count(crate::perf::Count::TimerSets, 1);
         // The same future deadline again (XNU sets it at each dispatch and idle exit, often unchanged): the host timer
@@ -617,10 +626,18 @@ mod machine {
             line(index, false);
             return;
         }
-        v.perf.count(crate::perf::Count::TimerCalls, 1);
+        let coalesce = TIMER_COALESCE.load(Relaxed);
         if deadline == u64::MAX {
             v.timer_armed.store(false, Release);
-            settime(v, &spec);
+            if coalesce && v.timer_host_at.load(Acquire) != 0 {
+                // timer-coalesce: the host timer stays armed; its signal finds nothing armed and raises nothing
+                v.perf.count(crate::perf::Count::TimerKept, 1);
+                line(index, false);
+                return;
+            }
+            v.perf.count(crate::perf::Count::TimerCalls, 1);
+            v.timer_host_at.store(0, Release);
+            settime(v, &ZERO_SPEC);
             line(index, false);
             return;
         }
@@ -628,10 +645,34 @@ mod machine {
         v.timer_armed.store(true, Release);
         let now = counter();
         if deadline <= now {
-            settime(v, &spec);
+            v.perf.count(crate::perf::Count::TimerCalls, 1);
+            v.timer_host_at.store(0, Release);
+            settime(v, &ZERO_SPEC);
             line(index, gic::pending(index));
             return;
         }
+        // timer-coalesce: armed for an earlier time still to come. It fires then, and its signal arms the host timer for
+        // this deadline (read after the stores above: a signal between the two sees this deadline and arms for it).
+        let host_at = v.timer_host_at.load(Acquire);
+        if coalesce && host_at != 0 && host_at <= deadline && host_at > now {
+            v.perf.count(crate::perf::Count::TimerKept, 1);
+            line(index, false);
+            return;
+        }
+        v.perf.count(crate::perf::Count::TimerCalls, 1);
+        arm_host(v, deadline, now);
+        line(index, false);
+    }
+
+    const ZERO_SPEC: libc::itimerspec = libc::itimerspec {
+        it_interval: libc::timespec { tv_sec: 0, tv_nsec: 0 },
+        it_value: libc::timespec { tv_sec: 0, tv_nsec: 0 },
+    };
+
+    /// The vCPU's host timer at `deadline` (> `now`). On the vCPU's own thread (timer_set, or its timer signal).
+    fn arm_host(v: &Vcpu, deadline: u64, now: u64) {
+        let mut spec = ZERO_SPEC;
+        v.timer_host_at.store(deadline, Release);
         let ns = ticks_to_ns(deadline - now, hostcalls::info().timebase_hz);
         spec.it_value.tv_sec = (ns / 1_000_000_000) as libc::time_t;
         spec.it_value.tv_nsec = (ns % 1_000_000_000) as libc::c_long + 1;
@@ -640,7 +681,26 @@ mod machine {
             spec.it_value.tv_nsec -= 1_000_000_000;
         }
         settime(v, &spec);
-        line(index, false);
+    }
+
+    /// The vCPU's timer signal (xh_cpu_signal): whether to raise the line. With timer-coalesce the host timer may have
+    /// been armed for an earlier deadline than the one set now, or a cancelled one: then it is armed for the deadline
+    /// (one timer_settime) and nothing is raised. Without, every signal raises the line, as before.
+    fn timer_signal(v: &Vcpu) -> bool {
+        v.timer_host_at.store(0, Release);
+        if !TIMER_COALESCE.load(Relaxed) {
+            return true;
+        }
+        if !v.timer_armed.load(Acquire) {
+            return false;
+        }
+        let (now, deadline) = (counter(), v.timer_deadline.load(Acquire));
+        if deadline > now {
+            v.perf.count(crate::perf::Count::TimerRearms, 1);
+            arm_host(v, deadline, now);
+            return false;
+        }
+        true
     }
 
     pub fn idle(v: &Vcpu) {
@@ -1001,7 +1061,8 @@ mod machine {
         }
         if signo == sig_kick() || signo == sig_timer() {
             let Some(v) = v else { return };
-            if signo == sig_timer() {
+            // timer-coalesce: a signal before the deadline (or after a cancel) arms the host timer again, raises nothing
+            if signo == sig_timer() && timer_signal(v) {
                 v.cpu.irq_pending.store(1, Release);
             }
             maybe_interrupt(v, uc);

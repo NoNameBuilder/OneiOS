@@ -59,10 +59,6 @@ path = "audio/oneios_audio.rs"
 name = "test_aidl_binder"
 path = "tests/test_aidl_binder.rs"
 harness = false
-[[test]]
-name = "test_bt_aidl"
-path = "tests/test_bt_aidl.rs"
-harness = false
 [[bin]]
 name = "wifictl"
 path = "tools/wifictl.rs"

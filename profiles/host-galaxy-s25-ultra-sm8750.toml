@@ -66,7 +66,7 @@ als = "als_rear (event7)"
 battery = "power_supply/battery, max77775 fuel gauge, 5000 mAh (samsung backend works)"
 backlight = "panel0-backlight, max_brightness 12750; One UI's manual top not measured here (the S26 Ultra's: 2300)"
 thermal = "first passive trip 105 C, hot 125 C (the median of 25 SoC zones); no cpu-hw-trip-* zones"
-bluetooth = "AIDL IBluetoothHci/default only (hwservicemanager stopped, no HIDL): runtime/bridges/bt/hci_aidl.rs speaks it (host-tested against a stand-in HAL, not run on this phone)"
+bluetooth = "AIDL IBluetoothHci/default only (hwservicemanager stopped, no HIDL): runtime/bridges/bt/hci_hidl.rs speaks it (host-tested against a stand-in HAL, not run on this phone)"
 hals = "health, thermal, vibrator, lights, sensors, wifi supplicant (AIDL), bluetooth (AIDL), audio core, camera internal/0"
 
 [switch]

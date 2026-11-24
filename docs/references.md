@@ -51,7 +51,8 @@ Two consequences for OneiOS:
 | Guest kernel: accelerator | `NativeAdrenoUserClient.cpp`, `NativeAdrenoPublish.cpp`, `NativeAdrenoSubmit.cpp`, `NativeAdrenoMemory.cpp`, `NativeAdrenoAccelerator.cpp`, `DroidVMVirtgpuABI.h`, `NativeAdrenoABI.h` | `NativeAdreno` 627836d (= `drivers/Adreno740` of the kernel base 62d0b11) | MIT | **Direct** (only these files; the GMU, SMMU, ring and firmware files are sheng's hardware) |
 | Guest kernel: policy | `droidvm-gpu-sandbox-first.patch`, `droidvm-gpu-grant-apps.patch`, `droidvm-surface-gpu-wait.patch`, `droidvm-osmetaclass-adopt-superclass.patch`, `zzw-native-sandbox-grant-patterns.patch` | `UniXNU-droidvm` | BSD-2-Clause-Patent | Already in `kernel/device/patches/xnu-12377/series` |
 | User space: plug-in | `NativeAdrenoMetalPlugin.mm`, `NativeBridgeMetalFrontend.mm`, `bridge/`, `shaders/`, `tools/` | `NativeMetal` b0d6a07 (= `drivers/AdrenoMetal` of the kernel base) | MIT | **Direct** for the API; its QuartzCore and RenderBox hooks are found per shared cache, so they must be re-found in the iPhone18,2 cache (`macOS-DroidVM/docs/TODO-gpu.md`) |
-| User space: translator | metal2vulkan `624bab3` (`development`) + `patches/metal2vulkan/0001..0038` | steelbrain/metal2vulkan, patches in `Droid-VM-UniXNU` 62d0b11 (pin: `scripts/data/gpu-metal-vulkan-inputs.json`) | GPL-2.0 / LGPL-3.0 parts | Direct. In the table as `metal2vulkan` since 2026-11-11 (`userland/metal/build.sh` builds it; the shallow clone is 1.8 GB with its fixtures). Never linked into the kernel |
+| User space: translator | metal2vulkan `624bab3` (`development`) + `patches/metal2vulkan/0001..0038` | steelbrain/metal2vulkan, patches in `Droid-VM-UniXNU` 62d0b11 (pin: `scripts/data/gpu-metal-vulkan-inputs.json`) | GPL-2.0 / LGPL-3.0 parts | Direct. In the table as `metal2vulkan` since 2026-11-11 (`userland/metal/build.sh` builds it; the shallow clone is 1.8 GB with its fixtures). Never linked into the kernel. Kept at `624bab3` on 2026-11-23: upstream `development` (`6462199fa`) replaced this runtime with a new one (`5d725aeec`), 1 of the 51 bridge patches applies there and the bridge names 47 types it has not (`docs/gpu.md` 7, "metal2vulkan's upstream"); OneiOS adds `userland/metal/m2v-spare-command-pools.patch` and `m2v-idle-memory.patch` |
+| User space: translator, the rt port | metal2vulkan `6462199fa` (`development`, 2026-11-23) + `userland/metal/rt/patches` | steelbrain/metal2vulkan (the same clone: `userland/metal/rt/build.sh source` fetches `development` and makes a worktree in `out/m2v-rt/src`) | GPL-2.0 / LGPL-3.0 parts | Direct. The port of the bridge to `metal2vulkan-runtime` 0.2 (`userland/metal/rt/README.md`); not in an add-on yet |
 | User space: Vulkan driver | Mesa: Droid-VM/mesa `cecc0e9` (`droidvm`; the pin of `scripts/data/adreno-compiler-inputs.json`, in the table as `mesa-droidvm`; `gpu-metal-vulkan-inputs.json` names upstream `c823a83e` as the reference) + `patches/mesa/*` (the 30 that file lists: `turnip-darwin-kmd`, `turnip-darwin-virtgpu`, `-virtgpu-resets`, `-lazy-bos`, `-bo-slot-before-reuse`, A8xx backports); built by `scripts/build-turnip-darwin.py`, plug-in by `build-adreno-metal-plugin.py`, `build-adreno-metal-bridge.py`, staged by `add-gpu-plugin-data.py` | Mesa upstream, patches in `Droid-VM-UniXNU` | MIT | Direct: A750 (`0x43051400` family) is in upstream Mesa's device table. Check that the build has the A750 fix Droid-VM carries in its phone-side Turnip (BR-only `RB_CCU` registers, 9452b5e9090: without it KGSL logs `CP: AHB bus error` every frame, `plans/ACCEPTANCE_REPORT_20260816.md`) |
 | Tests | `package/metalcheck`, `package/gfxprobe`, `package/gfxbench` | `UniXNU-droidvm` | BSD-2-Clause-Patent | The acceptance tests of docs/plan.md M5 |
 
@@ -67,6 +68,18 @@ What xnuhost has to supply for drm2kgsl, as crosvm does [F] (`drm2kgsl_renderer.
   `/arm-io/virtio-gpu` `drm-host-pool` (`UniXNU-droidvm/ipados27/scripts/make-droidvm-adt.py`, crosvm `--pre-alloc drm-host-mb=8`);
 - environment switches worth keeping: `DRM2KGSL_PRIORITIES=3` (render server on its own ringbuffer),
   `DRM2KGSL_PWR_CONSTRAINT`, `NCTX_NO_WAITTS`.
+
+### GPU (Metal on the Galaxy A56's Xclipse 540, iOS 16.5; added 2026-11-24)
+
+The A56 port's design and what each stage takes: [a56-gpu.md](a56-gpu.md) section 1. In short:
+
+| Layer | Take | From (pin in `get-references.sh`) | Licence | Fit |
+| --- | --- | --- | --- | --- |
+| Metal on Gallium, no Vulkan | `tools/mesa/air/` (AIR frontend, `air_metal.c`), `userland/src/redwoodmetal.m`, `metal_plugin.plist` | `Jesvi-iOS` a13e406 (main table) | MIT (outside `xnu/`; `xnu/` is APSL) | Ported onto radeonsi instead of Panfrost; its notices kept. Its CoreAnimation render server stayed off Metal (a56-gpu.md 1). No `prebuilt/`, no `.py` |
+| Host: amdgpu native context | `runtime/xnuhost/amdgpu/src/amdgpu_renderer.c`, `src/gpu3d_xclipse.c` (commit `e7d56f2`) | `OneiOS-A56` c83b9ca (main table) | MIT per file (the repository states none) | Rewritten in Rust as `runtime/xnuhost/src/gpu3d_amdgpu.rs`; nothing copied as is |
+| Guest: amdgpu virtio, radeonsi, ACO | `src/amd/common/virtio`, `src/virtio/vdrm`, `src/gallium/drivers/radeonsi`, `src/gallium/winsys/amdgpu` | `mesa-droidvm` cecc0e9 | MIT | Built for Darwin arm64 (iOS 16.5) with a Darwin vdrm backend over `DroidVMVirtgpuABI.h` |
+| Guest: libdrm for Darwin | `xf86drm.h`, `include/drm`, `amdgpu/` (the VA manager) | libdrm 2.4.133, the release Mesa's `subprojects/libdrm.wrap` pins (sha256 checked; fetched by `userland/metal-amd/build.sh`, not by `get-references.sh`) | MIT | Headers and libdrm_amdgpu built for iOS 16.5; the DRM calls are `src/oneios/oneios_drm.c` of the Mesa patches (a56-gpu.md 3) |
+| Ideas only | Panfrost on Darwin (Pixel 6a); a HakiOS XNU; a Mali driver for XNU | `pixelios-kernel` f084ce5, `pixelios-userland` d5b2079 (MIT); `hakios-xnu-kernel` 62e09f8 (no licence); `mapple_gpu_mali` f893fed (GPL-3.0) (extra table) | as said | read only; nothing of the last two goes into our files |
 
 ### Display
 
@@ -194,8 +207,13 @@ SM8650 boards (row 15 and `houji` forks); none has Metal.
 
 ## 5. Licences and rules
 
-- Kernel-linked sources we take are BSD-2-Clause-Patent or MIT. metal2vulkan (GPL/LGPL parts) and Mesa (MIT) are
-  user-space files in the overlay, built on the owner's machine; they are never linked into `kernel.kc`.
+- Kernel-linked sources we take are BSD-2-Clause-Patent or MIT. metal2vulkan (GPL-2.0-or-later or LGPL-3.0-or-later)
+  and Mesa (MIT) are user space, never linked into `kernel.kc`: built into the Metal plug-in. Since 2026-11-24 a
+  release's runtime package carries that plug-in as a binary (`lib/guest/`, [releases.md](releases.md)), so it is
+  distributed: `lib/guest/NOTICE` holds the licence texts of every source it is built from and each source's URL and
+  commit (the corresponding source; OneiOS's own patches to them are in `userland/metal/` at the package's commit).
+  Not checked: the licence notices of the Rust crates metal2vulkan's Cargo.lock pulls in (most say MIT or Apache-2.0;
+  a guess, not read one by one).
 - `droidvm-meta-repo` and `gunyah_host_mod` are GPL: read the plans, do not copy text or code into MIT files.
 - `macOS-DroidVM`, `UniXNU-shennong`, `hakios-sm8650`, `UniXNU-NX769J`, `UniXNU-meizu21`, `UniXNU-PHY120` state no
   licence: read only.

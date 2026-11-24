@@ -1,0 +1,1205 @@
+diff --git a/src/virtio/vdrm/DroidVMVirtgpuABI.h b/src/virtio/vdrm/DroidVMVirtgpuABI.h
+new file mode 100644
+index 0000000..669ea09
+--- /dev/null
++++ b/src/virtio/vdrm/DroidVMVirtgpuABI.h
+@@ -0,0 +1,78 @@
++/* SPDX-License-Identifier: MIT */
++#ifndef DROIDVM_VIRTGPU_ABI_H
++#define DROIDVM_VIRTGPU_ABI_H
++#include <stdint.h>
++
++/* The guest's virtio-gpu 3D interface for user space: what Linux's DRM_IOCTL_VIRTGPU_* give mesa's vdrm, as methods of the
++ * accelerator's user client (NativeAdreno's AGXDeviceUserClient, the class the sandbox already admits). A process opens
++ * IOAcceleratorES with open type 0x4149 (virtgpu alone: no KGSL proxy slot, granted in sandboxed clients) and calls method
++ * DROIDVM_VIRTGPU_METHOD + op through the tunnel ({'NTNL', method} then the input record), with the exact output record. The
++ * kernel side is the DroidVM board's package/DroidVMVirtioGpu3D.cpp.
++ *
++ * One connection is one DRM context (CONTEXT_INIT once). Handles name its resources; MAP maps one into the caller's task (the
++ * msm shmem from the host's drm2kgsl pool, a BO's guest pages) and GEM_CLOSE or the connection's close unmaps and frees it.
++ * EXECBUFFER with FENCE numbers the submission on its ring and answers the number; WAIT_FENCE waits for it. All integers little
++ * endian; every record has a fixed size, the variable part (a command, a capset) follows it. */
++enum {
++    DROIDVM_VIRTGPU_METHOD = 0x7200,
++    DROIDVM_VIRTGPU_OPEN_TYPE = 0x4149,
++    DROIDVM_VIRTGPU_ABI_VERSION = 1,
++
++    DROIDVM_VIRTGPU_GETPARAM = 0,
++    DROIDVM_VIRTGPU_GET_CAPS = 1,
++    DROIDVM_VIRTGPU_CONTEXT_INIT = 2,
++    DROIDVM_VIRTGPU_CREATE_BLOB = 3,
++    DROIDVM_VIRTGPU_MAP = 4,
++    DROIDVM_VIRTGPU_EXECBUFFER = 5,
++    DROIDVM_VIRTGPU_WAIT_FENCE = 6,
++    DROIDVM_VIRTGPU_RESOURCE_INFO = 7,
++    DROIDVM_VIRTGPU_GEM_CLOSE = 8,
++    DROIDVM_VIRTGPU_CREATE_BLOB_USER = 9,
++    DROIDVM_VIRTGPU_OPS = 10,
++
++    /* GETPARAM: the VIRTGPU_PARAM_* numbers, and this ABI's version. */
++    DROIDVM_VIRTGPU_PARAM_3D_FEATURES = 1,
++    DROIDVM_VIRTGPU_PARAM_CAPSET_QUERY_FIX = 2,
++    DROIDVM_VIRTGPU_PARAM_RESOURCE_BLOB = 3,
++    DROIDVM_VIRTGPU_PARAM_HOST_VISIBLE = 4,
++    DROIDVM_VIRTGPU_PARAM_CROSS_DEVICE = 5,
++    DROIDVM_VIRTGPU_PARAM_CONTEXT_INIT = 6,
++    DROIDVM_VIRTGPU_PARAM_SUPPORTED_CAPSET_IDS = 7,
++    DROIDVM_VIRTGPU_PARAM_CREATE_GUEST_HANDLE = 9,
++    DROIDVM_VIRTGPU_PARAM_ABI_VERSION = 0x100,
++    DROIDVM_VIRTGPU_PARAM_DEFAULT_3D = 0x101,   /* 1: the board makes this the default 3D path (boot-arg vgpu-3d=1) */
++
++    DROIDVM_VIRTGPU_BLOB_MEM_HOST3D = 2,
++    DROIDVM_VIRTGPU_BLOB_MEM_HOST3D_GUEST = 3,
++    DROIDVM_VIRTGPU_BLOB_FLAG_MAPPABLE = 1,
++    DROIDVM_VIRTGPU_BLOB_FLAG_CREATE_GUEST_HANDLE = 8,
++
++    DROIDVM_VIRTGPU_EXEC_FENCE = 1,          /* number the submission on its ring and answer the number */
++    DROIDVM_VIRTGPU_MAX_COMMAND = 65536,     /* a command (EXECBUFFER, CREATE_BLOB's ccmd) */
++};
++
++struct droidvm_virtgpu_getparam { uint64_t param; };
++struct droidvm_virtgpu_getparam_reply { uint64_t value; };
++struct droidvm_virtgpu_get_caps { uint32_t capset_id, version; };            /* reply: the capset, up to the output size */
++struct droidvm_virtgpu_context_init { uint32_t capset_id, num_rings; };
++struct droidvm_virtgpu_context_init_reply { uint32_t context_id, pad; };
++struct droidvm_virtgpu_create_blob {                                          /* followed by cmd_size bytes of ccmd */
++    uint32_t blob_mem, blob_flags;
++    uint64_t size, blob_id;
++    uint32_t cmd_size, pad;
++};
++struct droidvm_virtgpu_create_blob_reply { uint32_t handle, resource_id; };   /* CREATE_BLOB, CREATE_BLOB_USER */
++/* CREATE_BLOB_USER: a HOST3D_GUEST blob over the caller's own pages, [address, address + size), 4 KiB aligned (an IOSurface's:
++ * VK_EXT_external_memory_host). The kernel wires them until GEM_CLOSE; the caller keeps its own mapping, so it is not MAPped.
++ * Followed by cmd_size bytes of ccmd (the GEM_NEW that gives the BO its address). */
++struct droidvm_virtgpu_create_blob_user {
++    uint64_t address, size, blob_id;
++    uint32_t blob_flags, cmd_size;
++};
++struct droidvm_virtgpu_handle { uint32_t handle, pad; };                      /* MAP, RESOURCE_INFO, GEM_CLOSE */
++struct droidvm_virtgpu_map_reply { uint64_t address, size; };
++struct droidvm_virtgpu_execbuffer { uint32_t flags, ring_idx, size, pad; };   /* followed by size bytes of commands */
++struct droidvm_virtgpu_execbuffer_reply { uint64_t fence; };
++struct droidvm_virtgpu_wait_fence { uint32_t ring_idx, pad; uint64_t fence, timeout_ns; };
++struct droidvm_virtgpu_resource_info_reply { uint32_t resource_id, pad; uint64_t size; };
++#endif
+diff --git a/src/virtio/vdrm/meson.build b/src/virtio/vdrm/meson.build
+index 941e23c..310c676 100644
+--- a/src/virtio/vdrm/meson.build
++++ b/src/virtio/vdrm/meson.build
+@@ -7,14 +7,17 @@ libvdrm_c_args = [no_override_init_args, soong_compat_c_args]
+ if with_amdgpu_virtio
+   libvdrm_c_args += ['-DENABLE_DRM_AMDGPU']
+ endif
++# OneiOS: on Darwin the guest kernel's IOKit user client (vdrm_darwin.c) in place of Linux's virtgpu and vtest.
++if _oneios_darwin_drm
++  libvdrm_files = ['vdrm.c', 'vdrm.h', 'vdrm_darwin.c', 'vdrm_darwin.h', 'DroidVMVirtgpuABI.h']
++  libvdrm_deps = [dependency('appleframeworks', modules : ['IOKit', 'CoreFoundation'])]
++else
++  libvdrm_files = ['vdrm.c', 'vdrm.h', 'vdrm_virtgpu.c', 'vdrm_vpipe.c']
++  libvdrm_deps = []
++endif
+ libvdrm = static_library(
+   'libvdrm',
+-  [
+-    'vdrm.c',
+-    'vdrm.h',
+-    'vdrm_virtgpu.c',
+-    'vdrm_vpipe.c',
+-  ],
++  libvdrm_files,
+   include_directories : [
+     inc_include,
+     inc_src,
+@@ -27,6 +30,7 @@ libvdrm = static_library(
+     dep_libdrm,
+     dep_valgrind,
+     idep_mesautil,
++    libvdrm_deps,
+   ],
+   link_with: [
+     _libmesa_util,
+diff --git a/src/virtio/vdrm/vdrm.c b/src/virtio/vdrm/vdrm.c
+index d09df9b..1239198 100644
+--- a/src/virtio/vdrm/vdrm.c
++++ b/src/virtio/vdrm/vdrm.c
+@@ -8,19 +8,28 @@
+ 
+ #include "vdrm.h"
+ 
++#ifdef HAVE_VDRM_DARWIN
++#include "vdrm_darwin.h"
++#else
+ struct vdrm_device * vdrm_virtgpu_connect(int fd, uint32_t context_type);
+ struct vdrm_device * vdrm_vpipe_connect(uint32_t context_type);
++#endif
+ 
+ struct vdrm_device *
+ vdrm_device_connect(int fd, uint32_t context_type)
+ {
+    struct vdrm_device *vdev;
+ 
++#ifdef HAVE_VDRM_DARWIN
++   /* OneiOS: no DRM on Darwin; the guest kernel's IOKit user client instead (vdrm_darwin.c). */
++   vdev = vdrm_darwin_connect(fd, context_type);
++#else
+    if (fd >= 0) {
+       vdev = vdrm_virtgpu_connect(fd, context_type);
+    } else {
+       vdev = vdrm_vpipe_connect(context_type);
+    }
++#endif
+ 
+    if (!vdev)
+       return NULL;
+diff --git a/src/virtio/vdrm/vdrm.h b/src/virtio/vdrm/vdrm.h
+index 5961963..20eabce 100644
+--- a/src/virtio/vdrm/vdrm.h
++++ b/src/virtio/vdrm/vdrm.h
+@@ -114,6 +114,10 @@ struct vdrm_execbuf_params {
+ 
+    int fence_fd;                  /* in/out fence */
+ 
++   /* Darwin (vdrm_darwin.c): with needs_out_fence_fd or out syncobjs, the fence number the submission got
++    * on ring_idx (there are no fence descriptors there). */
++   uint64_t out_fence;
++
+    uint32_t num_in_syncobjs;
+    uint32_t num_out_syncobjs;
+ };
+diff --git a/src/virtio/vdrm/vdrm_darwin.c b/src/virtio/vdrm/vdrm_darwin.c
+new file mode 100644
+index 0000000..28a5159
+--- /dev/null
++++ b/src/virtio/vdrm/vdrm_darwin.c
+@@ -0,0 +1,977 @@
++/*
++ * vdrm on Darwin (iOS): the virtio GPU's DRM native context through the guest kernel's IOKit user client,
++ * in place of Linux's DRM_IOCTL_VIRTGPU_* (vdrm_virtgpu.c). Selected by vdrm_device_connect() on Darwin.
++ *
++ * The user client is the accelerator's (IOAcceleratorES, or the class ONEIOS_VDRM_SERVICE names), opened
++ * with type 0x4149 (DROIDVM_VIRTGPU_OPEN_TYPE). Its methods (DroidVMVirtgpuABI.h, NativeAdreno 627836d)
++ * go through the tunnel: one struct method whose input is {'NTNL', DROIDVM_VIRTGPU_METHOD + op} and then
++ * the op's record. One connection is one DRM context. This follows Droid-VM-UniXNU's
++ * patches/mesa/turnip-darwin-virtgpu.patch (tu_knl_darwin_virtgpu.cc, MIT): the service, the open type,
++ * the tunnel's selector probe and the records are the same; the msm parts of it are not used here.
++ *
++ * Buffers (the OneiOS contract K2): the response shmem (blob_id 0) is a HOST3D blob, mapped from the
++ * host's pool; every other BO is HOST3D_GUEST with CREATE_GUEST_HANDLE, its pages wired guest memory the
++ * kernel allocates, described to the host by the driver's GEM_NEW ccmd that rides the CREATE_BLOB. A BO's
++ * CPU view is the kernel's mapping into this task (MAP); it lasts until GEM_CLOSE.
++ *
++ * Fences: an EXECBUFFER with DROIDVM_VIRTGPU_EXEC_FENCE is numbered on its ring, and WAIT_FENCE sleeps in
++ * the kernel until the host has retired it. The DRM syncobjs the amdgpu winsys asks for are this file's
++ * own (vdrm_darwin_get_sync): a syncobj holds the (ring, fence) of the submission that signals it. A
++ * submission's in-syncobjs on other rings are waited for in WAIT_FENCE before it is sent (the host orders
++ * one ring by itself). No timeline syncobjs, no sync files, no dma-bufs.
++ *
++ * Copyright 2026 OneiOS contributors
++ * SPDX-License-Identifier: MIT
++ */
++
++#include <errno.h>
++#include <stdarg.h>
++#include <pthread.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++#include <IOKit/IOKitLib.h>
++
++#include "vdrm.h"
++#include "vdrm_darwin.h"
++#include "DroidVMVirtgpuABI.h"
++
++#include "drm-uapi/drm.h"
++#include "drm-uapi/virtgpu_drm.h"
++#include "util/hash_table.h"
++#include "util/macros.h"
++#include "util/log.h"
++#include "util/os_time.h"
++#include "util/u_sync_provider.h"
++
++#ifdef __APPLE__
++#include <os/log.h>
++#endif
++
++#define DARWIN_TUNNEL_MAGIC 0x4e544e4cu   /* 'NTNL' */
++#define DARWIN_CAPSET_DRM 6               /* VIRTGPU_DRM_CAPSET_DRM */
++#define DARWIN_SHMEM_SZ 0x4000
++#define DARWIN_MAX_RINGS 64               /* CONTEXT_INIT's num_rings, as vdrm_virtgpu.c asks */
++#define DARWIN_FOREVER_NS ((uint64_t)INT64_MAX)   /* the kernel adds it to its clock in us: no overflow */
++
++struct darwin_bo {
++   uint32_t res_id;
++   uint64_t size;
++   void *map;
++};
++
++enum darwin_sync_state {
++   DARWIN_SYNC_FREE = 0,
++   DARWIN_SYNC_UNSIGNALED,   /* no fence yet */
++   DARWIN_SYNC_FENCE,        /* signalled when (ring, fence) retires */
++   DARWIN_SYNC_SIGNALED,
++};
++
++struct darwin_syncobj {
++   uint32_t state;
++   uint32_t ring;
++   uint64_t fence;
++};
++
++struct darwin_device {
++   struct vdrm_device base;
++   io_connect_t conn;
++   uint32_t selector;
++   uint32_t context_id;
++   uint32_t shmem_handle;
++   uint32_t abi_version;
++
++   pthread_mutex_t lock;        /* bos, syncobjs, last and done */
++   pthread_cond_t fenced;       /* a syncobj got a fence or was signalled */
++   struct hash_table_u64 *bos;  /* kernel handle -> struct darwin_bo */
++   struct darwin_syncobj *syncobjs;   /* handle - 1 */
++   uint32_t num_syncobjs;
++   uint64_t last[DARWIN_MAX_RINGS];   /* the last fence numbered on each ring */
++   uint64_t done[DARWIN_MAX_RINGS];   /* the last fence known retired */
++};
++DEFINE_CAST(vdrm_device, darwin_device)
++
++/* One line to Mesa's log and, on Darwin, to the unified log (where the A56's log tools read it): the
++ * connect line once per device, and failures. */
++static void PRINTFLIKE(2, 3)
++dw_say(bool error, const char *format, ...)
++{
++   char text[384];
++   va_list args;
++   va_start(args, format);
++   vsnprintf(text, sizeof(text), format, args);
++   va_end(args);
++   if (error)
++      mesa_loge("%s", text);
++   else
++      mesa_logi("%s", text);
++#ifdef __APPLE__
++   os_log_with_type(OS_LOG_DEFAULT, error ? OS_LOG_TYPE_ERROR : OS_LOG_TYPE_DEFAULT, "%{public}s", text);
++#endif
++}
++
++static int
++kr_to_errno(kern_return_t kr)
++{
++   switch (kr) {
++   case KERN_SUCCESS: return 0;
++   case kIOReturnNoMemory: return -ENOMEM;
++   case kIOReturnNoResources: return -ENOSPC;
++   case kIOReturnTimeout: return -ETIME;
++   case kIOReturnBadArgument: return -EINVAL;
++   case kIOReturnUnsupported: return -ENOTSUP;
++   case kIOReturnNotReady: return -EAGAIN;
++   default: return -EIO;
++   }
++}
++
++/* One method through the tunnel: {'NTNL', method} and then the record. */
++static kern_return_t
++dw_call(struct darwin_device *dw, uint32_t op, const void *in, size_t in_size, void *out, size_t out_size)
++{
++   uint8_t stack[512];
++   uint8_t *buffer = in_size + 8 <= sizeof(stack) ? stack : malloc(in_size + 8);
++   if (!buffer)
++      return kIOReturnNoMemory;
++   const uint32_t header[2] = {DARWIN_TUNNEL_MAGIC, DROIDVM_VIRTGPU_METHOD + op};
++   memcpy(buffer, header, sizeof(header));
++   if (in_size)
++      memcpy(buffer + 8, in, in_size);
++   size_t out_bytes = out_size;
++   kern_return_t kr = IOConnectCallStructMethod(dw->conn, dw->selector, buffer, in_size + 8,
++                                                out_size ? out : NULL, out_size ? &out_bytes : NULL);
++   if (buffer != stack)
++      free(buffer);
++   return kr;
++}
++
++static uint64_t
++dw_get_param(struct darwin_device *dw, uint64_t param)
++{
++   const struct droidvm_virtgpu_getparam in = {param};
++   struct droidvm_virtgpu_getparam_reply out = {0};
++   return dw_call(dw, DROIDVM_VIRTGPU_GETPARAM, &in, sizeof(in), &out, sizeof(out)) == KERN_SUCCESS ? out.value : 0;
++}
++
++/* Wait in the kernel for (ring, fence); 0, -ETIME, or another negative errno. */
++static int
++dw_wait(struct darwin_device *dw, uint32_t ring, uint64_t fence, uint64_t timeout_ns)
++{
++   if (!fence || ring >= DARWIN_MAX_RINGS)
++      return 0;
++   pthread_mutex_lock(&dw->lock);
++   const bool retired = fence <= dw->done[ring];
++   pthread_mutex_unlock(&dw->lock);
++   if (retired)
++      return 0;
++   const struct droidvm_virtgpu_wait_fence wait = {ring, 0, fence, timeout_ns};
++   kern_return_t kr = dw_call(dw, DROIDVM_VIRTGPU_WAIT_FENCE, &wait, sizeof(wait), NULL, 0);
++   if (kr != KERN_SUCCESS)
++      return kr_to_errno(kr);
++   pthread_mutex_lock(&dw->lock);
++   if (fence > dw->done[ring])
++      dw->done[ring] = fence;
++   pthread_mutex_unlock(&dw->lock);
++   return 0;
++}
++
++static struct darwin_syncobj *
++dw_syncobj(struct darwin_device *dw, uint32_t handle)
++{
++   if (!handle || handle > dw->num_syncobjs || dw->syncobjs[handle - 1].state == DARWIN_SYNC_FREE)
++      return NULL;
++   return &dw->syncobjs[handle - 1];
++}
++
++static bool
++dw_syncobj_signaled_locked(struct darwin_device *dw, const struct darwin_syncobj *s)
++{
++   return s->state == DARWIN_SYNC_SIGNALED ||
++          (s->state == DARWIN_SYNC_FENCE && s->fence <= dw->done[s->ring]);
++}
++
++static int
++darwin_execbuf_locked(struct vdrm_device *vdev, struct vdrm_execbuf_params *p, void *command, unsigned size)
++{
++   struct darwin_device *dw = to_darwin_device(vdev);
++
++   simple_mtx_assert_locked(&vdev->eb_lock);
++
++   if (!size || (size & 3) || size > DROIDVM_VIRTGPU_MAX_COMMAND || p->ring_idx < 0 || p->ring_idx >= DARWIN_MAX_RINGS) {
++      dw_say(true, "vdrm-darwin: EXECBUFFER of %u bytes on ring %d refused here (at most %u, 4-aligned)", size,
++                p->ring_idx, DROIDVM_VIRTGPU_MAX_COMMAND);
++      return -EINVAL;
++   }
++   if (p->num_handles || p->has_in_fence_fd) {
++      /* No implicit sync on BO lists and no fence descriptors here; amdgpu virtio sends neither. */
++      dw_say(true, "vdrm-darwin: EXECBUFFER with %u BO handles / an in-fence fd: not on Darwin", p->num_handles);
++      return -ENOTSUP;
++   }
++
++   /* The in-syncobjs: as DRM, one with no fence is an error; one on another ring is waited for here. */
++   struct { uint32_t ring; uint64_t fence; } waits[16];
++   unsigned num_waits = 0;
++   pthread_mutex_lock(&dw->lock);
++   for (unsigned i = 0; i < p->num_in_syncobjs; i++) {
++      struct darwin_syncobj *s = dw_syncobj(dw, p->in_syncobjs[i].handle);
++      if (!s || s->state == DARWIN_SYNC_UNSIGNALED) {
++         pthread_mutex_unlock(&dw->lock);
++         return s ? -EINVAL : -ENOENT;
++      }
++      if (s->state != DARWIN_SYNC_FENCE || dw_syncobj_signaled_locked(dw, s) || (int)s->ring == p->ring_idx)
++         continue;
++      unsigned j = 0;
++      while (j < num_waits && waits[j].ring != s->ring)
++         j++;
++      if (j == num_waits) {
++         if (num_waits == ARRAY_SIZE(waits)) {
++            pthread_mutex_unlock(&dw->lock);
++            return -E2BIG;
++         }
++         waits[num_waits].ring = s->ring;
++         waits[num_waits++].fence = s->fence;
++      } else if (s->fence > waits[j].fence) {
++         waits[j].fence = s->fence;
++      }
++   }
++   for (unsigned i = 0; i < p->num_out_syncobjs; i++) {
++      if (!dw_syncobj(dw, p->out_syncobjs[i].handle)) {
++         pthread_mutex_unlock(&dw->lock);
++         return -ENOENT;
++      }
++   }
++   pthread_mutex_unlock(&dw->lock);
++   for (unsigned i = 0; i < num_waits; i++) {
++      int ret = dw_wait(dw, waits[i].ring, waits[i].fence, DARWIN_FOREVER_NS);
++      if (ret)
++         return ret;
++   }
++
++   const bool fenced = p->num_out_syncobjs || p->needs_out_fence_fd;
++   const size_t total = sizeof(struct droidvm_virtgpu_execbuffer) + size;
++   uint8_t *record = malloc(total);
++   if (!record)
++      return -ENOMEM;
++   const struct droidvm_virtgpu_execbuffer e = {fenced ? DROIDVM_VIRTGPU_EXEC_FENCE : 0, (uint32_t)p->ring_idx, size, 0};
++   memcpy(record, &e, sizeof(e));
++   memcpy(record + sizeof(e), command, size);
++   struct droidvm_virtgpu_execbuffer_reply reply = {0};
++   kern_return_t kr = dw_call(dw, DROIDVM_VIRTGPU_EXECBUFFER, record, total, &reply, sizeof(reply));
++   free(record);
++   if (kr != KERN_SUCCESS) {
++      dw_say(true, "vdrm-darwin: EXECBUFFER (%u bytes, ring %d) failed: 0x%x", size, p->ring_idx, kr);
++      return kr_to_errno(kr);
++   }
++
++   p->out_fence = 0;
++   p->fence_fd = -1;
++   if (fenced) {
++      pthread_mutex_lock(&dw->lock);
++      if (reply.fence > dw->last[p->ring_idx])
++         dw->last[p->ring_idx] = reply.fence;
++      for (unsigned i = 0; i < p->num_out_syncobjs; i++) {
++         struct darwin_syncobj *s = dw_syncobj(dw, p->out_syncobjs[i].handle);
++         if (s) {
++            s->state = DARWIN_SYNC_FENCE;
++            s->ring = p->ring_idx;
++            s->fence = reply.fence;
++         }
++      }
++      pthread_cond_broadcast(&dw->fenced);
++      pthread_mutex_unlock(&dw->lock);
++      p->out_fence = reply.fence;
++   }
++   return 0;
++}
++
++static int
++darwin_flush_locked(struct vdrm_device *vdev, uintptr_t *fencep)
++{
++   simple_mtx_assert_locked(&vdev->eb_lock);
++
++   if (!vdev->reqbuf_len)
++      return 0;
++
++   /* ccmds go on ring 0 (the CPU ring); fenced only when the caller will wait for the host's answer. */
++   struct vdrm_execbuf_params p = {
++      .ring_idx = 0,
++      .needs_out_fence_fd = !!fencep,
++   };
++   int ret = darwin_execbuf_locked(vdev, &p, vdev->reqbuf, vdev->reqbuf_len);
++   if (ret)
++      return ret;
++
++   vdev->reqbuf_len = 0;
++   vdev->reqbuf_cnt = 0;
++
++   if (fencep)
++      *fencep = (uintptr_t)p.out_fence;
++
++   return 0;
++}
++
++static void
++darwin_wait_fence(struct vdrm_device *vdev, uintptr_t fence)
++{
++   int ret = dw_wait(to_darwin_device(vdev), 0, fence, DARWIN_FOREVER_NS);
++   if (ret)
++      dw_say(true, "vdrm-darwin: WAIT_FENCE ring 0 fence %llu failed: %d", (unsigned long long)fence, ret);
++}
++
++static uint32_t
++darwin_dmabuf_to_handle(struct vdrm_device *vdev, int fd)
++{
++   (void)vdev;
++   (void)fd;
++   dw_say(true, "vdrm-darwin: no dma-bufs on Darwin (import of fd %d refused)", fd);
++   return 0;
++}
++
++static uint32_t
++darwin_handle_to_res_id(struct vdrm_device *vdev, uint32_t handle)
++{
++   struct darwin_device *dw = to_darwin_device(vdev);
++   pthread_mutex_lock(&dw->lock);
++   struct darwin_bo *bo = _mesa_hash_table_u64_search(dw->bos, handle);
++   const uint32_t res_id = bo ? bo->res_id : 0;
++   pthread_mutex_unlock(&dw->lock);
++   if (!res_id)
++      dw_say(true, "vdrm-darwin: no resource for handle %u", handle);
++   return res_id;
++}
++
++static uint32_t
++dw_remember(struct darwin_device *dw, uint32_t handle, uint32_t res_id, uint64_t size)
++{
++   struct darwin_bo *bo = calloc(1, sizeof(*bo));
++   if (!bo) {
++      const struct droidvm_virtgpu_handle close = {handle, 0};
++      dw_call(dw, DROIDVM_VIRTGPU_GEM_CLOSE, &close, sizeof(close), NULL, 0);
++      return 0;
++   }
++   bo->res_id = res_id;
++   bo->size = size;
++   pthread_mutex_lock(&dw->lock);
++   _mesa_hash_table_u64_insert(dw->bos, handle, bo);
++   pthread_mutex_unlock(&dw->lock);
++   return handle;
++}
++
++static uint32_t
++darwin_bo_create(struct vdrm_device *vdev, size_t size, uint32_t blob_flags, uint64_t blob_id, uint32_t blob_hints,
++                 struct vdrm_ccmd_req *req)
++{
++   struct darwin_device *dw = to_darwin_device(vdev);
++   (void)blob_hints;   /* the ABI has none */
++
++   simple_mtx_assert_locked(&vdev->eb_lock);
++
++   const uint32_t cmd_size = req ? req->len : 0;
++   if (cmd_size > DROIDVM_VIRTGPU_MAX_COMMAND || (cmd_size & 3)) {
++      dw_say(true, "vdrm-darwin: CREATE_BLOB ccmd of %u bytes refused here", cmd_size);
++      return 0;
++   }
++   /* K2: blob_id 0 is the host's (the shmem); every other BO is the guest's pages, imported by the host. */
++   const bool guest = blob_id != 0;
++   const struct droidvm_virtgpu_create_blob blob = {
++      .blob_mem = guest ? DROIDVM_VIRTGPU_BLOB_MEM_HOST3D_GUEST : DROIDVM_VIRTGPU_BLOB_MEM_HOST3D,
++      .blob_flags = blob_flags | (guest ? DROIDVM_VIRTGPU_BLOB_FLAG_CREATE_GUEST_HANDLE : 0),
++      .size = size,
++      .blob_id = blob_id,
++      .cmd_size = cmd_size,
++   };
++   const size_t total = sizeof(blob) + cmd_size;
++   uint8_t *record = malloc(total);
++   if (!record)
++      return 0;
++   memcpy(record, &blob, sizeof(blob));
++   if (cmd_size)
++      memcpy(record + sizeof(blob), req, cmd_size);
++   struct droidvm_virtgpu_create_blob_reply reply = {0};
++   kern_return_t kr = dw_call(dw, DROIDVM_VIRTGPU_CREATE_BLOB, record, total, &reply, sizeof(reply));
++   free(record);
++   if (kr != KERN_SUCCESS || !reply.handle) {
++      dw_say(true, "vdrm-darwin: CREATE_BLOB (mem %u, flags 0x%x, %zu bytes, blob %llu) failed: 0x%x", blob.blob_mem,
++                blob.blob_flags, size, (unsigned long long)blob_id, kr);
++      return 0;
++   }
++   return dw_remember(dw, reply.handle, reply.resource_id, size);
++}
++
++uint32_t
++vdrm_darwin_bo_create_user(struct vdrm_device *vdev, void *address, size_t size, uint32_t blob_flags, uint64_t blob_id,
++                           struct vdrm_ccmd_req *req)
++{
++   struct darwin_device *dw = to_darwin_device(vdev);
++   const uint32_t cmd_size = req ? req->len : 0;
++   if (!address || ((uintptr_t)address & 4095) || (size & 4095) || !blob_id || cmd_size > DROIDVM_VIRTGPU_MAX_COMMAND)
++      return 0;
++
++   simple_mtx_lock(&vdev->eb_lock);
++   vdev->funcs->flush_locked(vdev, NULL);
++   if (req)
++      req->seqno = ++vdev->next_seqno;
++   const struct droidvm_virtgpu_create_blob_user blob = {
++      .address = (uintptr_t)address,
++      .size = size,
++      .blob_id = blob_id,
++      .blob_flags = blob_flags | DROIDVM_VIRTGPU_BLOB_FLAG_CREATE_GUEST_HANDLE,
++      .cmd_size = cmd_size,
++   };
++   const size_t total = sizeof(blob) + cmd_size;
++   uint8_t *record = malloc(total);
++   kern_return_t kr = kIOReturnNoMemory;
++   struct droidvm_virtgpu_create_blob_reply reply = {0};
++   if (record) {
++      memcpy(record, &blob, sizeof(blob));
++      if (cmd_size)
++         memcpy(record + sizeof(blob), req, cmd_size);
++      kr = dw_call(dw, DROIDVM_VIRTGPU_CREATE_BLOB_USER, record, total, &reply, sizeof(reply));
++      free(record);
++   }
++   simple_mtx_unlock(&vdev->eb_lock);
++   if (kr != KERN_SUCCESS || !reply.handle) {
++      dw_say(true, "vdrm-darwin: CREATE_BLOB_USER (%zu bytes at %p, blob %llu) failed: 0x%x", size, address,
++                (unsigned long long)blob_id, kr);
++      return 0;
++   }
++   return dw_remember(dw, reply.handle, reply.resource_id, size);
++}
++
++static int
++darwin_bo_wait(struct vdrm_device *vdev, uint32_t handle)
++{
++   struct darwin_device *dw = to_darwin_device(vdev);
++   (void)handle;
++   /* A submission does not name its BOs here: everything submitted so far, on every ring. */
++   uint64_t last[DARWIN_MAX_RINGS];
++   pthread_mutex_lock(&dw->lock);
++   memcpy(last, dw->last, sizeof(last));
++   pthread_mutex_unlock(&dw->lock);
++   for (uint32_t ring = 0; ring < DARWIN_MAX_RINGS; ring++) {
++      int ret = dw_wait(dw, ring, last[ring], DARWIN_FOREVER_NS);
++      if (ret)
++         return ret;
++   }
++   return 0;
++}
++
++static void *
++darwin_bo_map(struct vdrm_device *vdev, uint32_t handle, size_t size, void *placed_addr)
++{
++   struct darwin_device *dw = to_darwin_device(vdev);
++   if (placed_addr) {
++      dw_say(true, "vdrm-darwin: a placed map (handle %u at %p): not on Darwin", handle, placed_addr);
++      return NULL;
++   }
++   pthread_mutex_lock(&dw->lock);
++   struct darwin_bo *bo = _mesa_hash_table_u64_search(dw->bos, handle);
++   void *map = bo ? bo->map : NULL;
++   pthread_mutex_unlock(&dw->lock);
++   if (map)
++      return map;
++
++   const struct droidvm_virtgpu_handle in = {handle, 0};
++   struct droidvm_virtgpu_map_reply out = {0};
++   kern_return_t kr = dw_call(dw, DROIDVM_VIRTGPU_MAP, &in, sizeof(in), &out, sizeof(out));
++   if (kr != KERN_SUCCESS || !out.address || out.size < size) {
++      dw_say(true, "vdrm-darwin: MAP of handle %u (%zu bytes) failed: 0x%x (%llu bytes)", handle, size, kr,
++                (unsigned long long)out.size);
++      return NULL;
++   }
++   map = (void *)(uintptr_t)out.address;
++   pthread_mutex_lock(&dw->lock);
++   bo = _mesa_hash_table_u64_search(dw->bos, handle);
++   if (bo)
++      bo->map = map;
++   pthread_mutex_unlock(&dw->lock);
++   return map;
++}
++
++static int
++darwin_bo_export_dmabuf(struct vdrm_device *vdev, uint32_t handle)
++{
++   (void)vdev;
++   dw_say(true, "vdrm-darwin: no dma-bufs on Darwin (export of handle %u refused)", handle);
++   return -ENOTSUP;
++}
++
++static void
++dw_gem_close(struct darwin_device *dw, uint32_t handle)
++{
++   /* The kernel unmaps the BO from this task and frees its pages once the context's submissions are done. */
++   const struct droidvm_virtgpu_handle close = {handle, 0};
++   kern_return_t kr = dw_call(dw, DROIDVM_VIRTGPU_GEM_CLOSE, &close, sizeof(close), NULL, 0);
++   if (kr != KERN_SUCCESS)
++      dw_say(true, "vdrm-darwin: GEM_CLOSE of handle %u failed: 0x%x", handle, kr);
++   pthread_mutex_lock(&dw->lock);
++   struct darwin_bo *bo = _mesa_hash_table_u64_search(dw->bos, handle);
++   if (bo)
++      _mesa_hash_table_u64_remove(dw->bos, handle);
++   pthread_mutex_unlock(&dw->lock);
++   free(bo);
++}
++
++static void
++darwin_bo_close(struct vdrm_device *vdev, uint32_t handle)
++{
++   /* Flush the buffered ccmds first, so the close does not overtake one that names the resource. */
++   if (vdev->reqbuf_len) {
++      simple_mtx_lock(&vdev->eb_lock);
++      darwin_flush_locked(vdev, NULL);
++      simple_mtx_unlock(&vdev->eb_lock);
++   }
++   dw_gem_close(to_darwin_device(vdev), handle);
++}
++
++static void
++darwin_close(struct vdrm_device *vdev)
++{
++   struct darwin_device *dw = to_darwin_device(vdev);
++   if (dw->shmem_handle)
++      dw_gem_close(dw, dw->shmem_handle);
++   /* Closing the connection ends the context: the kernel drains its submissions and drops every resource. */
++   IOServiceClose(dw->conn);
++   hash_table_u64_foreach(dw->bos, entry)
++      free(entry.data);
++   _mesa_hash_table_u64_destroy(dw->bos);
++   free(dw->syncobjs);
++   pthread_cond_destroy(&dw->fenced);
++   pthread_mutex_destroy(&dw->lock);
++}
++
++static const struct vdrm_device_funcs darwin_funcs = {
++   .flush_locked = darwin_flush_locked,
++   .wait_fence = darwin_wait_fence,
++   .execbuf_locked = darwin_execbuf_locked,
++   .dmabuf_to_handle = darwin_dmabuf_to_handle,
++   .handle_to_res_id = darwin_handle_to_res_id,
++   .bo_create = darwin_bo_create,
++   .bo_wait = darwin_bo_wait,
++   .bo_map = darwin_bo_map,
++   .bo_export_dmabuf = darwin_bo_export_dmabuf,
++   .bo_close = darwin_bo_close,
++   .close = darwin_close,
++};
++
++bool
++vdrm_is_darwin(struct vdrm_device *vdev)
++{
++   return vdev && vdev->funcs == &darwin_funcs;
++}
++
++int
++vdrm_darwin_wait(struct vdrm_device *vdev, uint32_t ring, uint64_t fence, uint64_t timeout_ns)
++{
++   return vdrm_is_darwin(vdev) ? dw_wait(to_darwin_device(vdev), ring, fence, timeout_ns) : -ENODEV;
++}
++
++/* Why the last connect failed, for vdrm_darwin_last_error(). */
++static char dw_why[224];
++
++const char *
++vdrm_darwin_last_error(void)
++{
++   return dw_why;
++}
++
++struct vdrm_device *
++vdrm_darwin_connect(int fd, uint32_t context_type)
++{
++   dw_why[0] = 0;
++   (void)fd;   /* the descriptor only names "the GPU" (src/oneios/oneios_drm.h); the connection is made here */
++   const char *service_class = getenv("ONEIOS_VDRM_SERVICE");
++   if (!service_class || !*service_class)
++      service_class = "IOAcceleratorES";
++
++   io_service_t service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching(service_class));
++   if (!service) {
++      snprintf(dw_why, sizeof(dw_why), "no %s service (the kernel publishes none: no oneios-gpu-amd=1 or no amdgpu host?)",
++               service_class);
++      dw_say(false, "vdrm-darwin: %s", dw_why);
++      return NULL;
++   }
++   io_connect_t conn = 0;
++   kern_return_t kr = IOServiceOpen(service, mach_task_self(), DROIDVM_VIRTGPU_OPEN_TYPE, &conn);
++   IOObjectRelease(service);
++   if (kr != KERN_SUCCESS) {
++      snprintf(dw_why, sizeof(dw_why), "%s open type 0x%x refused: 0x%x", service_class, DROIDVM_VIRTGPU_OPEN_TYPE, kr);
++      dw_say(false, "vdrm-darwin: %s", dw_why);
++      return NULL;
++   }
++
++   struct darwin_device *dw = calloc(1, sizeof(*dw));
++   if (!dw) {
++      IOServiceClose(conn);
++      return NULL;
++   }
++   dw->conn = conn;
++   pthread_mutex_init(&dw->lock, NULL);
++   pthread_cond_init(&dw->fenced, NULL);
++   dw->bos = _mesa_hash_table_u64_create(NULL);
++
++   /* The tunnel's selector: the one struct method that takes the probe record. */
++   const uint32_t probe[2] = {DARWIN_TUNNEL_MAGIC, 0xffffffffu};
++   for (dw->selector = 0; dw->selector < 256; dw->selector++)
++      if (IOConnectCallStructMethod(conn, dw->selector, probe, sizeof(probe), NULL, NULL) == KERN_SUCCESS)
++         break;
++   const char *why = NULL;
++   if (dw->selector == 256)
++      why = "no tunnel selector";
++
++   dw->abi_version = why ? 0 : (uint32_t)dw_get_param(dw, DROIDVM_VIRTGPU_PARAM_ABI_VERSION);
++   if (!why && !dw_get_param(dw, DROIDVM_VIRTGPU_PARAM_CREATE_GUEST_HANDLE))
++      why = "the kernel cannot give the host guest pages (PARAM_CREATE_GUEST_HANDLE 0)";
++
++   struct vdrm_device *vdev = &dw->base;
++   if (!why) {
++      const struct droidvm_virtgpu_get_caps caps = {DARWIN_CAPSET_DRM, 0};
++      memset(&vdev->caps, 0, sizeof(vdev->caps));
++      kr = dw_call(dw, DROIDVM_VIRTGPU_GET_CAPS, &caps, sizeof(caps), &vdev->caps, sizeof(vdev->caps));
++      if (kr != KERN_SUCCESS)
++         why = "GET_CAPS of capset 6 failed";
++   }
++   if (!why && vdev->caps.context_type != context_type) {
++      /* As vdrm_virtgpu.c: another driver's context; not an error, so nothing is logged. */
++      snprintf(dw_why, sizeof(dw_why), "capset 6 is context type %u, not %u (amdgpu is 2)", vdev->caps.context_type,
++               context_type);
++      darwin_close(vdev);
++      free(dw);
++      return NULL;
++   }
++
++   struct droidvm_virtgpu_context_init_reply context = {0};
++   if (!why) {
++      const struct droidvm_virtgpu_context_init init = {DARWIN_CAPSET_DRM, DARWIN_MAX_RINGS};
++      kr = dw_call(dw, DROIDVM_VIRTGPU_CONTEXT_INIT, &init, sizeof(init), &context, sizeof(context));
++      if (kr != KERN_SUCCESS)
++         why = "CONTEXT_INIT failed";
++      dw->context_id = context.context_id;
++   }
++
++   /* The shmem: a HOST3D blob (blob_id 0), the host's pool, where the host answers ccmds. */
++   struct droidvm_virtgpu_map_reply map = {0};
++   if (!why) {
++      const struct droidvm_virtgpu_create_blob shmem = {DROIDVM_VIRTGPU_BLOB_MEM_HOST3D, DROIDVM_VIRTGPU_BLOB_FLAG_MAPPABLE,
++                                                        DARWIN_SHMEM_SZ, 0, 0, 0};
++      struct droidvm_virtgpu_create_blob_reply blob = {0};
++      kr = dw_call(dw, DROIDVM_VIRTGPU_CREATE_BLOB, &shmem, sizeof(shmem), &blob, sizeof(blob));
++      if (kr != KERN_SUCCESS || !blob.handle)
++         why = "the shmem's CREATE_BLOB failed";
++      dw->shmem_handle = blob.handle;
++   }
++   if (!why) {
++      const struct droidvm_virtgpu_handle in = {dw->shmem_handle, 0};
++      kr = dw_call(dw, DROIDVM_VIRTGPU_MAP, &in, sizeof(in), &map, sizeof(map));
++      if (kr != KERN_SUCCESS || !map.address || map.size < DARWIN_SHMEM_SZ)
++         why = "the shmem's MAP failed";
++   }
++   if (!why) {
++      vdev->shmem = (struct vdrm_shmem *)(uintptr_t)map.address;
++      const uint32_t offset = vdev->shmem->rsp_mem_offset;
++      if (!offset || offset >= DARWIN_SHMEM_SZ)
++         why = "the host set no response area in the shmem";
++      else {
++         vdev->rsp_mem_len = DARWIN_SHMEM_SZ - offset;
++         vdev->rsp_mem = (uint8_t *)vdev->shmem + offset;
++      }
++   }
++   if (why) {
++      snprintf(dw_why, sizeof(dw_why), "%s: %s (0x%x)", service_class, why, kr);
++      dw_say(true, "vdrm-darwin: %s", dw_why);
++      darwin_close(vdev);
++      free(dw);
++      return NULL;
++   }
++
++   vdev->funcs = &darwin_funcs;
++   vdev->supports_cross_device = false;
++   vdev->supports_guest_alloc = true;
++
++   dw_say(false, "vdrm-darwin: connected: %s open type 0x%x, tunnel selector %u, ABI %u, capset 6 context type %u "
++             "(drm %u.%u.%u), context %u, shmem handle %u (%u KiB, responses at %u), guest-allocated BOs",
++             service_class, DROIDVM_VIRTGPU_OPEN_TYPE, dw->selector, dw->abi_version, vdev->caps.context_type,
++             vdev->caps.version_major, vdev->caps.version_minor, vdev->caps.version_patchlevel, dw->context_id,
++             dw->shmem_handle, DARWIN_SHMEM_SZ / 1024, vdev->shmem->rsp_mem_offset);
++   return vdev;
++}
++
++/*
++ * The DRM syncobjs of a Darwin device (no DRM: the winsys's ac_drm_cs_*syncobj* calls end here).
++ */
++struct darwin_sync_provider {
++   struct util_sync_provider base;
++   struct darwin_device *dw;
++};
++DEFINE_CAST(util_sync_provider, darwin_sync_provider)
++
++static struct darwin_device *
++sync_dw(struct util_sync_provider *p)
++{
++   return to_darwin_sync_provider(p)->dw;
++}
++
++static int
++darwin_sync_create(struct util_sync_provider *p, uint32_t flags, uint32_t *handle)
++{
++   struct darwin_device *dw = sync_dw(p);
++   pthread_mutex_lock(&dw->lock);
++   uint32_t i = 0;
++   while (i < dw->num_syncobjs && dw->syncobjs[i].state != DARWIN_SYNC_FREE)
++      i++;
++   if (i == dw->num_syncobjs) {
++      const uint32_t grown = dw->num_syncobjs ? dw->num_syncobjs * 2 : 64;
++      struct darwin_syncobj *table = realloc(dw->syncobjs, grown * sizeof(*table));
++      if (!table) {
++         pthread_mutex_unlock(&dw->lock);
++         return -ENOMEM;
++      }
++      memset(table + dw->num_syncobjs, 0, (grown - dw->num_syncobjs) * sizeof(*table));
++      dw->syncobjs = table;
++      dw->num_syncobjs = grown;
++   }
++   dw->syncobjs[i] = (struct darwin_syncobj){
++      .state = (flags & DRM_SYNCOBJ_CREATE_SIGNALED) ? DARWIN_SYNC_SIGNALED : DARWIN_SYNC_UNSIGNALED,
++   };
++   pthread_mutex_unlock(&dw->lock);
++   *handle = i + 1;
++   return 0;
++}
++
++static int
++darwin_sync_destroy(struct util_sync_provider *p, uint32_t handle)
++{
++   struct darwin_device *dw = sync_dw(p);
++   pthread_mutex_lock(&dw->lock);
++   struct darwin_syncobj *s = dw_syncobj(dw, handle);
++   if (s)
++      s->state = DARWIN_SYNC_FREE;
++   pthread_mutex_unlock(&dw->lock);
++   return s ? 0 : -ENOENT;
++}
++
++static int
++darwin_sync_no_fd(struct util_sync_provider *p, uint32_t handle, int *fd)
++{
++   (void)p;
++   (void)handle;
++   (void)fd;
++   return -ENOTSUP;   /* no syncobj or sync file descriptors on Darwin */
++}
++
++static int
++darwin_sync_no_fd_in(struct util_sync_provider *p, int fd, uint32_t *handle)
++{
++   (void)p;
++   (void)fd;
++   (void)handle;
++   return -ENOTSUP;
++}
++
++static int
++darwin_sync_no_import(struct util_sync_provider *p, uint32_t handle, int fd)
++{
++   (void)p;
++   (void)handle;
++   (void)fd;
++   return -ENOTSUP;
++}
++
++/* DRM's syncobj wait: timeout_nsec is absolute (os_time_get_nano's clock); 0, -ETIME, -EINVAL, -ENOENT. */
++static int
++darwin_sync_wait(struct util_sync_provider *p, uint32_t *handles, unsigned num_handles, int64_t timeout_nsec,
++                 unsigned flags, uint32_t *first_signaled)
++{
++   struct darwin_device *dw = sync_dw(p);
++   const bool all = flags & DRM_SYNCOBJ_WAIT_FLAGS_WAIT_ALL;
++   const bool for_submit = flags & (DRM_SYNCOBJ_WAIT_FLAGS_WAIT_FOR_SUBMIT | DRM_SYNCOBJ_WAIT_FLAGS_WAIT_AVAILABLE);
++
++   for (;;) {
++      /* Under the lock: which are signalled, and the first that has a fence still to retire. */
++      int ret = 0, signaled = -1, pending = -1, unfenced = -1;
++      uint32_t ring = 0;
++      uint64_t fence = 0;
++      pthread_mutex_lock(&dw->lock);
++      for (unsigned i = 0; i < num_handles; i++) {
++         struct darwin_syncobj *s = dw_syncobj(dw, handles[i]);
++         if (!s) {
++            ret = -ENOENT;
++            break;
++         }
++         if (dw_syncobj_signaled_locked(dw, s)) {
++            if (signaled < 0)
++               signaled = i;
++            continue;
++         }
++         if (s->state == DARWIN_SYNC_UNSIGNALED) {
++            if (unfenced < 0)
++               unfenced = i;
++            continue;
++         }
++         if (pending < 0) {
++            pending = i;
++            ring = s->ring;
++            fence = s->fence;
++         }
++      }
++      if (!ret && unfenced >= 0 && !for_submit)
++         ret = -EINVAL;   /* as DRM: a syncobj with no fence, and the caller would not wait for one */
++      if (!ret && unfenced >= 0 && (all || (signaled < 0 && pending < 0))) {
++         /* Wait for a submission to give it a fence (WAIT_FOR_SUBMIT): on the condition, not by polling. */
++         const int64_t now = os_time_get_nano();
++         if (timeout_nsec <= now) {
++            ret = -ETIME;
++         } else if (timeout_nsec == INT64_MAX) {
++            pthread_cond_wait(&dw->fenced, &dw->lock);
++            pthread_mutex_unlock(&dw->lock);
++            continue;
++         } else {
++            struct timespec until;
++            clock_gettime(CLOCK_REALTIME, &until);
++            const int64_t rel = timeout_nsec - now;
++            until.tv_sec += rel / 1000000000;
++            until.tv_nsec += rel % 1000000000;
++            if (until.tv_nsec >= 1000000000) {
++               until.tv_sec++;
++               until.tv_nsec -= 1000000000;
++            }
++            pthread_cond_timedwait(&dw->fenced, &dw->lock, &until);
++            pthread_mutex_unlock(&dw->lock);
++            continue;
++         }
++      }
++      pthread_mutex_unlock(&dw->lock);
++      if (ret)
++         return ret;
++      if (pending < 0 || (!all && signaled >= 0)) {
++         if (first_signaled)
++            *first_signaled = signaled >= 0 ? (uint32_t)signaled : 0;
++         return 0;
++      }
++      /* One fence to retire: in the kernel's WAIT_FENCE, which sleeps (any: the first that has a fence). */
++      const int64_t now = os_time_get_nano();
++      uint64_t rel;
++      if (timeout_nsec == INT64_MAX)
++         rel = DARWIN_FOREVER_NS;
++      else
++         rel = timeout_nsec > now ? (uint64_t)(timeout_nsec - now) : 0;
++      ret = dw_wait(dw, ring, fence, rel);
++      if (ret)
++         return ret;
++      if (!all) {
++         if (first_signaled)
++            *first_signaled = pending;
++         return 0;
++      }
++   }
++}
++
++static int
++darwin_sync_set(struct util_sync_provider *p, const uint32_t *handles, uint32_t count, uint32_t state)
++{
++   struct darwin_device *dw = sync_dw(p);
++   int ret = 0;
++   pthread_mutex_lock(&dw->lock);
++   for (uint32_t i = 0; i < count; i++) {
++      struct darwin_syncobj *s = dw_syncobj(dw, handles[i]);
++      if (!s) {
++         ret = -ENOENT;
++         continue;
++      }
++      *s = (struct darwin_syncobj){.state = state};
++   }
++   if (state == DARWIN_SYNC_SIGNALED)
++      pthread_cond_broadcast(&dw->fenced);
++   pthread_mutex_unlock(&dw->lock);
++   return ret;
++}
++
++static int
++darwin_sync_reset(struct util_sync_provider *p, const uint32_t *handles, uint32_t count)
++{
++   return darwin_sync_set(p, handles, count, DARWIN_SYNC_UNSIGNALED);
++}
++
++static int
++darwin_sync_signal(struct util_sync_provider *p, const uint32_t *handles, uint32_t count)
++{
++   return darwin_sync_set(p, handles, count, DARWIN_SYNC_SIGNALED);
++}
++
++/* Binary syncobjs only: a point is 1 once signalled, else 0. */
++static int
++darwin_sync_query(struct util_sync_provider *p, uint32_t *handles, uint64_t *points, uint32_t count, uint32_t flags)
++{
++   struct darwin_device *dw = sync_dw(p);
++   (void)flags;
++   int ret = 0;
++   pthread_mutex_lock(&dw->lock);
++   for (uint32_t i = 0; i < count; i++) {
++      struct darwin_syncobj *s = dw_syncobj(dw, handles[i]);
++      if (!s)
++         ret = -ENOENT;
++      points[i] = s && dw_syncobj_signaled_locked(dw, s);
++   }
++   pthread_mutex_unlock(&dw->lock);
++   return ret;
++}
++
++static int
++darwin_sync_transfer(struct util_sync_provider *p, uint32_t dst_handle, uint64_t dst_point, uint32_t src_handle,
++                     uint64_t src_point, uint32_t flags)
++{
++   struct darwin_device *dw = sync_dw(p);
++   (void)flags;
++   if (dst_point || src_point)
++      return -ENOTSUP;   /* no timelines */
++   pthread_mutex_lock(&dw->lock);
++   struct darwin_syncobj *dst = dw_syncobj(dw, dst_handle), *src = dw_syncobj(dw, src_handle);
++   if (dst && src) {
++      *dst = *src;
++      pthread_cond_broadcast(&dw->fenced);
++   }
++   pthread_mutex_unlock(&dw->lock);
++   return dst && src ? 0 : -ENOENT;
++}
++
++static void
++darwin_sync_finalize(struct util_sync_provider *p)
++{
++   free(p);
++}
++
++static struct util_sync_provider *
++darwin_sync_clone(struct util_sync_provider *p)
++{
++   return vdrm_darwin_get_sync(&sync_dw(p)->base);
++}
++
++struct util_sync_provider *
++vdrm_darwin_get_sync(struct vdrm_device *vdev)
++{
++   if (!vdrm_is_darwin(vdev))
++      return NULL;
++   struct darwin_sync_provider *s = calloc(1, sizeof(*s));
++   if (!s)
++      return NULL;
++   s->dw = to_darwin_device(vdev);
++   s->base = (struct util_sync_provider){
++      .create = darwin_sync_create,
++      .destroy = darwin_sync_destroy,
++      .handle_to_fd = darwin_sync_no_fd,
++      .fd_to_handle = darwin_sync_no_fd_in,
++      .import_sync_file = darwin_sync_no_import,
++      .export_sync_file = darwin_sync_no_fd,
++      .wait = darwin_sync_wait,
++      .reset = darwin_sync_reset,
++      .signal = darwin_sync_signal,
++      .timeline_signal = NULL,   /* no timelines: has_timeline_syncobj stays false */
++      .timeline_wait = NULL,
++      .query = darwin_sync_query,
++      .transfer = darwin_sync_transfer,
++      .finalize = darwin_sync_finalize,
++      .clone = darwin_sync_clone,
++   };
++   return &s->base;
++}
+diff --git a/src/virtio/vdrm/vdrm_darwin.h b/src/virtio/vdrm/vdrm_darwin.h
+new file mode 100644
+index 0000000..84fe864
+--- /dev/null
++++ b/src/virtio/vdrm/vdrm_darwin.h
+@@ -0,0 +1,48 @@
++/*
++ * vdrm on Darwin (vdrm_darwin.c): the virtio GPU's DRM native context through the guest kernel's IOKit
++ * user client (open type 0x4149, DroidVMVirtgpuABI.h).
++ *
++ * Copyright 2026 OneiOS contributors
++ * SPDX-License-Identifier: MIT
++ */
++#ifndef VDRM_DARWIN_H
++#define VDRM_DARWIN_H
++
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++struct vdrm_device;
++struct vdrm_ccmd_req;
++struct util_sync_provider;
++
++/* What vdrm_device_connect() calls on Darwin; fd only names the GPU (src/oneios/oneios_drm.h). */
++struct vdrm_device *vdrm_darwin_connect(int fd, uint32_t context_type);
++
++/* Why the last vdrm_darwin_connect() of this process gave no device ("" after a success). */
++const char *vdrm_darwin_last_error(void);
++
++/* Whether vdev is a Darwin one. */
++bool vdrm_is_darwin(struct vdrm_device *vdev);
++
++/* The DRM syncobjs of a Darwin device (binary only), for the amdgpu winsys; NULL for another vdrm device. */
++struct util_sync_provider *vdrm_darwin_get_sync(struct vdrm_device *vdev);
++
++/* Wait (in the kernel, no polling) until (ring, fence) of an EXECBUFFER retires; 0, -ETIME or -errno. */
++int vdrm_darwin_wait(struct vdrm_device *vdev, uint32_t ring, uint64_t fence, uint64_t timeout_ns);
++
++/* A guest blob over the caller's own pages ([address, address + size), 4 KiB aligned, wired until the
++ * handle's close; the caller keeps its own mapping, so the BO is not MAPped): CREATE_BLOB_USER, with the
++ * driver's ccmd (GEM_NEW) as for vdrm_bo_create. The handle, or 0. */
++uint32_t vdrm_darwin_bo_create_user(struct vdrm_device *vdev, void *address, size_t size, uint32_t blob_flags,
++                                    uint64_t blob_id, struct vdrm_ccmd_req *req);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif

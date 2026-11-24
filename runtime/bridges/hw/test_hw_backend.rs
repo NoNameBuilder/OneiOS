@@ -44,8 +44,9 @@ fn host_device() {
     std::fs::create_dir_all(&empty).unwrap();
 
     // The table: the home device first; names unique; every entry matches by a model; its xnuhost settings are only the
-    // keys the config merges as device defaults (gpu, panel-fallback, corner-radius, hw-backend*), its environment ones
-    // only variables a bridge reads. The S24 Ultra's entry holds nothing: its behaviour is today's.
+    // keys the config merges as device defaults (gpu, panel-fallback, corner-radius, artwork-subtype, boot-args-add,
+    // hz, width, height, scale, return-graceful-ms, hw-backend*), its environment ones only
+    // variables a bridge reads. The S24 Ultra's entry holds nothing: its behaviour is today's.
     let t = host_table();
     assert!(t.len() == 5 && t[0].name == "galaxy-s24-ultra");
     for (i, e) in t.iter().enumerate() {
@@ -53,14 +54,21 @@ fn host_device() {
         assert!(std::ptr::eq(host_find(e.name).unwrap(), e));
         assert!(t[..i].iter().all(|o| !o.name.eq_ignore_ascii_case(e.name)));
         for c in e.config {
-            assert!(
-                c.starts_with("gpu=")
-                    || c.starts_with("panel-fallback=")
-                    || c.starts_with("corner-radius=")
-                    || c.starts_with("boot-args-add=")
-                    || c.starts_with("hw-backend"),
-                "{c}"
+            let key = c.split('=').next().unwrap_or("");
+            let device_key = matches!(
+                key,
+                "gpu"
+                    | "panel-fallback"
+                    | "corner-radius"
+                    | "artwork-subtype"
+                    | "boot-args-add"
+                    | "hz"
+                    | "width"
+                    | "height"
+                    | "scale"
+                    | "return-graceful-ms"
             );
+            assert!(device_key || key.starts_with("hw-backend"), "{c}");
         }
         for v in e.env {
             assert!(

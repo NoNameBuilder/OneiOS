@@ -37,7 +37,8 @@ library's NEEDED libraries and undefined symbols against the NDK's API 30 stubs 
 | File | What it is |
 |---|---|
 | `src/xhd/` | the portable core, shared with xnuhost (which links this crate): `mod.rs` (formats, dataspaces, `Rect`, `fit`, `copy`, `hold_first`), `protocol.rs` (the `display.sock` messages, `check_hello`, `connect`, `send_panel`, `recv_hello`, `drain`/`drain_direct`, `send_done`; xnuhost's side: `listen`, `send_hello`, `send_flush`, `memfd`), `direct.rs` (the direct frames: `Direct`, `Slot`, `Seg`, `copy_direct`), `snapshot.rs` (`Snapshot`, `hash_tile`), `buffers.rs` (`Buffers`); its tests in `src/xhd/tests.rs` |
-| `src/jni.rs` | `liboneios-display.so` (feature `jni`, Android only: the `Java_OneiOSDisplay_n*` exports): the socket, the mapped frame, the copy into the layer's buffers, the stop signals |
+| `src/xhd/run.rs` | the run loop, portable (2026-11-24): the reader thread (the socket, the snapshot, the answers) and the poster (the layer's buffer, the fill, the post) over a `Layer` trait; host-tested with a stand-in layer (`test_run_*` in `src/xhd/tests.rs`) |
+| `src/jni.rs` | `liboneios-display.so` (feature `jni`, Android only: the `Java_OneiOSDisplay_n*` exports): the socket, the mapped frame, the layer's `ANativeWindow` as `xhd::run::Layer`, the stop signals |
 | `src/frame_perf.rs` | the bounded, allocation-free frame-timing statistics |
 | `src/sys.rs` | the system calls the helper and xnuhost's display share |
 | `java/OneiOSDisplay.java` | `oneios-display.dex`: the layers (`SurfaceControl`, `BLASTBufferQueue`), the panel's mode, the placement |
@@ -108,19 +109,28 @@ NDK's `ANativeWindow` on that `Surface`, from the mapped memfd straight into the
   guest's flush; then it fills and posts a buffer from the snapshot. Until 2026-11-23 `done` went after the post, so
   the guest's next frame also waited for `ANativeWindow_lock` (a free buffer: to the panel's vsync when the queue is
   full, "buffer wait mean 4.1 ms" on the phone, 2026-11-22) and the fill; now it is drawn while the helper posts
-  (`docs/gpu.md` 2.5; `src/jni.rs`, ported from main's `jni.c` of 91aed58: the Android build only, no host test reaches
-  the run loop; not run on the phone). xnuhost copies nothing then. A frame that only xnuhost's own pixels changed is answered after
+  (`docs/gpu.md` 2.5). **Since 2026-11-24 (fix/frame-path) the read and the post are two threads** (`src/xhd/run.rs`):
+  the reader reads each frame into the snapshot and answers as soon as it comes; the poster waits for a buffer, fills it
+  from the snapshot under the snapshot's lock (so a post is always one whole frame as read) and posts the newest
+  picture, so frames that came while it waited are one post. Before, one loop read a frame only after the post before
+  it: the phone's line of 2026-11-23 19:06 had the read start 5.5 ms after xnuhost sent the frame (buffer wait mean
+  3.6 ms), so the guest's next frame waited for a vsync on top of the read. Host test `test_run_answers_before_the_post`:
+  with every lock of a stand-in layer taking 100 ms, 20 frames are each answered within 50 ms (all of them inside the
+  first lock), and every post is one whole frame, in order. `display-post=serial` in xnuhost.conf (docs/switches.md)
+  gives the one loop's timing back (`test_run_serial`). Not run on the phone yet. xnuhost copies nothing then. A frame that only xnuhost's own pixels changed is answered after
   its post, as before. The memfd stays for what xnuhost still draws itself
   (the boot console, 2D resources): it is put into the snapshot too. A frame that cannot be read (a slot reused, a
   segment outside RAM, no snapshot: half-float frames or no memory for it) is answered with the failure flag and
   xnuhost copies the frames itself from then on. The guest flushes its whole surface every frame, so the helper finds
-  the damage itself: each tile of the frame is read once into the cache, hashed there and copied on into the snapshot
-  only when its hash differs ("The snapshot" below). An unchanged frame is answered at once and nothing is posted. A
+  the damage itself: each scanline is read once into the cache, then its tiles are hashed there and copied into the snapshot
+  only when their hashes differ ("The snapshot" below). An unchanged frame is answered at once and nothing is posted. A
   changed one: the layer's buffer is locked whole and the helper fills from the snapshot what that buffer lacks ("The
   layer's buffers" below). Protocol: `docs/booter.md` 2.8. Every 10 s the log has `10 s: N frames from xnuhost, U
   unchanged (nothing posted), P posted (M from guest RAM, C% of the rows changed, F% filled); guest pages read in one
   pass for mean ... ms, max ... ms, from ... ms after xnuhost sent the frame (mean; max ... ms); buffer wait mean ...
-  ms; copy mean ... ms, max ... ms; B buffers seen (K forgotten); this process P% of a core`, and once `frames come
+  ms; copy mean ... ms, max ... ms; posted mean ... ms, max ... ms after the read's answer; B buffers seen (K forgotten); this
+  process P% of a core` (the "posted ... after the read's answer" part since 2026-11-24: from the first change the reader
+  put into the snapshot to the post that showed it, the buffer wait and the fill), and once `frames come
   straight from guest RAM now, read once into the snapshot; each buffer gets what it lacks`. Pacing is the buffer queue's: the next buffer is handed out when
   surfaceflinger has taken the last, so the loop runs at the panel's vsync and every flush that came meanwhile is
   one post.
@@ -267,27 +277,26 @@ extended sRGB: components below 0 and above 1), white at 1.0, white at 2.0. What
   to in the layer mean 10.4-11.5 ms, 0 not answered within 100 ms. A sign of wrong offsets: 100% of the rows
   copied in every frame on a still screen. Whether answering the flush after the post slows the guest's swaps is
   not measured yet.
-- **The snapshot (2026-11-22).** The helper's own copy of the picture (`Snapshot`, `src/xhd/snapshot.rs`, 18 MB at 1440x3120
-  and one hash per tile, made before the first post), which every post is filled from. A direct frame is read into
-  it in one pass right when it comes (`Snapshot::update`): each tile of each row (4 a row) is copied from the
-  guest's pages into a one-tile buffer, hashed there, and copied on only when its hash differs. So the hash always
-  says what the snapshot holds, and the guest's pages are read once. Before, the hash read all 18 MB and then the
-  changed tiles were read a second time (from 2026-11-22 morning; before that, after the buffer wait): `guest pages
-  read for mean 5.2-6.0 ms, max 8.6-21.2 ms` on the phone. xnuhost's own pixels (the memfd) are put over it
+- **The snapshot (2026-11-22; row-read optimization 2026-11-24).** The helper's own copy of the picture (`Snapshot`,
+  `src/xhd/snapshot.rs`, 18 MB at 1440x3120 and one hash per tile, made before the first post), which every post is
+  filled from. A direct frame is read into it when it comes (`Snapshot::update`): each scanline is copied from the
+  guest's pages into a full-row scratch buffer once, then divided into tiles and hashed from that same copy. A changed
+  tile is copied into the snapshot only when its hash differs. So the hash always says what the snapshot holds and a
+  failed partial row cannot publish mixed data. At 1440 pixels wide the helper now uses 24 tiles of 60 pixels each;
+  small frames keep the original four-tile layout. This avoids repeated segment-table walks within each row and narrows
+  the changed rectangle for localized updates. The change has not been measured on the S24 Ultra yet.
+  Before the 2026-11-22 one-pass change, the hash read all 18 MB and then changed tiles were read a second time:
+  `guest pages read for mean 5.2-6.0 ms, max 8.6-21.2 ms` on the phone. The earlier one-pass version measured on the
+  build host (Apple M4, in the host tests' container, `-O2`, a 1440x3120 frame of stride 5888 in scattered 16 KiB
+  pages) at 3.2-3.3 ms a frame where the old hash and copy cost 9.2-9.3 ms (unchanged frame), and 3.6-4.7 ms against
+  9.3-10.2 ms with 30% of the rows changed. Those are measurements of the earlier one-pass implementation, not this
+  row-read change; the phone's line is still needed for a result. xnuhost's own pixels (the memfd) are put over it
   (`Snapshot::put`), and their tiles lose their hashes, so the next direct frame takes them from the guest again.
   The 10 s line says how long the read took and how long after xnuhost's send it began (`from X ms after xnuhost
-  sent the frame`: `XHDS`'s fifth word is the send time since 2026-11-22). On the build host (Apple M4, in the
-  host tests' container, `-O2`, a 1440x3120 frame of stride 5888 in scattered 16 KiB pages) the one pass costs
-  3.2-3.3 ms a frame where the old hash and copy cost 9.2-9.3 ms (unchanged frame), and 3.6-4.7 ms against 9.3-10.2
-  ms with 30% of the rows changed: about a third. The phone was not measured yet. If the ratio holds there, the
-  phone's 5.2-6.0 ms become about 2 ms, about 25% of a core when a frame comes every 120 Hz refresh (a guess until
-  the phone's line). The guest does not draw into
-  a frame's surface while the helper reads it. Its display driver lands the frame in flight (waits for the flush's
-  answer, which xnuhost holds until `done`) before it posts the next one (`DroidVMVirtioGpuDisplay.cpp`, `land()`),
-  and the compositor needs that next swap to free the surface again. The first-read delay on the phone checks this.
-  Tests: `src/xhd/tests.rs` (from `test_display.c`; the first update copies all of it, an unchanged frame nothing, a changed pixel its tile,
-  the X byte alone no change, the guest's write after the read stays out until the next read, a put tile is taken
-  from the guest again, a fault halfway keeps what was read, a reused slot reads nothing).
+  sent the frame`: `XHDS`'s fifth word is the send time since 2026-11-22). The guest does not draw into a frame's
+  surface while the helper reads it. Its display driver lands the frame in flight (waits for the flush's answer, which
+  xnuhost holds until `done`) before it posts the next one (`DroidVMVirtioGpuDisplay.cpp`, `land()`), and the
+  compositor needs that next swap to free the surface again.
 - **The layer's buffers (2026-11-22): the fix of "when the UI changes it glitches and updates".** Until then the
   helper locked only the changed tiles' rectangle and left the rest to Surface's copy-back. AOSP's `Surface::lock`
   (`libs/gui/Surface.cpp`) copies back `mDirtyRegion - dirty` from the last posted buffer and keeps `mDirtyRegion`

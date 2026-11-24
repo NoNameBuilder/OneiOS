@@ -35,6 +35,11 @@ extern volatile uint32_t droidvm_vtpv_sent, droidvm_vtpv_dropped;
 extern char droidvm_vthost_trace[16][112];
 extern volatile uint32_t droidvm_vthost_trace_count;
 extern volatile uint32_t oneios_codec_pictures[3];   // the staged DroidVMVTHost.cpp: 8-bit, 10-bit as P010, 10-bit as 8-bit
+// The staged DroidVMVTHost.cpp (edit 6, 2026-11-24): the decoder's frames by codec (avc1, hvc1, vp09, av01), handed over
+// decoded and dropped, and the time from a frame's dfrm to its Demt (sum, count, the largest since the last line).
+extern volatile uint32_t oneios_decode_frames[4], oneios_decode_dropped[4];
+extern volatile uint64_t oneios_decode_us_sum;
+extern volatile uint32_t oneios_decode_us_count, oneios_decode_us_max;
 // DroidVMVTParavirt.cpp's record of a message from a process (its struct droidvm_vtpv_record at the pin f9121cd, 136
 // bytes; the ring keeps the newest 32, indexed by seq).
 struct oneios_codec_record {
@@ -56,12 +61,35 @@ static void oneios_codec_report(void *arg, wait_result_t result) {
     printf("ONEIOS CODEC: device 0: %.191s\n", droidvm_media_status[0]);
     uint64_t last = 0;
     uint32_t traced = 0, shown = 0;
+    uint32_t decoded_last[8] = {0};
+    uint64_t us_last = 0;
+    uint32_t count_last = 0;
     for (;;) {
         IOSleep(30000);
         const uint64_t moved = (uint64_t)droidvm_vtpv_opens + droidvm_vtpv_closes + droidvm_vtpv_messages + droidvm_vthost_errors +
                                droidvm_vthost_frames_out + droidvm_media_timeouts;
         if (moved == last) continue;
         last = moved;
+        // The decoder (2026-11-24): the frames each codec decoded and dropped since the last line, and the time from a
+        // frame's dfrm to its Demt (the codec's reordering is in it), once a frame was decoded or dropped since.
+        uint32_t decoded[8], any = 0;
+        for (int i = 0; i < 4; ++i) {
+            decoded[i] = oneios_decode_frames[i] - decoded_last[i];
+            decoded[4 + i] = oneios_decode_dropped[i] - decoded_last[4 + i];
+            decoded_last[i] = oneios_decode_frames[i];
+            decoded_last[4 + i] = oneios_decode_dropped[i];
+            any |= decoded[i] | decoded[4 + i];
+        }
+        if (any) {
+            const uint64_t us = oneios_decode_us_sum - us_last;
+            const uint32_t timed = oneios_decode_us_count - count_last;
+            const uint32_t max = __atomic_exchange_n(&oneios_decode_us_max, 0u, __ATOMIC_RELAXED);
+            us_last += us;
+            count_last += timed;
+            printf("ONEIOS CODEC: decoded: avc1 %u, hvc1 %u, vp09 %u, av01 %u; dropped %u, %u, %u, %u; dfrm to Demt avg %llu us, "
+                   "max %u us (%u frames)\n", decoded[0], decoded[1], decoded[2], decoded[3], decoded[4], decoded[5], decoded[6],
+                   decoded[7], timed ? us / timed : 0, max, timed);
+        }
         // The last type the host has no case for, as its four characters ("none" before the first): a new type of a new
         // iOS (iOS 27's 'ests', 2026-11-22) shows at once on this line.
         const uint32_t unknown = droidvm_vthost_last_unknown;

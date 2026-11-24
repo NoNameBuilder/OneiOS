@@ -15,14 +15,20 @@ pub mod cpu;
 pub mod discard;
 /// The scanout and the display helper.
 pub mod display;
+/// One frame end to end: the 10 s `frame:` line.
+pub mod frame_path;
 /// The interrupt controller.
 pub mod gic;
 /// The 3D renderer's front.
 pub mod gpu3d;
+/// The amdgpu native-context renderer (the Galaxy A56's Xclipse, raw ioctls) behind the 3D front.
+pub mod gpu3d_amdgpu;
 /// The drm2kgsl renderer (Droid-VM's, linked in) behind the 3D front.
 pub mod gpu3d_kgsl;
 /// The host-call vector.
 pub mod hostcalls;
+/// The host's memory in full: the breakdown lines (docs/booter.md 2.2).
+pub mod hostmem;
 /// The image set.
 pub mod imageset;
 /// /dev/input into virtio-input.

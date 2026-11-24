@@ -102,3 +102,84 @@ int startEncoder(Session *s, const uint8_t *m, uint32_t n) {
             IOLockLock(s->lock);
             s->finishWanted = true;
 // (the end)
+// (before decoder anchor 0)
+volatile uint32_t droidvm_vthost_trace_count;
+}
+// (before decoder anchor 1)
+    bool replyHasSurface = false;
+    SurfaceView replySurface;
+};
+// (before decoder anchor 2)
+int ioctl(Session *s, uint32_t code, void *payload, uint32_t out, uint32_t in) {
+// (before decoder anchor 3)
+void copyFrame(Session *s, const Mapped &from, const SurfaceView &to) {
+    IOMemoryDescriptor *memory = IOMemoryDescriptor::withAddressRange(to.base, to.size, kIODirectionInOut, s->client->task);
+    if (!memory || memory->prepare() != kIOReturnSuccess) { OSSafeReleaseNULL(memory); failed(60, 0); return; }
+    IOMemoryMap *map = memory->createMappingInTask(kernel_task, 0, kIOMapAnywhere);
+    uint8_t *surface = map ? reinterpret_cast<uint8_t *>(map->getVirtualAddress()) : nullptr;
+    if (surface) {
+// (before decoder anchor 4)
+    } else {
+        failed(61, 0);
+    }
+    OSSafeReleaseNULL(map);
+    memory->complete();
+    memory->release();
+}
+// (before decoder anchor 5)
+    if (!hostRequest(s, w, message, request) || s->replyError || !s->replyHasSurface) {
+        failed(31, s->replyError);
+        return;
+    }
+// (before decoder anchor 6)
+    if (hostRequest(s, e, message, emit)) droidvm_vthost_frames_out = droidvm_vthost_frames_out + 1;
+}
+// (before decoder anchor 7)
+        e.u32(cc(",inf"), 2);   // kVTDecodeInfo_FrameDropped
+// (before decoder anchor 8)
+void workerMain(void *argument, wait_result_t) {
+// (before decoder anchor 9)
+            if (!s->captureStreaming) setUpCapture(s);
+// (before decoder anchor 10)
+        // H.264 and HEVC: what the virtio-media decoder takes (ENUM_FMT) and VideoToolbox can describe for it.
+        static const char *const codecs[2][3] = {
+            {"avc1", "com.droidvm.videodecoder.virtio-media.avc", "DroidVM Video Decoder - AVC (virtio-media)"},
+            {"hvc1", "com.droidvm.videodecoder.virtio-media.hevc", "DroidVM Video Decoder - HEVC (virtio-media)"},
+        };
+        int entries[2];
+        for (int i = 0; i < 2; ++i) {
+// (before decoder anchor 11)
+            entries[i] = p->dict(keys, values, 5);
+        }
+        const int list = p->array(entries, decoderDevice() == ~0u ? 0 : 2);
+// (before decoder anchor 12)
+    return false;
+}
+
+bool decodableSize(Session *s, uint32_t pixelformat) {
+// (before decoder anchor 13)
+    if (d.codec != cc("avc1") && d.codec != cc("hvc1") && d.codec != cc("hev1")) return -12906;
+// (before decoder anchor 14)
+    if (!parameterSets(s, d)) return -12909;
+// (before decoder anchor 15)
+    if (!decodableSize(s, d.codec == cc("avc1") ? cc("462H") : cc("CVEH"))) { teardown(s); return -12910; }
+// (before decoder anchor 16)
+    f.pixelformat = d.codec == cc("avc1") ? cc("462H") : cc("CVEH");   // V4L2_PIX_FMT_H264 'H264', _HEVC 'HEVC' (little endian)
+// (before decoder anchor 17)
+    IOLog("DroidVMVTHost: session %u %ux%u %c%c%c%c\n", s->v4l2, s->width, s->height, d.codec >> 24, d.codec >> 16, d.codec >> 8, d.codec);
+// (before decoder anchor 18)
+    const uint8_t *p = sdat.body, *end = sdat.body + sdat.size;
+    while (uint32_t(end - p) > s->nalLength) {
+// (before decoder anchor 19)
+    if (s->outstandingCount < 64) s->outstanding[s->outstandingCount++] = frame;
+// (before decoder anchor 20)
+}  // namespace
+
+extern "C" {
+
+// Whether crosvm gave the guest
+// (before decoder anchor 21)
+    case cc("+dec"): createDecoder(c, h, m, n); break;
+// (before decoder anchor 22)
+    OSSafeReleaseNULL(s->holder);
+}

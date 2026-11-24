@@ -8,6 +8,8 @@
 //! ```text
 //!   encctl hevc|h264|hevc10 [WIDTH HEIGHT [FILE]] default hevc 256x256; FILE: the coded stream, as it came (Annex B)
 //!   encctl caps                                  the encoders' sizes and Main10, as Android 16's codec store says
+//!   encctl decode FILE [WIDTH HEIGHT [OUT]]      the decoder (2026-11-24): an IVF (VP9, AV1) or Annex-B (H.264, HEVC)
+//!                                                file through the device and MediaCodec ([`crate::encctl_decode`])
 //! ```
 //!
 //! `hevc10` (2026-11-23) sends a P010 picture (10-bit, as the guest sends iOS's x420 and xf20 surfaces): the line
@@ -20,10 +22,12 @@
 //! IDR slice; H.264: 7 SPS, 8 PPS, 5 the IDR slice), and "ok". `error:` lines say which step failed. FILE is for a
 //! decoder off the phone (`ffmpeg -i FILE -frames:v 1 out.png`): the picture is a grey gradient with diagonal bands.
 use crate::backend::Backend;
+use crate::decoder::{DecodeBackend, PoolMem};
 use crate::media_device::{self, MediaVirtio, Stats};
 use crate::pod::Pod;
 use crate::proto::*;
 use std::io::Write;
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use xh_core::bytes::le;
@@ -68,12 +72,67 @@ impl std::fmt::Display for MmapError {
     }
 }
 
+/// The guest's media pool: a memfd mapped shared, as xnuhost's RAM is (the helper maps the same file to write the
+/// decoder's pictures into it). Its guest physical address is its host address, as [`GuestRam`]'s.
+struct PoolRam {
+    fd: OwnedFd,
+    ptr: *mut u8,
+    len: usize,
+}
+
+// SAFETY: a mapping owned by the PoolRam; access goes through raw copies, as GuestRam's.
+unsafe impl Send for PoolRam {}
+
+impl PoolRam {
+    fn new(len: usize) -> Option<PoolRam> {
+        let fd = xh_core::fd::memfd(c"encctl-pool", libc::MFD_CLOEXEC).ok()?;
+        // SAFETY: our new memfd, sized, then mapped shared for the PoolRam's life.
+        unsafe {
+            if libc::ftruncate(fd.as_raw_fd(), len as libc::off_t) != 0 {
+                return None;
+            }
+            let p = libc::mmap(
+                std::ptr::null_mut(),
+                len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                fd.as_raw_fd(),
+                0,
+            );
+            (p != libc::MAP_FAILED).then(|| PoolRam { fd, ptr: p.cast(), len })
+        }
+    }
+
+    fn pa(&self, offset: usize) -> u64 {
+        self.ptr as u64 + offset as u64
+    }
+
+    fn read(&self, offset: usize, len: usize) -> Vec<u8> {
+        assert!(offset + len <= self.len, "a read past the pool");
+        // SAFETY: inside the mapping (checked).
+        unsafe { std::slice::from_raw_parts(self.ptr.add(offset), len) }.to_vec()
+    }
+
+    fn write(&self, offset: usize, data: &[u8]) {
+        assert!(offset + data.len() <= self.len, "a write past the pool");
+        // SAFETY: inside the mapping (checked).
+        unsafe { std::ptr::copy_nonoverlapping(data.as_ptr(), self.ptr.add(offset), data.len()) };
+    }
+}
+
+impl Drop for PoolRam {
+    fn drop(&mut self) {
+        // SAFETY: our mapping, unmapped once.
+        unsafe { libc::munmap(self.ptr.cast(), self.len) };
+    }
+}
+
 /// A guest of plain memory over xh-core's transport, doing what DroidVMVirtioMedia.c does.
 pub struct Guest {
     pub dev: Arc<MediaVirtio>,
     driver: Driver,
     _rings: GuestRam,
-    pool: GuestRam,
+    pool: PoolRam,
     io: GuestRam,
     events: GuestRam,
 }
@@ -81,13 +140,42 @@ pub struct Guest {
 impl Guest {
     /// The device at `base` over `backend`, with a 32 MiB pool, brought up, its event buffers posted.
     pub fn up(backend: Arc<dyn Backend>, base: u64) -> Result<Guest, &'static str> {
+        Guest::up_with(backend, None, base)
+    }
+
+    /// The same, decoding too with `decoder`.
+    pub fn up_with(
+        backend: Arc<dyn Backend>,
+        decoder: Option<Arc<dyn DecodeBackend>>,
+        base: u64,
+    ) -> Result<Guest, &'static str> {
+        Guest::up_in(backend, |_, _| decoder, base)
+    }
+
+    /// The device decoding with the decoder `make` builds over the guest's pool: its host mapping, and its memfd (for
+    /// the helper, [`crate::backend_helper::HelperBackend::set_pool`]: the pool is the whole file, at offset 0).
+    pub fn up_decoding(
+        backend: Arc<dyn Backend>,
+        make: impl FnOnce(PoolMem, BorrowedFd<'_>) -> Arc<dyn DecodeBackend>,
+        base: u64,
+    ) -> Result<Guest, &'static str> {
+        Guest::up_in(backend, |pool, fd| Some(make(pool, fd)), base)
+    }
+
+    fn up_in(
+        backend: Arc<dyn Backend>,
+        decoder: impl FnOnce(PoolMem, BorrowedFd<'_>) -> Option<Arc<dyn DecodeBackend>>,
+        base: u64,
+    ) -> Result<Guest, &'static str> {
         testing::install();
-        let pool = GuestRam::new(POOL_BYTES);
+        let pool = PoolRam::new(POOL_BYTES).ok_or("no memfd for the pool")?;
         // SAFETY: the pool is this guest's memory, alive as long as the Guest (which holds the device's last Arc).
-        let dev = unsafe {
-            media_device::create(base, 40, Some(backend), pool.pa(0) as *mut u8, pool.pa(0), POOL_BYTES as u64)
-        }
-        .ok_or("the encoder device could not be made")?;
+        let mem = unsafe { PoolMem::new(pool.ptr, POOL_BYTES as u64) }.ok_or("no pool")?;
+        let decoder = decoder(mem, pool.fd.as_fd());
+        // SAFETY: as above.
+        let dev =
+            unsafe { media_device::create(base, 40, Some(backend), decoder, pool.ptr, pool.pa(0), POOL_BYTES as u64) }
+                .ok_or("the encoder device could not be made")?;
         let rings = GuestRam::new(2 * RING_BYTES as usize);
         let driver =
             Driver::up(dev.clone() as Arc<dyn MmioDevice>, 0, 2, QN, rings.pa(0)).ok_or("the guest's driver")?;
@@ -207,6 +295,8 @@ impl Guest {
                 if len >= 8 {
                     let pa = self.driver.desc_addr(MEDIA_QUEUE_EVENT, id % u32::from(QN));
                     let ev = self.events.read((pa - self.events.pa(0)) as usize, MEDIA_EVENT_BYTES as usize);
+                    // the buffer back to the device, as the guest's transport keeps its event queue stocked
+                    self.driver.post(MEDIA_QUEUE_EVENT, &[(pa, MEDIA_EVENT_BYTES, true)]);
                     let word = |i: usize| le::u32(&ev, i);
                     return Some((word(0), word(4), ev));
                 }
@@ -329,6 +419,12 @@ pub fn main() -> i32 {
     let codec_name = args.get(1).map_or("hevc", String::as_str);
     if codec_name == "caps" {
         return caps();
+    }
+    if codec_name == "decode" {
+        // the decoder (2026-11-24); on Android its binder threads first, as the helper's
+        #[cfg(target_os = "android")]
+        eprintln!("encctl: {}", crate::helper::binder_threads());
+        return crate::encctl_decode::decode(&args[2..]);
     }
     #[cfg(target_os = "android")]
     eprintln!("encctl: {}", crate::helper::binder_threads()); // as the helper: Codec2 calls its client back over binder

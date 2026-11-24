@@ -1,13 +1,21 @@
 #!/bin/bash
 # Build, check and publish a OneiOS release from this machine, without waiting for GitHub Actions: the runtime
 # package, the phone's oneios-tool and the OneOS APK, the same files and checks as .github/workflows/release.yml.
-#   scripts/release/release.sh VERSION [--build-only] [--runtime-only | --apk-only] [--skip-tests]
+#   scripts/release/release.sh VERSION [--build-only] [--runtime-only | --apk-only] [--skip-tests] [--metal-dir DIR | --no-metal]
+#            [--metal-amd-dir DIR | --no-metal-amd]
 #   scripts/bg.sh release scripts/release/release.sh 0.1.14     (it takes 10-20 minutes: run it in tmux)
 # VERSION is N.N.N or N.N.N-suffix; the release is the tag vVERSION, made at HEAD (which must be on origin/main).
 # Three lanes run at the same time, each with its log in out/release-local/VERSION/logs/:
-#   runtime  runtime/package.sh VERSION with the kernel pinned in kernel/release-kernel.txt (downloaded and checked as
-#            CI does), then the package's checks: drm2kgsl in xnuhost and gpuctl, elf-check.sh, the members, and
-#            .github/scripts/check-phone-tool.sh;
+#   runtime  the Metal plug-in and the capture plug-in built from HEAD (userland/metal/build.sh with METAL_OUT
+#            OUT/guest, its work in out/metal, about 7 minutes after the first; userland/camera/build.sh OUT/guest/camera),
+#            then runtime/package.sh VERSION with them as lib/guest/ (METAL_DIR, CAMERA_DIR, REQUIRE_METAL=1) and the
+#            kernel pinned in kernel/release-kernel.txt (downloaded and checked as
+#            CI does), then the package's checks: drm2kgsl in xnuhost and gpuctl, elf-check.sh, the members, the Metal
+#            bundle in runtime.json, and .github/scripts/check-phone-tool.sh;
+#            With them, the Galaxy A56's GPU plug-ins (docs/a56-gpu.md 6): userland/metal-amd/build.sh all and
+#            air/build.sh plugin with METAL_AMD_OUT OUT/guest-a56 (Mesa radeonsi, the Metal layer, the OpenGL ES layer; about
+#            10 minutes the first time, 1.5 GB), as lib/guest/OneiOSRadeonMetal.bundle and OneiOSRadeonGL.bundle beside the
+#            Adreno plug-in (METAL_AMD_DIR, REQUIRE_METAL_AMD=1), runtime.json "metal_a56";
 #   apk      app/ as it is checked out (its commit must be on the fork's origin/oneios): the guest app, then
 #            ./gradlew test assembleFullDebug signed with secrets/oneios-debug.keystore, .github/scripts/check-apk.sh,
 #            and the APK's signer must be that key;
@@ -17,6 +25,14 @@
 # release that exists alone (the plan job's "published from a machine" check), so nothing is uploaded twice.
 # --build-only builds and checks, and publishes nothing. --runtime-only and --apk-only are CI's "runtime only" and
 # "apk only" (an APK-only release is not marked latest). --skip-tests leaves out the tests lane.
+# --metal-dir DIR takes a Metal plug-in built before (userland/metal/build.sh's output folder, with camera/ holding
+# H9ISP.mediacapture when the capture plug-in goes too) instead of building one; --no-metal makes a runtime without
+# them (the phone's Make iOS image then composites on the CPU; the notes say so). The Metal build needs the iOS cross
+# toolchain and the guest's stubs (scripts/setup/ios-toolchain.sh says "ok"; docs/building.md section 9).
+# --metal-amd-dir DIR takes the A56's GPU plug-ins built before (userland/metal-amd's output folder, out/metal-amd:
+# OneiOSRadeonMetal.bundle, gl/OneiOSRadeonGL.bundle, libdrm-2.4.133/) instead of building them; --no-metal-amd leaves
+# them out (an A56 then stays on the 2D path: docs/a56-gpu.md 6). Their build needs out/ios16-tbd (docs/building.md,
+# "iOS 16.5 stubs"), external/mesa-droidvm and external/Jesvi-iOS.
 # The debug key: secrets/oneios-debug.keystore (git-ignored; store and key password "android", alias
 # androiddebugkey), the same key as the secret ONEIOS_DEBUG_KEYSTORE_B64 of akshaynexus/OneiOS and akshaynexus/OneOS,
 # so an APK from here and one from CI install over each other (docs/releases.md, "The debug key").
@@ -31,9 +47,16 @@ FORK_REPO=akshaynexus/OneOS
 KEYSTORE=$ROOT/secrets/oneios-debug.keystore
 die() { echo "release: $*" >&2; exit 1; }
 
-VERSION= PUBLISH=1 RUNTIME=1 APK=1 TESTS=1
+VERSION= PUBLISH=1 RUNTIME=1 APK=1 TESTS=1 METAL=build METAL_FROM= METAL_AMD=build METAL_AMD_FROM=
+want_dir=0 want_amd=0
 for a in "$@"; do
+  if [ "$want_dir" = 1 ]; then METAL=dir METAL_FROM=$a want_dir=0; continue; fi
+  if [ "$want_amd" = 1 ]; then METAL_AMD=dir METAL_AMD_FROM=$a want_amd=0; continue; fi
   case $a in
+  --metal-dir) want_dir=1 ;;
+  --no-metal) METAL=none ;;
+  --metal-amd-dir) want_amd=1 ;;
+  --no-metal-amd) METAL_AMD=none ;;
   --build-only) PUBLISH=0 ;;
   --runtime-only) APK=0 ;;
   --apk-only) RUNTIME=0 ;;
@@ -42,8 +65,19 @@ for a in "$@"; do
   *) [ -z "$VERSION" ] || die "one VERSION only"; VERSION=${a#v} ;;
   esac
 done
+[ "$want_dir" = 0 ] || die "--metal-dir needs a folder"
+[ "$want_amd" = 0 ] || die "--metal-amd-dir needs a folder"
+if [ "$METAL_AMD" = dir ]; then
+  METAL_AMD_FROM=$(cd "$METAL_AMD_FROM" 2>/dev/null && pwd) || die "--metal-amd-dir: no such folder"
+  [ -f "$METAL_AMD_FROM/OneiOSRadeonMetal.bundle/OneiOSRadeonMetal" ] && [ -f "$METAL_AMD_FROM/gl/OneiOSRadeonGL.bundle/OneiOSRadeonGL" ] \
+    || die "--metal-amd-dir $METAL_AMD_FROM holds no OneiOSRadeonMetal.bundle and gl/OneiOSRadeonGL.bundle"
+fi
+if [ "$METAL" = dir ]; then
+  METAL_FROM=$(cd "$METAL_FROM" 2>/dev/null && pwd) || die "--metal-dir: no such folder"
+  [ -f "$METAL_FROM/NativeAdrenoMetal.bundle/NativeAdrenoMetal" ] || die "--metal-dir $METAL_FROM holds no NativeAdrenoMetal.bundle"
+fi
 [[ $VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.]*)?$ ]] \
-  || die "usage: scripts/release/release.sh VERSION [--build-only] [--runtime-only | --apk-only] [--skip-tests]"
+  || die "usage: scripts/release/release.sh VERSION [--build-only] [--runtime-only | --apk-only] [--skip-tests] [--metal-dir DIR | --no-metal] [--metal-amd-dir DIR | --no-metal-amd]"
 [ "$RUNTIME$APK" != 00 ] || die "--runtime-only and --apk-only together build nothing"
 TAG=v$VERSION
 
@@ -70,8 +104,15 @@ if [ -z "${ANDROID_NDK_ROOT:-}" ]; then
 fi
 [ "$RUNTIME" = 0 ] || [ -n "${ANDROID_NDK_ROOT:-}" ] || die "no NDK 28.2.13676358 (set ANDROID_NDK_ROOT)"
 export ANDROID_NDK_ROOT
+# rustup's cargo first: the Metal bridge's build runs `cargo +1.98.0`, which only rustup's proxy takes. A run under
+# tmux started from ssh had /usr/bin/cargo first (the distribution's, no rustup): v0.1.24's first run stopped in the
+# runtime lane with "error: no such command: `+1.98.0`".
+[ ! -x "$HOME/.cargo/bin/rustup" ] || export PATH="$HOME/.cargo/bin:$PATH"
 if [ "$APK" = 1 ]; then
   [ -n "$SDK" ] || die "no Android SDK with build-tools 37.0.0 (set ANDROID_HOME)"
+  # Gradle finds the SDK only by ANDROID_HOME or local.properties: a run under tmux started from ssh has neither
+  # (v0.1.21's first run: "SDK location not found" in the guest's build).
+  export ANDROID_HOME=$SDK
   [ -f "$KEYSTORE" ] || die "no $KEYSTORE (docs/releases.md, \"The debug key\")"
   FORK_BRANCH=$(git config -f .gitmodules submodule.app.branch)
   FORK_COMMIT=$(git -C app rev-parse HEAD)
@@ -110,7 +151,29 @@ lane_runtime() {
   fi
   test -f external/virglrenderer/src/drm/drm2kgsl/drm2kgsl_renderer.c \
     || { echo "no external/virglrenderer with drm2kgsl (scripts/setup/get-references.sh virglrenderer)"; return 1; }
-  OUT_DIR=$OUT/files KERNEL_DIR=$KERNEL_DIR runtime/package.sh "$VERSION"
+  # The guest's plug-ins as lib/guest/ (the phone's Make iOS image seeds them): built from HEAD, or --metal-dir's.
+  local guest=() g=$OUT/guest
+  case $METAL in
+    build)
+      METAL_OUT=$g userland/metal/build.sh
+      userland/camera/build.sh "$g/camera"
+      guest=(METAL_DIR="$g" CAMERA_DIR="$g/camera" REQUIRE_METAL=1) ;;
+    dir)
+      guest=(METAL_DIR="$METAL_FROM" REQUIRE_METAL=1)
+      [ ! -f "$METAL_FROM/camera/H9ISP.mediacapture" ] || guest+=(CAMERA_DIR="$METAL_FROM/camera") ;;
+    none) echo "--no-metal: no Metal plug-in in this runtime" ;;
+  esac
+  # the Galaxy A56's GPU plug-ins beside the Adreno one (docs/a56-gpu.md 6): built from HEAD, or --metal-amd-dir's
+  local ga=$OUT/guest-a56
+  case $METAL_AMD in
+    build)
+      METAL_AMD_OUT=$ga userland/metal-amd/build.sh all
+      METAL_AMD_OUT=$ga userland/metal-amd/air/build.sh plugin "$ga/build-ios"
+      guest+=(METAL_AMD_DIR="$ga" REQUIRE_METAL_AMD=1) ;;
+    dir) guest+=(METAL_AMD_DIR="$METAL_AMD_FROM" REQUIRE_METAL_AMD=1) ;;
+    none) echo "--no-metal-amd: no A56 GPU plug-ins in this runtime" ;;
+  esac
+  env ${guest[@]+"${guest[@]}"} OUT_DIR="$OUT/files" KERNEL_DIR="$KERNEL_DIR" runtime/package.sh "$VERSION"
   local a=$OUT/files/oneios-runtime-$VERSION-arm64.tar.zst d=$OUT/runtime-unpacked b
   rm -rf "$d"; mkdir -p "$d"; zstd -dc "$a" | tar -x -C "$d"
   for b in bin/xnuhost bin/gpuctl; do
@@ -122,6 +185,22 @@ lane_runtime() {
     echo "the package has members outside the runtime's folders (above)"; return 1
   fi
   [ "$(head -n 1 "$OUT/members.txt")" = runtime.json ] || { echo "runtime.json is not the first member"; return 1; }
+  # the Metal bundle as runtime.json names it (`package manifest` checked its files against its record): for the notes
+  if [ "$METAL" != none ]; then
+    . scripts/lib/oneios-tool.sh && oneios_tool "$ROOT"
+    "$ONEIOS_TOOL" json get "$d/runtime.json" metal.target > "$OUT/metal.txt" \
+      || { echo "runtime.json names no Metal plug-in"; return 1; }
+    "$ONEIOS_TOOL" json get "$d/runtime.json" metal.cdhashes >> "$OUT/metal.txt"
+    "$ONEIOS_TOOL" json get --default none "$d/runtime.json" camera.cdhash >> "$OUT/metal.txt"
+    echo "runtime: Metal plug-in for $(head -n 1 "$OUT/metal.txt"), capture plug-in $(tail -n 1 "$OUT/metal.txt")"
+  fi
+  if [ "$METAL_AMD" != none ]; then
+    . scripts/lib/oneios-tool.sh && oneios_tool "$ROOT"
+    "$ONEIOS_TOOL" json get "$d/runtime.json" metal_a56.target > "$OUT/metal-a56.txt" \
+      || { echo "runtime.json names no A56 GPU plug-ins (metal_a56)"; return 1; }
+    "$ONEIOS_TOOL" json get "$d/runtime.json" metal_a56.cdhashes >> "$OUT/metal-a56.txt"
+    echo "runtime: the A56's GPU plug-ins for $(head -n 1 "$OUT/metal-a56.txt")"
+  fi
   OUT_DIR=$OUT/files .github/scripts/check-phone-tool.sh "$VERSION"
   echo "runtime: $(wc -l < "$OUT/members.txt") members, kernel $( [ -f "$KERNEL_DIR/xnu.macho" ] && echo in || echo none)"
 }
@@ -214,6 +293,14 @@ cd "$ROOT"
   if [ "$RUNTIME" = 1 ]; then
     echo "- **Runtime** \`oneios-runtime-$VERSION-arm64.tar.zst\` (+ \`.sha256\`): the runtime package for the OneOS fork (branch \`oneios\`). OneiOS's own code only: no Apple firmware; the iOS image set is built locally. See [docs/releases.md](https://github.com/$REPO/blob/$SHA/docs/releases.md)."
     echo "- **oneios-tool for the phone** \`oneios-tool-$VERSION-android-arm64\` (+ \`.sha256\`): the package's \`bin/oneios-tool\` by itself (OneiOS's Rust tools for Android arm64, stripped), which the OneOS app runs as root from the staged runtime."
+    if [ -s "$OUT/metal.txt" ]; then
+      echo "- **Metal plug-in** in the runtime (\`lib/guest/\`, built from source; its licences and sources in \`lib/guest/NOTICE\`): NativeAdrenoMetal for \`$(sed -n 1p "$OUT/metal.txt")\`, CDHashes \`$(sed -n 2p "$OUT/metal.txt")\`; the capture plug-in \`$(sed -n 3p "$OUT/metal.txt")\`. An image made on the phone with this runtime (Make iOS image) has them in its Data seed and their CDHashes in its owner trust list, so iOS composites on the GPU."
+    else
+      echo "- **No Metal plug-in** in this runtime (built with \`--no-metal\`): an image made on the phone with it composites on the CPU."
+    fi
+    if [ -s "$OUT/metal-a56.txt" ]; then
+      echo "- **The Galaxy A56's GPU plug-ins** in the runtime (\`lib/guest/OneiOSRadeonMetal.bundle\`, \`OneiOSRadeonGL.bundle\`, built from source; licences and sources in \`lib/guest/NOTICE\`) for \`$(sed -n 1p "$OUT/metal-a56.txt")\`, CDHashes \`$(sed -n 2p "$OUT/metal-a56.txt")\`. On an A56 with an iOS 16.5 image, Update the kernel puts them in the image as its boot addon (\`kernel.kc.gpuaddon\`, their CDHashes in its owner trust list); xnuhost turns its GPU path on when its self-test passes ([docs/a56-gpu.md](https://github.com/$REPO/blob/$SHA/docs/a56-gpu.md) section 6). Not booted before this release."
+    fi
   else
     echo "- **No runtime** in this release (built as \"apk only\"): it is not marked latest, so the app's runtime download keeps the latest release that has one."
   fi

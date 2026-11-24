@@ -136,6 +136,11 @@ fn main() {
     if args.get(1).map(String::as_str) == Some("image") && args.get(2).map(String::as_str) == Some("tweaks") {
         std::process::exit(oneios_tweaks::run(&args[3..]));
     }
+    // `image a56-gpu-place` (oneios-imagebuild a56gpu): the Galaxy A56's GPU plug-ins for a staged iOS 16.5 set, for the
+    // app's root script at Update the kernel (docs/a56-gpu.md 6)
+    if args.get(1).map(String::as_str) == Some("image") && args.get(2).map(String::as_str) == Some("a56-gpu-place") {
+        std::process::exit(oneios_imagebuild::a56gpu::place_cmd(&args[3..]));
+    }
     // `image build` (oneios-imagebuild: build.sh's steps in one process) is not one of imagetool.py's commands,
     // whose command line `image` keeps as it was.
     if args.get(1).map(String::as_str) == Some("image") && args.get(2).map(String::as_str) == Some("build") {

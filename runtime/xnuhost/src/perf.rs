@@ -231,8 +231,13 @@ pub enum Count {
     TicksUi,
     TicksDefault,
     TicksBg,
+    /// timer-coalesce (fix/unmap-fanout, 2026-11-24): timer_set calls that left the host timer as it was (armed for an
+    /// earlier time, or a cancel: its signal raises nothing), and timer signals that came before the deadline and
+    /// armed the host timer for it (cpu::timer_signal)
+    TimerKept,
+    TimerRearms,
 }
-const COUNTS: usize = 26;
+const COUNTS: usize = 28;
 
 /// `xh_perf`: a vCPU's histograms and counts, and thread_run's bookkeeping between two calls.
 #[derive(Debug)]
@@ -442,7 +447,7 @@ pub fn log(since_start: bool) {
     logi!(
         "perf: {:.1} s{}: {} task traps ({:.0}/s): syscall {}, fault {}, interrupt {}, other {}; futex sleeps: vCPU {}, \
          iOS thread {} (of {} hand-offs each way); futex wakes {} + {}; task_map {} carried by a release, {} ordered; \
-         task_unmap {} queued, {} ordered; timer_set {} ({} to the host timer)",
+         task_unmap {} queued, {} ordered; timer_set {} ({} to the host timer, {} kept it; {} early signals armed it again)",
         seconds,
         if since_start { " since the start" } else { "" },
         traps,
@@ -461,7 +466,9 @@ pub fn log(since_start: bool) {
         sum.count(UnmapsDeferred),
         sum.count(UnmapsOrdered),
         sum.count(TimerSets),
-        sum.count(TimerCalls)
+        sum.count(TimerCalls),
+        sum.count(TimerKept),
+        sum.count(TimerRearms)
     );
     // host-overhead (2026-11-15): what the queue joined, the clamps given to iOS threads, the cross-vCPU signals.
     logi!(

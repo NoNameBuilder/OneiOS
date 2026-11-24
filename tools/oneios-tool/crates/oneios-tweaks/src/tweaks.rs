@@ -291,7 +291,8 @@ fn launchd_jobs(cx: &mut Context) -> Result<()> {
     } else if !still.is_empty() {
         cx.policy().set("force_enabled", strings(&still));
         let note = format!(
-            "{} disabled jobs are marked DisableAllowed = false in the jetsam properties and run all the same on a sealed root: {}",
+            "{} disabled jobs are marked DisableAllowed = false in the jetsam properties; on a sealed root the hosted kernel \
+             shows launchd a copy with the mark renamed (0098, oneios-disable-allowed; with it off they run all the same): {}",
             still.len(),
             still.join(", ")
         );

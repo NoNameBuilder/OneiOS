@@ -1,0 +1,77 @@
+diff --git a/bsd/kern/kern_sig.c b/bsd/kern/kern_sig.c
+--- a/bsd/kern/kern_sig.c
++++ b/bsd/kern/kern_sig.c
+@@ -1377,6 +1377,50 @@
+ 	return 0;
+ }
+ 
++#if XNU_HOSTED
++/*
++ * OneiOS hosted (0100, fix/disable-allowed, 2026-11-24): who ends whom, always on. One line when a process ends another
++ * with a reason (terminate_with_reason / terminate_with_payload: runningboardd, FrontBoard in SpringBoard, launchd's
++ * extension watchdog) or sends another one SIGKILL with kill(2); the form (the values are made up):
++ *   oneios-kill: runningboardd[29] -> MercuryPosterExt[409]: namespace 15 code 0x8badf00d flags 0x...: "scene-create
++ *       watchdog transgression ..."
++ *   oneios-kill: launchd[1] -> CollectionsPoste[474]: SIGKILL (kill)
++ * Found: in the session of 2026-11-24 01:17 PosterBoard's wallpaper extensions were started again and again (Mercury 409,
++ * 417, 420, 429, 436 in 60 s, no touch in between), with no trap, no jetsam kill (oneios-mem: kills 0) and no line that
++ * said who ended them or why; iOS's own log is a pull away. The namespace and code are XNU's os_reason ones (sys/reason.h:
++ * 15 runningboard, 10 springboard, 7 libxpc, ...), the text the caller's own (its first 80 bytes, copied in only for the
++ * line). At most 600 lines a boot, then one line that says so; a process that ends itself is not counted.
++ */
++static SInt32 hosted_kill_lines;
++static bool
++hosted_kill_line_ok(void)
++{
++	SInt32 n = OSIncrementAtomic(&hosted_kill_lines);
++	if (n == 600) {
++		printf("oneios-kill: 600 lines this boot: no more\n");
++	}
++	return n < 600;
++}
++static void
++hosted_kill_note(proc_t from, proc_t to, uint32_t ns, uint64_t code, uint64_t flags, user_addr_t text)
++{
++	if (from == to || !hosted_kill_line_ok()) {
++		return;
++	}
++	char said[81] = "";
++	size_t got = 0;
++	if (text != USER_ADDR_NULL && copyinstr(text, said, sizeof(said), &got) != 0) {
++		said[sizeof(said) - 1] = 0;          /* longer than 80 bytes, or not readable: what was copied */
++	}
++	for (char *c = said; *c; c++) {
++		if (*c == '\n' || *c == '\r' || *c == '"') {
++			*c = ' ';
++		}
++	}
++	printf("oneios-kill: %s[%d] -> %s[%d]: namespace %u code 0x%llx flags 0x%llx: \"%s\"\n", proc_best_name(from),
++	    proc_getpid(from), proc_best_name(to), proc_getpid(to), ns, code, flags, said);
++}
++#endif /* XNU_HOSTED */
+ int
+ kill(proc_t cp, struct kill_args *uap, __unused int32_t *retval)
+ {
+@@ -1407,6 +1451,12 @@
+ 			proc_rele(p);
+ 			return EPERM;
+ 		}
++#if XNU_HOSTED
++		if (uap->signum == SIGKILL && p != cp && hosted_kill_line_ok()) {          /* 0100 */
++			printf("oneios-kill: %s[%d] -> %s[%d]: SIGKILL (kill)\n", proc_best_name(cp), proc_getpid(cp), proc_best_name(p),
++			    proc_getpid(p));
++		}
++#endif
+ 		if (uap->signum) {
+ 			psignal(p, uap->signum);
+ 		}
+@@ -1601,6 +1651,9 @@
+ 
+ 	signal_reason = build_userspace_exit_reason(reason_namespace, reason_code, payload, payload_size,
+ 	    reason_string, (reason_flags | OS_REASON_FLAG_NO_CRASHED_TID));
++#if XNU_HOSTED
++	hosted_kill_note(cur_proc, target_proc, reason_namespace, reason_code, reason_flags, reason_string);   /* 0100 */
++#endif
+ 
+ 	if (target_pid == proc_getpid(cur_proc)) {
+ 		/*

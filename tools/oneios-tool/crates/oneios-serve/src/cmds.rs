@@ -851,6 +851,9 @@ fn tweaks(rq: &Rq) -> Result<Done, Fail> {
     };
     let (helpers, metal_plugin, camera_plugin, config) = (optional("helpers")?, optional("metal_plugin")?, optional("camera_plugin")?, optional("config")?);
     let build = rq.req.opt_str("build")?;
+    let device = rq.req.opt_str("device")?.filter(|device| !device.is_empty())
+        .or_else(|| std::env::var("ONEIOS_DEVICE").ok().filter(|device| !device.is_empty()));
+    let allow_no_metal = std::env::var("ONEIOS_ALLOW_NO_METAL").map_or(false, |value| value == "1");
     let scale = rq.req.opt_u64("scale")?;
     let args = rq.req.list("args")?;
     let owners = match rq.req.opt_str("owners")? {
@@ -880,8 +883,10 @@ fn tweaks(rq: &Rq) -> Result<Done, Fail> {
         data: data.clone().into(),
         overlay: overlay.into(),
         build,
+        device,
         helpers: helpers.map(Into::into),
         metal_plugin: metal_plugin.map(Into::into),
+        allow_no_metal,
         camera_plugin: camera_plugin.map(Into::into),
         scale: scale.map(|s| s.to_string()),
         config: config.map(Into::into),
@@ -1164,6 +1169,26 @@ fn stage_kernel(stage: &str) -> Result<String, Fail> {
     }
 }
 
+/// The staged runtime's guest plug-ins (`runtime.json` "metal" `bundle` and "camera" `path`, below the runtime:
+/// runtime/package.sh's lib/guest/), each when it is there. Older runtimes have neither.
+fn stage_guest(stage: &str) -> (Option<String>, Option<String>) {
+    let Some(v) = std::fs::read_to_string(format!("{stage}/runtime/runtime.json")).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) else {
+        return (None, None);
+    };
+    let below = |path: Option<&str>| {
+        path.filter(|p| !p.is_empty() && !p.starts_with('/') && !p.split('/').any(|s| s == ".."))
+            .map(|p| format!("{stage}/runtime/{p}"))
+            .filter(|p| Path::new(p).is_dir())
+    };
+    (below(v["metal"]["bundle"].as_str()), below(v["camera"]["path"].as_str()))
+}
+
+/// The staged runtime's folder when its runtime.json names the Galaxy A56's GPU plug-ins ("metal_a56", not null).
+fn stage_a56(stage: &str) -> Option<String> {
+    let v = std::fs::read_to_string(format!("{stage}/runtime/runtime.json")).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())?;
+    (!v["metal_a56"].is_null()).then(|| format!("{stage}/runtime"))
+}
+
 /// The whole image set (`image build`): scripts/image/build.sh's steps in this process (README "make-image").
 fn make_image(rq: &Rq) -> Result<Done, Fail> {
     use oneios_imagebuild::{Args, Kernel, Prelink, Stop};
@@ -1190,13 +1215,21 @@ fn make_image(rq: &Rq) -> Result<Done, Fail> {
             None => Ok(None),
         }
     };
+    // the staged runtime's Metal bundle and capture plug-in (lib/guest/) stand in for the ones not given, when the
+    // bundle is for this image (Tweak::for_image); "runtime_plugins": false leaves them out
+    let (runtime_metal, runtime_camera) = if rq.req.opt_flag("runtime_plugins")?.unwrap_or(true) { stage_guest(&stage) } else { (None, None) };
     let tweak = oneios_imagebuild::Tweak {
         helpers: read_opt("helpers")?,
         metal_plugin: read_opt("metal_plugin")?,
+        allow_no_metal: std::env::var("ONEIOS_ALLOW_NO_METAL").map_or(false, |value| value == "1"),
         camera_plugin: read_opt("camera_plugin")?,
         scale: rq.req.opt_str("scale")?,
         config: read_opt("tweaks_config")?,
         args: rq.req.list("tweak_args")?,
+        runtime_metal,
+        runtime_camera,
+        // the Galaxy A56's GPU plug-ins (runtime.json "metal_a56"): an iOS 16.5 set they are for gets its gpuaddon of them
+        runtime_a56: if rq.req.opt_flag("runtime_plugins")?.unwrap_or(true) { stage_a56(&stage) } else { None },
     };
     let no_kernel = rq.req.flag("no_kernel")?;
     let kc = match rq.req.opt_str("kc")? {
@@ -1278,7 +1311,8 @@ fn make_image(rq: &Rq) -> Result<Done, Fail> {
         .f("out", out.as_str())
         .f("bytes", built.bytes)
         .f("manifest_sha256", built.manifest_sha256.as_str())
-        .f("seed_sha256", built.seed_sha256.as_str());
+        .f("seed_sha256", built.seed_sha256.as_str())
+        .f("metal", built.metal.as_str());
     if let Some(sha) = &built.kernel_sha256 {
         done = done.f("kernel_sha256", sha.as_str());
     }

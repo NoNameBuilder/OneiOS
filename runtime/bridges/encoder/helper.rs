@@ -18,13 +18,20 @@
 //! - A watchdog thread names the MediaCodec call an open waits in, at 1 s and 2 s (`encoder: helper: an open of HEVC
 //!   96x96 (NV12) has waited 1000 ms in AMediaCodec_configure`), and an open that came back after 1 s says how long it
 //!   took. Nothing is written while opens are fast.
+//!
+//! Since 2026-11-24 it decodes too (README.md "The decoder"): right after its HELLO the device sends the media pool
+//! (ENC_MSG_POOL: the RAM's memfd by SCM_RIGHTS), which the helper maps; a decoder session (DEC_MSG_OPEN) is MediaCodec
+//! in asynchronous mode on Android ([`crate::decode_ndk`]; the stand-in on a host), which writes each picture straight
+//! into a CAPTURE buffer the device gave it (DEC_MSG_CAPTURE) and says it (DEC_MSG_FRAME) from MediaCodec's own thread.
 use crate::backend::{Backend, Polled, Session};
 use crate::backend_stub::StubBackend;
+use crate::decoder::{DecEvent, DecodeBackend, DecodeSink, Decoder, PoolMem, StubDecodeBackend};
 use crate::link::*;
+use crate::pod::Pod;
 use crate::proto::{MEDIA_PIXFMT_HEVC, MEDIA_PIXFMT_NV12, MEDIA_PIXFMT_P010};
 use std::fs::File;
 use std::io::Read;
-use std::os::fd::FromRawFd;
+use std::os::fd::{AsFd, AsRawFd, FromRawFd};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -43,6 +50,74 @@ fn backend() -> Box<dyn Backend> {
         return Box::new(crate::backend_ndk::NdkBackend);
     }
     Box::new(StubBackend) // the host build: no MediaCodec on the box
+}
+
+/// The decoder backend over the pool (2026-11-24): MediaCodec on Android, the stand-in on a host.
+fn decode_backend(pool: PoolMem, link: &Link) -> Box<dyn DecodeBackend> {
+    #[cfg(target_os = "android")]
+    if !stub_wanted() {
+        let link = Arc::clone(link);
+        let log: crate::decode_ndk::DecodeLog = Arc::new(move |error, line| say(&link, error, line));
+        return Box::new(crate::decode_ndk::NdkDecodeBackend::new(pool, log));
+    }
+    let _ = link;
+    Box::new(StubDecodeBackend::new(pool))
+}
+
+/// ENC_MSG_POOL, the device's first message after the HELLO (one recvmsg of its header, the memfd with it): the pool
+/// mapped, or None (no pool, or it could not be mapped: the line says why).
+fn receive_pool(socket: &File, link: &Link) -> Option<PoolMem> {
+    let mut header = EncMsg::default();
+    let got = xh_core::fd::recv_with_fds(socket.as_fd(), header.as_bytes_mut(), 1, libc::MSG_WAITALL).ok()?;
+    if got.length != std::mem::size_of::<EncMsg>() || header.type_ != ENC_MSG_POOL {
+        say(link, true, "decoder: the device sent no pool: nothing is decoded");
+        return None;
+    }
+    let size = u64::from(header.a) | u64::from(header.b) << 32;
+    let fd = got.fds.into_iter().next()?;
+    if size == 0 {
+        return None;
+    }
+    // The offset rounded down to a page (the pool lies 2 MiB aligned in the memfd today; nothing here relies on it).
+    let page = 4096u64;
+    let offset = header.pts as u64;
+    let skip = offset % page;
+    // SAFETY: a new shared mapping of the device's memfd, kept for the process's life (the decoders write into it).
+    let at = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            (size + skip) as usize,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_SHARED,
+            fd.as_raw_fd(),
+            (offset - skip) as libc::off_t,
+        )
+    };
+    if at == libc::MAP_FAILED {
+        say(
+            link,
+            true,
+            &format!("decoder: the pool ({} MiB) could not be mapped: {}", size >> 20, std::io::Error::last_os_error()),
+        );
+        return None;
+    }
+    // SAFETY: the mapping above, size bytes past skip, never unmapped.
+    unsafe { PoolMem::new(at.cast::<u8>().add(skip as usize), size) }
+}
+
+/// A decoder session's results onto the link (from whatever thread the decoder runs on).
+fn decode_sink(link: &Link, id: u32) -> DecodeSink {
+    let link = Arc::clone(link);
+    Arc::new(move |e| match e {
+        DecEvent::Format(l) => {
+            send(&link, EncMsg { a: l.width, b: l.height, c: l.stride, ..EncMsg::new(DEC_MSG_FORMAT, id) }, &[]);
+        }
+        DecEvent::Frame { index, bytes, pts, error, decode_us } => {
+            let m = EncMsg { a: index, b: bytes, c: u32::from(error), pts, ..EncMsg::new(DEC_MSG_FRAME, id) };
+            send(&link, m, &decode_us.to_le_bytes());
+        }
+        DecEvent::Eos => send(&link, EncMsg::new(ENC_MSG_EOS, id), &[]),
+    })
 }
 
 /// The link's writing end, shared by the main thread, the watchdog and the warm-up.
@@ -254,6 +329,8 @@ pub fn main() -> i32 {
     if hello.send(&mut *link.lock().unwrap_or_else(PoisonError::into_inner), &[]).is_err() {
         return 1;
     }
+    let decoders_backend = receive_pool(&reader, &link).map(|pool| decode_backend(pool, &link));
+    let mut decoders: Vec<(u32, Box<dyn Decoder>)> = Vec::with_capacity(HELPER_SESSIONS);
     #[cfg(target_os = "android")]
     if let Some(threads) = threads {
         if crate::switches::warmup() {
@@ -276,6 +353,7 @@ pub fn main() -> i32 {
             break;
         }
         let slot = sessions.iter().position(|(id, _)| *id == m.session);
+        let decoder = decoders.iter().position(|(id, _)| *id == m.session);
         match (m.type_, slot) {
             (ENC_MSG_OPEN, _) => {
                 // the input format: the payload's u32 (none: NV12)
@@ -307,6 +385,45 @@ pub fn main() -> i32 {
                 after_drain(&link, m.session, enc.as_mut(), &mut coded);
             }
             (ENC_MSG_CLOSE, Some(i)) => drop(sessions.swap_remove(i)),
+            // the decoder (2026-11-24)
+            (DEC_MSG_OPEN, _) => {
+                let what = format!("a decoder of {} {}x{}", crate::proto::codec_name(m.a), m.b, m.c);
+                let start = watch.begin(what.clone());
+                let dec = match (&decoders_backend, decoders.len() < HELPER_SESSIONS) {
+                    (Some(b), true) => b.open_decoder(m.a, m.b, m.c, decode_sink(&link, m.session)),
+                    _ => None,
+                };
+                watch.end();
+                let took = start.elapsed().as_millis();
+                if took >= u128::from(WATCH_MS[0]) {
+                    let how = if dec.is_some() { "opened" } else { "refused" };
+                    say(&link, false, &format!("an open of {what} came back after {took} ms ({how})"));
+                }
+                let ok = dec.is_some();
+                if let Some(dec) = dec {
+                    decoders.push((m.session, dec));
+                }
+                send(&link, EncMsg { a: u32::from(ok), ..EncMsg::new(ENC_MSG_OPEN_REPLY, m.session) }, &[]);
+            }
+            _ if decoder.is_some() => {
+                let i = decoder.unwrap();
+                let dec = &mut decoders[i].1;
+                match m.type_ {
+                    DEC_MSG_FEED => {
+                        let _ = dec.feed(&payload, m.pts);
+                    }
+                    DEC_MSG_CAPTURE => dec.capture(m.a, m.pts as u64, u64::from(m.b)),
+                    DEC_MSG_RESET => dec.reset_capture(),
+                    ENC_MSG_DRAIN => {
+                        let _ = dec.drain();
+                    }
+                    DEC_MSG_START => {
+                        let _ = dec.restart();
+                    }
+                    ENC_MSG_CLOSE => drop(decoders.swap_remove(i)),
+                    _ => {}
+                }
+            }
             _ => {}
         }
     }

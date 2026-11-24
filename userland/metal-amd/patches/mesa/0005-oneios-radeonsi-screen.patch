@@ -1,0 +1,656 @@
+diff --git a/src/gallium/meson.build b/src/gallium/meson.build
+index 67011f5..144a90a 100644
+--- a/src/gallium/meson.build
++++ b/src/gallium/meson.build
+@@ -260,3 +260,11 @@ if with_teflon
+   subdir('frontends/teflon')
+   subdir('targets/teflon')
+ endif
++
++# OneiOS: radeonsi as a bare screen, and oneios-amdgpu-probe (targets/oneios-radeonsi/meson.build).
++if get_option('oneios-radeonsi-screen')
++  if not with_gallium_radeonsi or not with_amdgpu_virtio
++    error('oneios-radeonsi-screen needs -Dgallium-drivers=radeonsi and -Damdgpu-virtio=true')
++  endif
++  subdir('targets/oneios-radeonsi')
++endif
+diff --git a/src/gallium/targets/oneios-radeonsi/meson.build b/src/gallium/targets/oneios-radeonsi/meson.build
+new file mode 100644
+index 0000000..b58b02e
+--- /dev/null
++++ b/src/gallium/targets/oneios-radeonsi/meson.build
+@@ -0,0 +1,61 @@
++# Copyright 2026 OneiOS contributors
++# SPDX-License-Identifier: MIT
++#
++# OneiOS (-Doneios-radeonsi-screen=true): radeonsi as a bare Gallium screen (oneios_radeonsi.h), for the
++# A56's Metal plug-in, and the lasting guest tool oneios-amdgpu-probe. On Darwin over the Darwin vdrm
++# backend; on Linux over a virtio_gpu render node.
++
++inc_oneios_radeonsi = include_directories('.')
++oneios_radeonsi_incs = [
++  inc_include, inc_src, inc_gallium, inc_gallium_aux, inc_gallium_drivers, inc_gallium_winsys,
++  inc_amd_common, inc_amd, inc_virtio, inc_virtio_gpu, inc_oneios_radeonsi,
++]
++if _oneios_darwin_drm
++  oneios_radeonsi_incs += include_directories('../../../oneios')
++endif
++oneios_radeonsi_deps = [dep_libdrm, dep_libdrm_amdgpu, idep_mesautil, idep_xmlconfig, driver_radeonsi]
++
++# What the library is made of and what it exports. A later patch (the Metal layer's 5xxx-air-*) may add
++# its sources, dependencies and exported C names here, before the library below.
++oneios_radeonsi_sources = files('oneios_radeonsi.c')
++oneios_radeonsi_exports = ['oneios_radeonsi_screen_create']
++
++# The screen and everything under it as one library that exports oneios_radeonsi_screen_create alone (the
++# Metal plug-in's dylib: @loader_path, so it is found beside the plug-in that links it).
++if host_machine.system() == 'darwin'
++  oneios_radeonsi_link_args = ['-Wl,-install_name,@loader_path/liboneios_radeonsi.dylib']
++  foreach name : oneios_radeonsi_exports
++    oneios_radeonsi_link_args += '-Wl,-exported_symbol,_' + name
++  endforeach
++else
++  oneios_radeonsi_sym_conf = configuration_data()
++  oneios_radeonsi_sym_conf.set('EXPORTS', '; '.join(oneios_radeonsi_exports))
++  oneios_radeonsi_sym = configure_file(
++    input : 'oneios_radeonsi.sym.in',
++    output : 'oneios_radeonsi.sym',
++    configuration : oneios_radeonsi_sym_conf,
++  )
++  oneios_radeonsi_link_args = ['-Wl,--version-script=' + oneios_radeonsi_sym.full_path()]
++endif
++liboneios_radeonsi = shared_library(
++  'oneios_radeonsi',
++  oneios_radeonsi_sources,
++  include_directories : oneios_radeonsi_incs,
++  gnu_symbol_visibility : 'hidden',
++  dependencies : oneios_radeonsi_deps,
++  link_with : [libgallium, libgalliumvl],
++  link_args : [ld_args_gc_sections, oneios_radeonsi_link_args],
++  name_prefix : 'lib',
++  install : false,
++)
++
++oneios_amdgpu_probe = executable(
++  'oneios-amdgpu-probe',
++  files('oneios_amdgpu_probe.c', 'oneios_radeonsi.c'),
++  include_directories : oneios_radeonsi_incs,
++  c_args : ['-DHAVE_AMDGPU_VIRTIO'],
++  gnu_symbol_visibility : 'hidden',
++  dependencies : oneios_radeonsi_deps,
++  link_with : [libgallium, libgalliumvl, libamd_common],
++  install : false,
++)
+diff --git a/src/gallium/targets/oneios-radeonsi/oneios_amdgpu_probe.c b/src/gallium/targets/oneios-radeonsi/oneios_amdgpu_probe.c
+new file mode 100644
+index 0000000..4f7d650
+--- /dev/null
++++ b/src/gallium/targets/oneios-radeonsi/oneios_amdgpu_probe.c
+@@ -0,0 +1,373 @@
++/*
++ * oneios-amdgpu-probe: the A56's GPU path, step by step, from an iOS command line (a lasting tool).
++ *
++ *   oneios-amdgpu-probe            the amdgpu virtio context through the Darwin vdrm backend: device, capset
++ *                                  facts, a guest BO, a GFX NOP IB submitted and its fence waited
++ *   oneios-amdgpu-probe --screen   then oneios_radeonsi_screen_create, the screen's name and caps, and a clear
++ *                                  of a buffer and of a texture read back through a pipe_context
++ *
++ * Each step prints one "PASS ..." or "FAIL ..." line; the exit status is the number of FAILs. The steps are
++ * those of the other A56 fork's guest probe and host self-test (Musicalista/OneiOS-A56 c83b9ca,
++ * userland/metal/amdgpu/probe.c, runtime/xnuhost/src/gpu3d_xclipse.c, MIT), written again over Mesa's
++ * amdgpu virtio context (src/amd/common/virtio) and the Darwin vdrm backend (src/virtio/vdrm/vdrm_darwin.c).
++ *
++ * Copyright 2026 OneiOS contributors
++ * SPDX-License-Identifier: MIT
++ */
++#include <errno.h>
++#include <fcntl.h>
++#include <inttypes.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <unistd.h>
++
++#include <xf86drm.h>
++#include "amdgpu.h"
++#include "drm-uapi/amdgpu_drm.h"
++#include "drm-uapi/drm.h"
++
++#include "virtio/amdgpu_virtio.h"
++#include "util/os_time.h"
++#include "util/u_sync_provider.h"
++
++#include "oneios_radeonsi.h"
++#include "pipe/p_context.h"
++#include "pipe/p_defines.h"
++#include "pipe/p_screen.h"
++#include "pipe/p_state.h"
++#include "util/u_inlines.h"
++
++#ifdef HAVE_VDRM_DARWIN
++#include "oneios_drm.h"
++#include "virtio/vdrm/vdrm_darwin.h"
++#endif
++
++static int failures;
++
++#define PASS(...) do { printf("PASS "); printf(__VA_ARGS__); printf("\n"); fflush(stdout); } while (0)
++#define FAIL(...) do { printf("FAIL "); printf(__VA_ARGS__); printf("\n"); fflush(stdout); failures++; } while (0)
++
++static int
++open_gpu(void)
++{
++#ifdef HAVE_VDRM_DARWIN
++   return oneios_drm_open();
++#else
++   for (int minor = 128; minor < 192; minor++) {
++      char path[32];
++      snprintf(path, sizeof(path), "/dev/dri/renderD%d", minor);
++      int fd = open(path, O_RDWR | O_CLOEXEC);
++      if (fd < 0)
++         continue;
++      drmVersionPtr version = drmGetVersion(fd);
++      const bool virtio = version && version->name && !strcmp(version->name, "virtio_gpu");
++      drmFreeVersion(version);
++      if (virtio)
++         return fd;
++      close(fd);
++   }
++   errno = ENODEV;
++   return -1;
++#endif
++}
++
++/* The device, its facts, a BO, a GFX NOP IB and its fence. */
++static void
++probe_context(void)
++{
++   int fd = open_gpu();
++   if (fd < 0) {
++      FAIL("gpu: no descriptor (%s)", strerror(errno));
++      return;
++   }
++
++   uint32_t major = 0, minor = 0;
++   amdvgpu_device_handle dev = NULL;
++   struct util_sync_provider *sync = NULL;
++   int r = amdvgpu_device_initialize(fd, &major, &minor, &dev, &sync);
++   close(fd);   /* the device keeps its own duplicate */
++   if (r || !dev || !sync) {
++#ifdef HAVE_VDRM_DARWIN
++      FAIL("device: amdvgpu_device_initialize %d: %s", r, vdrm_darwin_last_error());
++#else
++      FAIL("device: amdvgpu_device_initialize %d", r);
++#endif
++      return;
++   }
++   PASS("device: amdgpu virtio context, host amdgpu DRM %u.%u", major, minor);
++
++   struct drm_amdgpu_info_device info = {0};
++   struct drm_amdgpu_info query = {
++      .return_pointer = (uintptr_t)&info,
++      .return_size = sizeof(info),
++      .query = AMDGPU_INFO_DEV_INFO,
++   };
++   r = amdvgpu_query_info(dev, &query);
++   struct drm_amdgpu_info_hw_ip gfx = {0};
++   struct drm_amdgpu_info gfx_query = {
++      .return_pointer = (uintptr_t)&gfx,
++      .return_size = sizeof(gfx),
++      .query = AMDGPU_INFO_HW_IP_INFO,
++   };
++   gfx_query.query_hw_ip.type = AMDGPU_HW_IP_GFX;
++   const int rg = amdvgpu_query_info(dev, &gfx_query);
++   if (r || rg)
++      FAIL("facts: QUERY_INFO dev_info %d, hw_ip gfx %d", r, rg);
++   else
++      PASS("facts: \"%s\" family %u device 0x%04x rev 0x%x external rev 0x%x, gfx %u.%u rings 0x%x, VA 0x%" PRIx64
++           "..0x%" PRIx64 ", %u CUs in %u shader engines", amdvgpu_get_marketing_name(dev), info.family, info.device_id,
++           info.pci_rev, info.external_rev, gfx.hw_ip_version_major, gfx.hw_ip_version_minor, gfx.available_rings,
++           (uint64_t)info.virtual_address_offset, (uint64_t)info.virtual_address_max,
++           info.cu_active_number, info.num_shader_engines);
++
++   /* A guest BO (K2: HOST3D_GUEST + CREATE_GUEST_HANDLE, its GEM_NEW in the CREATE_BLOB), mapped for the CPU. */
++   const uint64_t size = 4096;
++   struct amdgpu_bo_alloc_request request = {
++      .alloc_size = size,
++      .phys_alignment = 4096,
++      .preferred_heap = AMDGPU_GEM_DOMAIN_GTT,
++      .flags = AMDGPU_GEM_CREATE_CPU_GTT_USWC,
++   };
++   amdvgpu_bo_handle bo = NULL;
++   r = amdvgpu_bo_alloc(dev, &request, &bo);
++   uint32_t res_id = 0;
++   void *cpu = NULL;
++   if (!r) {
++      amdvgpu_bo_export(dev, bo, amdgpu_bo_handle_type_kms, &res_id);
++      r = amdvgpu_bo_cpu_map(dev, bo, &cpu);
++   }
++   if (r || !cpu) {
++      FAIL("bo: alloc or map %d", r);
++      goto out_dev;
++   }
++   PASS("bo: %" PRIu64 " bytes, resource %u, CPU view %p", size, res_id, cpu);
++
++   /* Its GPU address. */
++   uint64_t va = 0;
++   amdgpu_va_handle va_handle = NULL;
++   r = amdvgpu_va_range_alloc(dev, amdgpu_gpu_va_range_general, size, 4096, 0, &va, &va_handle, 0);
++   if (!r)
++      r = amdvgpu_bo_va_op_raw(dev, res_id, 0, size, va,
++                               AMDGPU_VM_PAGE_READABLE | AMDGPU_VM_PAGE_WRITEABLE | AMDGPU_VM_PAGE_EXECUTABLE,
++                               AMDGPU_VA_OP_MAP);
++   if (r) {
++      FAIL("va: map %d", r);
++      goto out_bo;
++   }
++   PASS("va: resource %u at 0x%" PRIx64, res_id, va);
++
++   /* Eight NOPs (GFX10+ PACKET2 NOP, as the A56 self-test of OneiOS-A56 ran: PASS on the A56). */
++   uint32_t *words = cpu;
++   for (unsigned i = 0; i < 8; i++)
++      words[i] = 0x80000000u;
++
++   uint32_t ctx = 0;
++   r = amdvgpu_cs_ctx_create2(dev, AMDGPU_CTX_PRIORITY_NORMAL, &ctx);
++   if (r) {
++      FAIL("ctx: CREATE_CTX %d", r);
++      goto out_va;
++   }
++   uint32_t syncobj = 0;
++   r = sync->create(sync, 0, &syncobj);
++   if (r) {
++      FAIL("syncobj: create %d", r);
++      goto out_ctx;
++   }
++
++   struct drm_amdgpu_bo_list_entry entry = {.bo_handle = res_id, .bo_priority = 0};
++   struct drm_amdgpu_bo_list_in list = {
++      .operation = ~0u,
++      .list_handle = ~0u,
++      .bo_number = 1,
++      .bo_info_size = sizeof(entry),
++      .bo_info_ptr = (uintptr_t)&entry,
++   };
++   struct drm_amdgpu_cs_chunk_ib ib = {
++      .ip_type = AMDGPU_HW_IP_GFX,
++      .ip_instance = 0,
++      .ring = 0,
++      .va_start = va,
++      .ib_bytes = 8 * 4,
++   };
++   struct drm_amdgpu_cs_chunk_sem signal = {.handle = syncobj};
++   struct drm_amdgpu_cs_chunk chunks[3] = {
++      {.chunk_id = AMDGPU_CHUNK_ID_BO_HANDLES, .length_dw = sizeof(list) / 4, .chunk_data = (uintptr_t)&list},
++      {.chunk_id = AMDGPU_CHUNK_ID_IB, .length_dw = sizeof(ib) / 4, .chunk_data = (uintptr_t)&ib},
++      {.chunk_id = AMDGPU_CHUNK_ID_SYNCOBJ_OUT, .length_dw = sizeof(signal) / 4, .chunk_data = (uintptr_t)&signal},
++   };
++   uint64_t seqno = 0;
++   const int64_t submitted = os_time_get_nano();
++   r = amdvgpu_cs_submit_raw2(dev, ctx, 0, 3, chunks, &seqno);
++   if (r) {
++      FAIL("submit: GFX NOP IB %d", r);
++      goto out_sync;
++   }
++   PASS("submit: GFX NOP IB of 8 dwords, host seqno %" PRIu64, seqno);
++
++   /* Its fence: the syncobj (the vdrm ring fence, WAIT_FENCE in the kernel), then the host's own view. */
++   r = sync->wait(sync, &syncobj, 1, os_time_get_absolute_timeout(5000000000ull), DRM_SYNCOBJ_WAIT_FLAGS_WAIT_ALL, NULL);
++   const int64_t waited = os_time_get_nano() - submitted;
++   if (r) {
++      FAIL("fence: syncobj wait %d after %" PRId64 " us", r, waited / 1000);
++      goto out_sync;
++   }
++   uint32_t expired = 0;
++   r = amdvgpu_cs_query_fence_status(dev, ctx, AMDGPU_HW_IP_GFX, 0, 0, seqno, 0, 0, &expired);
++   if (r || !expired)
++      FAIL("fence: host CS_QUERY_FENCE_STATUS %d, expired %u", r, expired);
++   else
++      PASS("fence: signalled %" PRId64 " us after the submit; host says seqno %" PRIu64 " expired", waited / 1000, seqno);
++
++   uint64_t flags = 0;
++   amdvgpu_cs_query_reset_state2(dev, ctx, &flags);
++   if (flags)
++      FAIL("reset: the host reports a GPU reset or lost VRAM (flags 0x%" PRIx64 ")", flags);
++   else
++      PASS("reset: none");
++
++out_sync:
++   sync->destroy(sync, syncobj);
++out_ctx:
++   amdvgpu_cs_ctx_free(dev, ctx);
++out_va:
++   amdvgpu_bo_va_op_raw(dev, res_id, 0, size, va, 0, AMDGPU_VA_OP_UNMAP);
++out_bo:
++   amdvgpu_bo_cpu_unmap(dev, bo);
++   amdvgpu_bo_free(dev, bo);
++out_dev:
++   sync->finalize(sync);
++   amdvgpu_device_deinitialize(dev);
++}
++
++static bool
++same_words(const void *data, uint32_t value, size_t count, size_t *bad)
++{
++   const uint32_t *words = data;
++   for (size_t i = 0; i < count; i++) {
++      if (words[i] != value) {
++         *bad = i;
++         return false;
++      }
++   }
++   return true;
++}
++
++/* The radeonsi screen, its facts, and a clear read back. */
++static void
++probe_screen(void)
++{
++   char why[256];
++   const int64_t begin = os_time_get_nano();
++   struct pipe_screen *screen = oneios_radeonsi_screen_create(why, sizeof(why));
++   if (!screen) {
++      FAIL("screen: %s", why);
++      return;
++   }
++   PASS("screen: \"%s\" by \"%s\" (%s) in %" PRId64 " ms", screen->get_name(screen), screen->get_vendor(screen),
++        screen->get_device_vendor(screen), (os_time_get_nano() - begin) / 1000000);
++   PASS("caps: max 2D texture %u, max render targets %u, compute %u, shader buffer offset alignment %u, "
++        "uma %u, video memory %u MiB", screen->caps.max_texture_2d_size, screen->caps.max_render_targets,
++        screen->caps.compute, screen->caps.shader_buffer_offset_alignment, screen->caps.uma,
++        screen->caps.video_memory);
++
++   struct pipe_context *ctx = screen->context_create(screen, NULL, 0);
++   if (!ctx) {
++      FAIL("context: context_create gave none");
++      screen->destroy(screen);
++      return;
++   }
++   PASS("context: created");
++
++   /* A buffer cleared on the GPU, read back. */
++   const unsigned bytes = 64 * 1024;
++   const uint32_t value = 0x5a0e1a56u;
++   struct pipe_resource *buffer = pipe_buffer_create(screen, PIPE_BIND_SHADER_BUFFER, PIPE_USAGE_STAGING, bytes);
++   if (buffer && ctx->clear_buffer) {
++      ctx->clear_buffer(ctx, buffer, 0, bytes, &value, sizeof(value));
++      struct pipe_fence_handle *fence = NULL;
++      ctx->flush(ctx, &fence, 0);
++      const bool done = fence && screen->fence_finish(screen, NULL, fence, 5000000000ull);
++      screen->fence_reference(screen, &fence, NULL);
++      struct pipe_transfer *transfer = NULL;
++      const void *data = done ? pipe_buffer_map(ctx, buffer, PIPE_MAP_READ, &transfer) : NULL;
++      size_t bad = 0;
++      if (!data)
++         FAIL("clear buffer: %s", done ? "no CPU view" : "the fence did not signal in 5 s");
++      else if (!same_words(data, value, bytes / 4, &bad))
++         FAIL("clear buffer: word %zu is 0x%08x, not 0x%08x", bad, ((const uint32_t *)data)[bad], value);
++      else
++         PASS("clear buffer: %u bytes of 0x%08x read back", bytes, value);
++      if (transfer)
++         pipe_buffer_unmap(ctx, transfer);
++   } else {
++      FAIL("clear buffer: no buffer (%p) or no clear_buffer", (void *)buffer);
++   }
++   pipe_resource_reference(&buffer, NULL);
++
++   /* A 64x64 RGBA8 texture cleared on the GPU, read back. */
++   struct pipe_resource templ = {
++      .target = PIPE_TEXTURE_2D,
++      .format = PIPE_FORMAT_R8G8B8A8_UNORM,
++      .width0 = 64,
++      .height0 = 64,
++      .depth0 = 1,
++      .array_size = 1,
++      .bind = PIPE_BIND_RENDER_TARGET | PIPE_BIND_SAMPLER_VIEW,
++      .usage = PIPE_USAGE_DEFAULT,
++   };
++   struct pipe_resource *texture = screen->resource_create(screen, &templ);
++   if (texture && ctx->clear_texture) {
++      const uint8_t rgba[4] = {0x56, 0x1a, 0x0e, 0xff};
++      const struct pipe_box box = {.x = 0, .y = 0, .z = 0, .width = 64, .height = 64, .depth = 1};
++      ctx->clear_texture(ctx, texture, 0, &box, rgba);
++      struct pipe_transfer *transfer = NULL;
++      const uint8_t *data = pipe_texture_map(ctx, texture, 0, 0, PIPE_MAP_READ, 0, 0, 64, 64, &transfer);
++      uint32_t expect;
++      memcpy(&expect, rgba, 4);
++      bool good = data != NULL;
++      size_t bad_row = 0, bad = 0;
++      for (unsigned y = 0; good && y < 64; y++) {
++         if (!same_words(data + y * transfer->stride, expect, 64, &bad)) {
++            good = false;
++            bad_row = y;
++         }
++      }
++      if (!data)
++         FAIL("clear texture: no CPU view");
++      else if (!good)
++         FAIL("clear texture: pixel (%zu, %zu) is 0x%08x, not 0x%08x", bad, bad_row,
++              ((const uint32_t *)(data + bad_row * transfer->stride))[bad], expect);
++      else
++         PASS("clear texture: 64x64 RGBA8 of 0x%08x read back (stride %u)", expect, transfer->stride);
++      if (transfer)
++         pipe_texture_unmap(ctx, transfer);
++   } else {
++      FAIL("clear texture: no texture (%p) or no clear_texture", (void *)texture);
++   }
++   pipe_resource_reference(&texture, NULL);
++
++   ctx->destroy(ctx);
++   screen->destroy(screen);
++   PASS("screen: destroyed");
++}
++
++int
++main(int argc, char **argv)
++{
++   bool screen = false;
++   for (int i = 1; i < argc; i++) {
++      if (!strcmp(argv[i], "--screen")) {
++         screen = true;
++      } else {
++         fprintf(stderr, "usage: %s [--screen]\n", argv[0]);
++         return 2;
++      }
++   }
++   setvbuf(stdout, NULL, _IOLBF, 0);
++   probe_context();
++   if (screen)
++      probe_screen();
++   printf("%s: %d failed\n", failures ? "FAIL" : "PASS", failures);
++   return failures;
++}
+diff --git a/src/gallium/targets/oneios-radeonsi/oneios_radeonsi.c b/src/gallium/targets/oneios-radeonsi/oneios_radeonsi.c
+new file mode 100644
+index 0000000..6718e2b
+--- /dev/null
++++ b/src/gallium/targets/oneios-radeonsi/oneios_radeonsi.c
+@@ -0,0 +1,141 @@
++/*
++ * OneiOS: oneios_radeonsi_screen_create (oneios_radeonsi.h).
++ *
++ * Copyright 2026 OneiOS contributors
++ * SPDX-License-Identifier: MIT
++ */
++#include <errno.h>
++#include <fcntl.h>
++#include <stdarg.h>
++#include <stdio.h>
++#include <string.h>
++#include <unistd.h>
++
++#include <xf86drm.h>
++
++#include "oneios_radeonsi.h"
++
++#include "pipe/p_screen.h"
++#include "frontend/drm_driver.h"
++#include "radeonsi/si_public.h"
++#include "util/driconf.h"
++#include "util/macros.h"
++#include "util/simple_mtx.h"
++#include "util/xmlconfig.h"
++
++#include "util/log.h"
++
++#ifdef HAVE_VDRM_DARWIN
++#include <os/log.h>
++#include "oneios_drm.h"
++#include "virtio/vdrm/vdrm_darwin.h"
++#endif
++
++/* The one line a screen creation leaves (Mesa's log and, on Darwin, the unified log). */
++static void
++report(bool error, const char *text)
++{
++   if (error)
++      mesa_loge("oneios-radeonsi: %s", text);
++   else
++      mesa_logi("oneios-radeonsi: %s", text);
++#ifdef HAVE_VDRM_DARWIN
++   os_log_with_type(OS_LOG_DEFAULT, error ? OS_LOG_TYPE_ERROR : OS_LOG_TYPE_DEFAULT, "oneios-radeonsi: %{public}s", text);
++#endif
++}
++
++/* Gallium's options and radeonsi's, as the pipe loader merges them (pipe_loader.c). */
++static const driOptionDescription oneios_radeonsi_driconf[] = {
++#include "pipe-loader/driinfo_gallium.h"
++#include "radeonsi/driinfo_radeonsi.h"
++};
++
++static void
++say(char *why, size_t why_size, const char *format, ...)
++{
++   if (!why || !why_size)
++      return;
++   va_list args;
++   va_start(args, format);
++   vsnprintf(why, why_size, format, args);
++   va_end(args);
++}
++
++static int
++open_gpu(char *why, size_t why_size)
++{
++#ifdef HAVE_VDRM_DARWIN
++   int fd = oneios_drm_open();
++   if (fd < 0)
++      say(why, why_size, "no descriptor for the GPU: %s", strerror(errno));
++   return fd;
++#else
++   /* Linux: the first virtio_gpu render node (a guest with the amdgpu native context). */
++   for (int minor = 128; minor < 192; minor++) {
++      char path[32];
++      snprintf(path, sizeof(path), "/dev/dri/renderD%d", minor);
++      int fd = open(path, O_RDWR | O_CLOEXEC);
++      if (fd < 0)
++         continue;
++      drmVersionPtr version = drmGetVersion(fd);
++      const bool virtio = version && version->name && !strcmp(version->name, "virtio_gpu");
++      drmFreeVersion(version);
++      if (virtio)
++         return fd;
++      close(fd);
++   }
++   say(why, why_size, "no virtio_gpu render node");
++   return -1;
++#endif
++}
++
++PUBLIC struct pipe_screen *
++oneios_radeonsi_screen_create(char *why, size_t why_size)
++{
++   /* The option tables live as long as the process: the screen keeps pointers into them. */
++   static simple_mtx_t lock = SIMPLE_MTX_INITIALIZER;
++   static driOptionCache option_info;
++   static driOptionCache option_cache;
++
++   say(why, why_size, "%s", "");
++   int fd = open_gpu(why, why_size);
++   if (fd < 0) {
++      report(true, why && *why ? why : "no GPU descriptor");
++      return NULL;
++   }
++
++   simple_mtx_lock(&lock);
++   if (!option_info.info)
++      driParseOptionInfo(&option_info, oneios_radeonsi_driconf, ARRAY_SIZE(oneios_radeonsi_driconf));
++   struct pipe_screen_config config = {
++      .options = &option_cache,
++      .options_info = &option_info,
++   };
++   /* radeonsi_screen_create parses the config files into option_cache itself (driParseConfigFiles). */
++   if (option_cache.info)
++      driDestroyOptionCache(&option_cache);
++   struct pipe_screen *screen = radeonsi_screen_create(fd, &config);
++   simple_mtx_unlock(&lock);
++
++   /* The amdgpu winsys keeps its own duplicate of the descriptor. */
++   close(fd);
++   if (!screen) {
++#ifdef HAVE_VDRM_DARWIN
++      const char *vdrm = vdrm_darwin_last_error();
++      if (vdrm && *vdrm)
++         say(why, why_size, "radeonsi: no screen: %s", vdrm);
++      else
++#endif
++         say(why, why_size, "radeonsi: no screen (the amdgpu winsys's reason is in the log: \"amdgpu:\" lines)");
++   }
++   if (screen) {
++      char line[256];
++      snprintf(line, sizeof(line), "screen \"%s\" (%s, %s), %u MiB of memory, compute %u",
++               screen->get_name(screen), screen->get_vendor(screen), screen->get_device_vendor(screen),
++               screen->caps.video_memory, screen->caps.compute);
++      report(false, line);
++   } else {
++      report(true, why && *why ? why : "no screen");
++   }
++   return screen;
++}
+diff --git a/src/gallium/targets/oneios-radeonsi/oneios_radeonsi.h b/src/gallium/targets/oneios-radeonsi/oneios_radeonsi.h
+new file mode 100644
+index 0000000..21105e5
+--- /dev/null
++++ b/src/gallium/targets/oneios-radeonsi/oneios_radeonsi.h
+@@ -0,0 +1,29 @@
++/*
++ * OneiOS: Mesa's radeonsi as a bare Gallium screen, for the A56's Metal plug-in (OneiOSRadeonMetal), which
++ * sits on the pipe_screen directly (no GL or Vulkan frontend). On Darwin the screen runs over the amdgpu
++ * virtio native context through the Darwin vdrm backend (src/virtio/vdrm/vdrm_darwin.c); on Linux over a
++ * virtio_gpu render node (for building and testing the same code there).
++ *
++ * Copyright 2026 OneiOS contributors
++ * SPDX-License-Identifier: MIT
++ */
++#ifndef ONEIOS_RADEONSI_H
++#define ONEIOS_RADEONSI_H
++
++#include <stddef.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++struct pipe_screen;
++
++/* The radeonsi screen of this process's GPU, or NULL with the reason in why (NUL-terminated, cut to
++ * why_size). The screen's own destroy() releases it (and, with the last screen, the GPU connection). */
++struct pipe_screen *oneios_radeonsi_screen_create(char *why, size_t why_size);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif
+diff --git a/src/gallium/targets/oneios-radeonsi/oneios_radeonsi.sym.in b/src/gallium/targets/oneios-radeonsi/oneios_radeonsi.sym.in
+new file mode 100644
+index 0000000..0e8a5c3
+--- /dev/null
++++ b/src/gallium/targets/oneios-radeonsi/oneios_radeonsi.sym.in
+@@ -0,0 +1,6 @@
++{
++  global:
++    @EXPORTS@;
++  local:
++    *;
++};

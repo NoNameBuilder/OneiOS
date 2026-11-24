@@ -28,6 +28,7 @@
 //! set's files and the lists' new lines. The fetched members in INDIR stay for the next run (they are the
 //! resumable part). Nothing here starts a program.
 
+pub mod a56gpu;
 mod cmd;
 pub mod data;
 
@@ -159,15 +160,25 @@ impl Prelink {
 }
 
 /// The root tweaks' optional inputs (hook API 1's `ONEIOS_HELPERS`, `ONEIOS_METAL_PLUGIN`, `ONEIOS_CAMERA_PLUGIN`,
-/// `ONEIOS_SCALE`, `ONEIOS_ROOTTWEAK_ARGS`; `config`: another `userland/config`, else the one built into the tool).
+/// `ONEIOS_SCALE`, `ONEIOS_ROOTTWEAK_ARGS`, `ONEIOS_ALLOW_NO_METAL`; `config`: another `userland/config`, else the one built into the tool).
+/// `runtime_metal` and `runtime_camera` are the staged runtime's Metal bundle and capture plug-in folder (its
+/// runtime.json "metal" and "camera", runtime/package.sh's lib/guest/; the phone's `serve make-image` sets them): they
+/// stand in for a `metal_plugin` (`camera_plugin`) not given, when the bundle's `oneios-target` is this image's
+/// `<device> <build>` (`Tweak::for_image`).
 #[derive(Debug, Clone, Default)]
 pub struct Tweak {
     pub helpers: Option<String>,
     pub metal_plugin: Option<String>,
+    pub allow_no_metal: bool,
     pub camera_plugin: Option<String>,
     pub scale: Option<String>,
     pub config: Option<String>,
     pub args: Vec<String>,
+    pub runtime_metal: Option<String>,
+    pub runtime_camera: Option<String>,
+    /// The staged runtime's folder when its runtime.json names the Galaxy A56's GPU plug-ins ("metal_a56"; the phone's
+    /// `serve make-image` sets it): an iOS 16.5 set they are for gets them as its kernel.kc.gpuaddon (a56gpu.rs)
+    pub runtime_a56: Option<String>,
 }
 
 impl Tweak {
@@ -175,7 +186,37 @@ impl Tweak {
     /// `.../camera` where they are there, and the checkout's `userland/config`.
     pub fn from_repo(repo: &str) -> Tweak {
         let at = |rel: &str| Some(format!("{}/{rel}", repo.trim_end_matches('/'))).filter(|p| Path::new(p).is_dir());
-        Tweak { helpers: at("out/userland/helpers"), metal_plugin: at("out/userland/NativeAdrenoMetal.bundle"), camera_plugin: at("out/userland/camera"), scale: None, config: at("userland/config"), args: Vec::new() }
+        Tweak { helpers: at("out/userland/helpers"), metal_plugin: at("out/userland/NativeAdrenoMetal.bundle"), camera_plugin: at("out/userland/camera"), config: at("userland/config"), ..Tweak::default() }
+    }
+
+    /// The inputs for an image of `device` `build`, and where its Metal plug-in comes from (`Built::metal`). A given
+    /// `metal_plugin` is kept (the tweaks' preflight refuses one built for another image). Without one, the runtime's
+    /// bundle is taken, with the runtime's capture plug-in when no `camera_plugin` is given, only when its
+    /// `oneios-target` names this image: a runtime made for the S24 Ultra's iOS 27 gives an image of another iOS
+    /// (another phone's fork) neither, and that image composites on the CPU as before. No bundle is never refused:
+    /// the phone cannot build one (docs/image-format.md, "The Metal plug-in").
+    pub fn for_image(&self, device: &str, build: &str) -> (Tweak, String) {
+        let mut t = self.clone();
+        let image = format!("{device} {build}");
+        if device == "iPhone18,2" && t.allow_no_metal {
+            return (t, "none (ONEIOS_ALLOW_NO_METAL=1)".to_string());
+        }
+        if let Some(given) = &t.metal_plugin {
+            return (t.clone(), format!("{given} (given)"));
+        }
+        let Some(bundle) = t.runtime_metal.clone() else {
+            return (t, "none: none given, and the staged runtime carries none (CPU composition)".to_string());
+        };
+        let target = std::fs::read_to_string(Path::new(&bundle).join("oneios-target")).map(|s| s.trim().to_string()).unwrap_or_default();
+        if target != image {
+            let target = if target.is_empty() { "no image (no oneios-target)".to_string() } else { target };
+            return (t, format!("none: the staged runtime's ({bundle}) is for {target}, this image is {image} (CPU composition)"));
+        }
+        t.metal_plugin = Some(bundle.clone());
+        if t.camera_plugin.is_none() {
+            t.camera_plugin = t.runtime_camera.clone();
+        }
+        (t, format!("{bundle} (the staged runtime's, for {image})"))
     }
 }
 
@@ -226,6 +267,8 @@ pub struct Built {
     pub manifest_sha256: String,
     pub kernel_sha256: Option<String>,
     pub seed_sha256: String,
+    /// Where the Metal plug-in of the Data seed came from, or why there is none (`Tweak::for_image`).
+    pub metal: String,
 }
 
 /// How a build ends when it does not make the set.
@@ -469,6 +512,19 @@ pub fn build(args: &Args, space: Space) -> R<Built> {
     job::step("check");
     let p = Profile::load(&args.profile)?;
     let (build_id, version) = (p.var("P_BUILD").to_string(), p.var("P_VERSION").to_string());
+    // the Metal plug-in: the one given, else the staged runtime's when it is for this image (Tweak::for_image)
+    let (tweak, metal) = if args.tweaks { args.tweak.for_image(p.var("P_DEVICE"), &build_id) } else { (args.tweak.clone(), "none (no root tweaks)".to_string()) };
+    println!("Metal plug-in: {metal}");
+    if args.tweaks {
+        let device = p.var("P_DEVICE");
+        oneios_tweaks::preflight_metal(
+            device,
+            &build_id,
+            tweak.metal_plugin.as_deref().map(Path::new),
+            tweak.allow_no_metal,
+        )
+        .map_err(|e| refused("metal", format!("step check: {e:#}")))?;
+    }
     let indir = args.indir.trim_end_matches('/').to_string();
     let record = inputs_record(&indir);
     if !args.fetch {
@@ -543,7 +599,9 @@ pub fn build(args: &Args, space: Space) -> R<Built> {
         // (an image our reader cannot read yet is said by the place step; here the guess for 24A446-like sets)
         let (data, entries) = Some(&os_image).filter(|p| size_of(p).is_some()).and_then(|p| data::tree_size(p, &data_source).ok()).unwrap_or((2 * GIB, 30_000));
         // the copied tree, the tar beside it (a 1.5 KiB header per entry), the meta file
-        let seed = 2 * data + entries * 2048;
+        // and what the tweaks place in the tree (the plug-ins, the helpers: about 36 MB for the Metal bundle), twice too
+        let placed: u64 = if args.tweaks { [&tweak.helpers, &tweak.metal_plugin, &tweak.camera_plugin].iter().filter_map(|p| p.as_deref()).map(|p| tree_bytes(Path::new(p))).sum() } else { 0 };
+        let seed = 2 * (data + placed) + entries * 2048;
         let images: u64 = p.members.iter().filter(|m| m.out.is_some()).map(|m| size_of(&format!("{indir}/{}", m.name)).unwrap_or(m.size)).sum();
         let linked = device_of(&indir).is_some() && device_of(&indir) == device_of(&args.out) && device_of(&args.out) == device_of(&args.work);
         let copies = if linked { 0 } else { images + if to_decrypt.is_empty() { 0 } else { plains } };
@@ -672,15 +730,17 @@ pub fn build(args: &Args, space: Space) -> R<Built> {
         // hook API 1 as a call (oneios-tweaks): the copied tree changed in place, the overlay, the owner rules, the
         // summary; the OS volume read from its image, as nothing is mounted
         println!("running the root tweaks (oneios-tweaks)");
-        let t = &args.tweak;
+        let t = &tweak;
         let hook = oneios_tweaks::Hook {
             os_root: PathBuf::new(),
             os_image: Some(os.clone()),
             data: tree.clone(),
             overlay: overlay.clone(),
             build: Some(build_id.clone()),
+            device: Some(p.var("P_DEVICE").to_string()),
             helpers: t.helpers.clone().map(PathBuf::from),
             metal_plugin: t.metal_plugin.clone().map(PathBuf::from),
+            allow_no_metal: t.allow_no_metal,
             camera_plugin: t.camera_plugin.clone().map(PathBuf::from),
             scale: t.scale.clone(),
             config: t.config.clone().map(PathBuf::from),
@@ -795,6 +855,22 @@ pub fn build(args: &Args, space: Space) -> R<Built> {
     }
     let said = image_cmd(&margs)?.trim_end().to_string();
     println!("{said}");
+    // The Galaxy A56's GPU plug-ins of the staged runtime (a56gpu.rs): an iOS 16.5 set they are for gets its
+    // kernel.kc.gpuaddon of them and their CDHashes in owner-trust.json (and that entry of manifest.json), before the
+    // verify reads the manifest; the sidecar is not in the manifest, so it is added to the lists below by name.
+    let mut a56_addon: Option<String> = None;
+    if let Some(runtime) = &args.tweak.runtime_a56 {
+        let plugins = a56gpu::runtime_plugins(Path::new(runtime)).map_err(failed)?;
+        match a56gpu::for_set(&set, plugins.as_ref()).map_err(failed)? {
+            Ok(placed) => {
+                a56gpu::write(&placed, &set, false).map_err(failed)?;
+                println!("{}", a56gpu::counts_line(&placed));
+                println!("{}", a56gpu::placed_line(&placed));
+                a56_addon = Some(oneios_image::sha256_of(&format!("{set_s}/{}", a56gpu::ADDON)).map_err(image)?);
+            }
+            Err(why) => println!("@@A56GPU none: {why}"),
+        }
+    }
     between()?;
     let total: u64 = set_files(&set)?.iter().map(|(_, m)| m.len()).sum();
     job::begin("verify", "bytes", total);
@@ -818,6 +894,9 @@ pub fn build(args: &Args, space: Space) -> R<Built> {
     }
     let manifest_sha256 = oneios_image::sha256_of(&format!("{set_s}/manifest.json")).map_err(image)?;
     sums.push(("manifest.json".into(), manifest_sha256.clone()));
+    if let Some(sha) = a56_addon {
+        sums.push((a56gpu::ADDON.into(), sha));
+    }
     sums.sort();
     let on_disk = set_files(&set)?;
     if on_disk.len() != sums.len() {
@@ -859,7 +938,7 @@ pub fn build(args: &Args, space: Space) -> R<Built> {
         None => println!("work folder kept: {}", work.display()),
     }
     println!("image set: {} ({} files, {bytes} bytes, {:.1} s, peak memory {} MiB)", out.display(), sums.len(), started.elapsed().as_secs_f64(), peak_rss() >> 20);
-    Ok(Built { files: sums.len(), format: 1, version, build: build_id, out: args.out.clone(), bytes, manifest_sha256, kernel_sha256, seed_sha256 })
+    Ok(Built { files: sums.len(), format: 1, version, build: build_id, out: args.out.clone(), bytes, manifest_sha256, kernel_sha256, seed_sha256, metal })
 }
 
 /// build.sh's `put`: a hard link when the folder allows it, else a copy.
@@ -953,6 +1032,7 @@ oneios-tool image build: the whole image set in one process (scripts/image/build
   the root tweaks (oneios-tweaks; image-hook's inputs, all optional; --repo DIR gives image-hook's defaults there):
   --helpers DIR, --metal-plugin BUNDLE, --camera-plugin DIR, --scale 2|3, --tweaks-config DIR (default: the
                        userland/config built into the tool), --tweak-arg ARG (repeatable: more `apply` options)
+  ONEIOS_ALLOW_NO_METAL=1 deliberately skips Metal for a CPU-only S24 Ultra image
   -j N                 connections of the fetch (default 8)
 ";
 
@@ -1104,6 +1184,7 @@ fn parse(args: &[String]) -> Result<Option<Args>, String> {
     };
     // the root tweaks: image-hook's defaults from --repo, each option over them
     let mut tweak = repo_for_tweaks.as_deref().map(Tweak::from_repo).unwrap_or_default();
+    tweak.allow_no_metal = std::env::var("ONEIOS_ALLOW_NO_METAL").map_or(false, |value| value == "1");
     for (slot, given) in [(&mut tweak.helpers, t_helpers), (&mut tweak.metal_plugin, t_metal), (&mut tweak.camera_plugin, t_camera), (&mut tweak.scale, t_scale), (&mut tweak.config, t_config)] {
         if given.is_some() {
             *slot = given;
@@ -1131,6 +1212,33 @@ mod tests {
         assert_eq!(unquote("'it'\\''s'"), "it's");
         assert_eq!(unquote(r#"'it'"'"'s x'"#), "it's x");
     }
+
+    #[test]
+    fn the_runtimes_plugins_go_with_their_own_image_only() {
+        let dir = std::env::temp_dir().join(format!("oneios-imagebuild-for-image.{}", std::process::id()));
+        let bundle = dir.join("NativeAdrenoMetal.bundle");
+        std::fs::create_dir_all(&bundle).unwrap();
+        std::fs::write(bundle.join("oneios-target"), "iPhone18,2 24A446\n").unwrap();
+        let runtime = Tweak { runtime_metal: Some(bundle.display().to_string()), runtime_camera: Some("CAMERA".into()), ..Tweak::default() };
+        // its own image: the bundle, and the runtime's capture plug-in with it
+        let (t, said) = runtime.for_image("iPhone18,2", "24A446");
+        assert_eq!((t.metal_plugin.as_deref(), t.camera_plugin.as_deref()), (Some(bundle.to_str().unwrap()), Some("CAMERA")));
+        assert!(said.ends_with("(the staged runtime's, for iPhone18,2 24A446)"), "{said}");
+        // a camera plug-in given is kept
+        let given = Tweak { camera_plugin: Some("MINE".into()), ..runtime.clone() };
+        assert_eq!(given.for_image("iPhone18,2", "24A446").0.camera_plugin.as_deref(), Some("MINE"));
+        // another image (the A56's iOS 16.5): neither
+        let (t, said) = runtime.for_image("iPhone15,4", "20F66");
+        assert_eq!((t.metal_plugin, t.camera_plugin), (None, None));
+        assert!(said.contains("is for iPhone18,2 24A446, this image is iPhone15,4 20F66"), "{said}");
+        // ONEIOS_ALLOW_NO_METAL=1 on the S24 Ultra's image: none, as the tweaks' preflight takes it
+        let (t, said) = Tweak { allow_no_metal: true, ..runtime.clone() }.for_image("iPhone18,2", "24A446");
+        assert_eq!((t.metal_plugin, said.as_str()), (None, "none (ONEIOS_ALLOW_NO_METAL=1)"));
+        // a bundle without oneios-target is for no image
+        std::fs::remove_file(bundle.join("oneios-target")).unwrap();
+        assert!(runtime.for_image("iPhone18,2", "24A446").1.contains("is for no image (no oneios-target)"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 /// The most memory this process has held (getrusage's ru_maxrss: KiB on Linux and Android, bytes on macOS).
@@ -1146,4 +1254,13 @@ pub fn peak_rss() -> u64 {
     } else {
         max << 10
     }
+}
+
+/// The bytes of the files below `path` (a file: its own; links not followed; what cannot be read: 0).
+fn tree_bytes(path: &Path) -> u64 {
+    let Ok(meta) = std::fs::symlink_metadata(path) else { return 0 };
+    if !meta.is_dir() {
+        return if meta.is_file() { meta.len() } else { 0 };
+    }
+    std::fs::read_dir(path).map(|entries| entries.flatten().map(|e| tree_bytes(&e.path())).sum()).unwrap_or(0)
 }

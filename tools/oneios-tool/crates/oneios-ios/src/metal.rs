@@ -65,14 +65,20 @@ const TURNIP_CROSS_ARGS_DARWIN: &str =
 const TURNIP_CROSS_ARGS_WHY: &str =
     "Mesa's cross c/cpp/objc args get -D_DARWIN_C_SOURCE (flex 2.6.10's scanners define _POSIX_C_SOURCE, which hides Darwin's Dl_info from ir3_lexer.c)";
 
-/// `ios metal-stage-edit ROOT HOOKS JOBS KNOWS`: what build.sh's `stage` changes in the staged copy ROOT.
-pub fn stage_edit(root: &Path, hooks: &Path, jobs: &str, knows: bool) -> Result<()> {
+/// `ios metal-stage-edit ROOT HOOKS JOBS KNOWS [--rt]`: what build.sh's `stage` changes in the staged copy ROOT. With `rt`, the
+/// plug-in script links the bridge on metal2vulkan-rt (userland/metal/rt/build.sh ios builds it into the place the script
+/// reads) instead of building the old one.
+pub fn stage_edit(root: &Path, hooks: &Path, jobs: &str, knows: bool, rt: bool) -> Result<()> {
     let hooks: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(hooks).with_context(|| hooks.display().to_string())?).with_context(|| hooks.display().to_string())?;
     let pins = root.join("scripts/data/adreno-compiler-inputs.json");
     let mut source = oneios_json::read(&pins.to_string_lossy())?;
     match &mut source {
         Value::Object(m) => match m.get_mut("patches") {
-            Some(Value::Array(a)) => a.push(Value::String("patches/mesa/trace-turnip-init.patch".into())),
+            Some(Value::Array(a)) => {
+                a.push(Value::String("patches/mesa/trace-turnip-init.patch".into()));
+                // userland/metal/turnip-idle-bo-cache.patch: the idle trim of Turnip's BO cache, applied after the trace patch.
+                a.push(Value::String("patches/mesa/turnip-idle-bo-cache.patch".into()));
+            }
             _ => bail!("{}: no list \"patches\"", pins.display()),
         },
         _ => bail!("{}: not an object", pins.display()),
@@ -99,8 +105,8 @@ pub fn stage_edit(root: &Path, hooks: &Path, jobs: &str, knows: bool) -> Result<
             ("timeout=1800)", "timeout=10800)".into(), "a longer limit for the fat-LTO Rust build"),
             (
                 "\n\ndef git_tree(*steps):",
-                "\n\nPATCHES.append(ROOT / 'patches/metal2vulkan/trace-metal-vulkan-init.patch')\nPATCHES.append(ROOT / 'patches/metal2vulkan/m2v-spare-command-pools.patch')\n\n\ndef git_tree(*steps):".into(),
-                "record Vulkan initialization diagnostics in the translator patch stack; spare command pools follow their recent use (m2v-spare-command-pools.patch)",
+                "\n\nPATCHES.append(ROOT / 'patches/metal2vulkan/trace-metal-vulkan-init.patch')\nPATCHES.append(ROOT / 'patches/metal2vulkan/m2v-spare-command-pools.patch')\nPATCHES.append(ROOT / 'patches/metal2vulkan/m2v-idle-memory.patch')\n\n\ndef git_tree(*steps):".into(),
+                "record Vulkan initialization diagnostics in the translator patch stack; spare command pools follow their recent use (m2v-spare-command-pools.patch); the idle trim ages the spare image blocks, the memory census (m2v-idle-memory.patch)",
             ),
         ],
     )?;
@@ -116,6 +122,13 @@ pub fn stage_edit(root: &Path, hooks: &Path, jobs: &str, knows: bool) -> Result<
             "instrument the frontend after the upstream replacements",
         ),
     ];
+    if rt {
+        plugin_pairs.push((
+            "subprocess.run(['python3', ROOT / 'scripts/build-adreno-metal-bridge.py', '--target', BRIDGE_TARGET], check=True)\n",
+            String::new(),
+            "the bridge is metal2vulkan-rt's (userland/metal/rt/build.sh ios put it in build/adreno-metal-bridge/ios27); the old one is not built",
+        ));
+    }
     if knows {
         plugin_pairs.push((
             "'-Wall', '-Wextra', '-Werror',",
@@ -373,11 +386,45 @@ fn file_mode(p: &Path) -> Result<u32> {
     Ok(if std::fs::metadata(p).with_context(|| p.display().to_string())?.permissions().mode() & 0o111 != 0 { 0o755 } else { 0o644 })
 }
 
-/// The Metal plug-in's files as the kernel's 0031 union wants them: `addons/NativeAdrenoMetal.bundle/...` in
-/// os.walk's order, then the `addons/NativeAdrenoMetal.publish` marker.
+/// The Galaxy A56's Metal plug-in (userland/metal-amd): a bundle folder of this name keeps it under addons/.
+const RADEON_BUNDLE: &str = "OneiOSRadeonMetal";
+/// The Galaxy A56's OpenGL ES (userland/metal-amd/gl, docs/a56-gpu.md 4a): a bundle folder of this name keeps it too.
+const RADEON_GL_BUNDLE: &str = "OneiOSRadeonGL";
+
+/// The name a Metal bundle has under addons/: the A56's plug-in (a folder named `OneiOSRadeonMetal.bundle`) keeps its
+/// own; every other folder is the Adreno plug-in, NativeAdrenoMetal, whatever the folder is called (as before the
+/// A56's plug-in existed: out/userland and out/userland-rt both hold one).
+fn addon_bundle_name(bundle: &Path) -> &'static str {
+    match bundle.file_name().and_then(|n| n.to_str()) {
+        Some(n) if n.strip_suffix(".bundle") == Some(RADEON_BUNDLE) => RADEON_BUNDLE,
+        Some(n) if n.strip_suffix(".bundle") == Some(RADEON_GL_BUNDLE) => RADEON_GL_BUNDLE,
+        _ => "NativeAdrenoMetal",
+    }
+}
+
+/// The Metal plug-in's files as the kernel's 0031 union wants them: `addons/<name>.bundle/...` in os.walk's order, then
+/// the `addons/<name>.publish` marker (the name: [`addon_bundle_name`]).
 fn metal_files(bundle: &Path) -> Result<Vec<AddonFile>> {
+    if addon_bundle_name(bundle) == RADEON_GL_BUNDLE {
+        bail!("{}: the A56's OpenGL ES bundle is not a Metal plug-in: give it with --gl", bundle.display());
+    }
+    bundle_files(bundle, true)
+}
+
+/// The A56's OpenGL ES bundle (a folder named `OneiOSRadeonGL.bundle`) under addons/ beside the Metal plug-in:
+/// `addons/OneiOSRadeonGL.bundle/...`, which 0031's union puts in /System/Library/Extensions, where libGFXShared loads
+/// the accelerator's IOGLESBundleName. No .publish marker (that is the Metal plug-in's).
+fn gl_files(bundle: &Path) -> Result<Vec<AddonFile>> {
+    if addon_bundle_name(bundle) != RADEON_GL_BUNDLE {
+        bail!("{}: not an OneiOSRadeonGL.bundle folder (userland/metal-amd/gl/build.sh plugin)", bundle.display());
+    }
+    bundle_files(bundle, false)
+}
+
+fn bundle_files(bundle: &Path, publish: bool) -> Result<Vec<AddonFile>> {
     let mut files: Vec<AddonFile> = Vec::new();
-    fn walk(dir: &Path, rel: &str, out: &mut Vec<AddonFile>) -> Result<()> {
+    let name = addon_bundle_name(bundle);
+    fn walk(dir: &Path, rel: &str, bundle: &str, out: &mut Vec<AddonFile>) -> Result<()> {
         let mut entries: Vec<_> = std::fs::read_dir(dir).with_context(|| dir.display().to_string())?.flatten().collect();
         entries.sort_by_key(|e| e.file_name());
         // os.walk's order: this folder's files (by name), then each folder (by name)
@@ -394,16 +441,18 @@ fn metal_files(bundle: &Path) -> Result<Vec<AddonFile>> {
             let p = e.path();
             let name = e.file_name().to_string_lossy().into_owned();
             let r = if rel.is_empty() { name } else { format!("{rel}/{name}") };
-            out.push((format!("addons/NativeAdrenoMetal.bundle/{r}"), file_mode(&p)?, std::fs::read(&p)?));
+            out.push((format!("addons/{bundle}.bundle/{r}"), file_mode(&p)?, std::fs::read(&p)?));
         }
         for e in dirs {
             let name = e.file_name().to_string_lossy().into_owned();
-            walk(&e.path(), &if rel.is_empty() { name } else { format!("{rel}/{name}") }, out)?;
+            walk(&e.path(), &if rel.is_empty() { name } else { format!("{rel}/{name}") }, bundle, out)?;
         }
         Ok(())
     }
-    walk(bundle, "", &mut files)?;
-    files.push(("addons/NativeAdrenoMetal.publish".into(), 0o644, b"1\n".to_vec()));
+    walk(bundle, "", name, &mut files)?;
+    if publish {
+        files.push((format!("addons/{name}.publish"), 0o644, b"1\n".to_vec()));
+    }
     Ok(files)
 }
 
@@ -461,8 +510,11 @@ fn pack(files: &[AddonFile]) -> Result<Vec<u8>> {
 
 /// `ios gpuaddon BUNDLE OUTPUT`: the Metal bundle alone as the boot addon (byte for byte what it was before
 /// `ios addon`).
-pub fn gpuaddon(bundle: &Path, output: &Path) -> Result<()> {
-    let files = metal_files(bundle)?;
+pub fn gpuaddon(bundle: &Path, output: &Path, gl: Option<&Path>) -> Result<()> {
+    let mut files = metal_files(bundle)?;
+    if let Some(gl) = gl {
+        files.extend(gl_files(gl)?);
+    }
     let blob = pack(&files)?;
     std::fs::write(output, &blob).with_context(|| output.display().to_string())?;
     println!("metal: {}: {} files, {} bytes", output.display(), files.len(), blob.len());
@@ -473,13 +525,16 @@ pub fn gpuaddon(bundle: &Path, output: &Path) -> Result<()> {
 /// plug-in under addons/ (hosted 0031's union), the capture plug-in under camera/ (hosted 0090's), or both; and
 /// OUTPUT.cdhashes, one `CDHASH NAME` line for each Mach-O file in it: the CDHashes the image's owner-trust.json must
 /// list (`oneios-tool phone addon OUTPUT` adds them).
-pub fn addon(output: &Path, metal: Option<&Path>, camera: Option<&Path>) -> Result<()> {
+pub fn addon(output: &Path, metal: Option<&Path>, camera: Option<&Path>, gl: Option<&Path>) -> Result<()> {
     if metal.is_none() && camera.is_none() {
         bail!("ios addon OUTPUT --metal BUNDLE and/or --camera DIR: nothing to put in it");
     }
     let mut files = Vec::new();
     if let Some(bundle) = metal {
         files.extend(metal_files(bundle)?);
+    }
+    if let Some(bundle) = gl {
+        files.extend(gl_files(bundle)?);
     }
     let metal_count = files.len();
     if let Some(dir) = camera {
@@ -498,7 +553,7 @@ pub fn addon(output: &Path, metal: Option<&Path>, camera: Option<&Path>) -> Resu
     let list = format!("{}.cdhashes", output.display());
     std::fs::write(&list, &cdhashes).with_context(|| list.clone())?;
     println!(
-        "addon: {}: {} files ({} of the Metal plug-in under addons/, {} of the capture plug-in under camera/), {} bytes; {} CDHashes in {list}",
+        "addon: {}: {} files ({} of the Metal plug-in (and the A56's OpenGL ES) under addons/, {} of the capture plug-in under camera/), {} bytes; {} CDHashes in {list}",
         output.display(),
         files.len(),
         metal_count,
@@ -509,6 +564,88 @@ pub fn addon(output: &Path, metal: Option<&Path>, camera: Option<&Path>) -> Resu
     Ok(())
 }
 
+
+/// The Galaxy A56's boot addon in memory: the Metal plug-in (`OneiOSRadeonMetal.bundle`) and, when given, its OpenGL ES
+/// (`OneiOSRadeonGL.bundle`) under addons/, as `ios gpuaddon BUNDLE OUT --gl GL` writes it, and the CDHash of every Mach-O
+/// in it (sorted, each once): what the image's owner-trust.json must list. The phone's Update the kernel and Make iOS image
+/// build it from the staged runtime's lib/guest/ (oneios-imagebuild a56gpu; docs/a56-gpu.md 6).
+pub fn a56_addon(metal: &Path, gl: Option<&Path>) -> Result<(Vec<u8>, Vec<String>)> {
+    if addon_bundle_name(metal) != RADEON_BUNDLE {
+        bail!("{}: not an OneiOSRadeonMetal.bundle folder (userland/metal-amd/air/build.sh plugin)", metal.display());
+    }
+    let mut files = metal_files(metal)?;
+    if let Some(gl) = gl {
+        files.extend(gl_files(gl)?);
+    }
+    let mut cdhashes: Vec<String> = Vec::new();
+    for (_, _, data) in &files {
+        if data.get(..4) == Some(&[0xcf, 0xfa, 0xed, 0xfe]) {
+            let slices = oneios_tweaks::macho::describe(data).map_err(|e| anyhow!("{e}"))?;
+            cdhashes.extend(slices.into_iter().map(|s| s.cdhash));
+        }
+    }
+    cdhashes.sort();
+    cdhashes.dedup();
+    Ok((pack(&files)?, cdhashes))
+}
+
+/// `ios bundle-record ROOT BUNDLE RECORD TARGET [SOURCE...]`: the build record of one of our guest bundles (the Galaxy
+/// A56's OneiOSRadeonMetal and OneiOSRadeonGL), in the shape of NativeAdrenoMetal.build.json that runtime/package.sh
+/// and the package's guest check read: "bundle", "target", "files" (each Mach-O of the bundle: bytes, cdhash, arch,
+/// page_size, identifier, minos), "cdhashes" and "sources" (each SOURCE `NAME` is external/NAME's HEAD in ROOT, or
+/// `NAME=COMMIT` as given: a source outside external/, as iOSPlus10's NegroniGL).
+pub fn bundle_record(root: &Path, bundle: &Path, record: &Path, target: &str, sources: &[String]) -> Result<()> {
+    let mut files = Map::new();
+    let mut stack = vec![(bundle.to_path_buf(), String::new())];
+    while let Some((dir, rel)) = stack.pop() {
+        let mut entries: Vec<_> = std::fs::read_dir(&dir).with_context(|| dir.display().to_string())?.flatten().collect();
+        entries.sort_by_key(|e| e.file_name());
+        for e in entries {
+            let p = e.path();
+            let name = e.file_name().to_string_lossy().into_owned();
+            let r = if rel.is_empty() { name } else { format!("{rel}/{name}") };
+            if p.is_dir() {
+                stack.push((p, r));
+                continue;
+            }
+            let data = std::fs::read(&p).with_context(|| p.display().to_string())?;
+            if data.get(..4) != Some(&[0xcf, 0xfa, 0xed, 0xfe]) {
+                continue;
+            }
+            let info = oneios_tweaks::macho::describe(&data).map_err(|e| anyhow!("{}: {e}", p.display()))?.into_iter().next().ok_or_else(|| anyhow!("{}: no slice", p.display()))?;
+            let mut f = Map::new();
+            f.insert("bytes".into(), Value::Number(data.len().into()));
+            f.insert("cdhash".into(), Value::String(info.cdhash));
+            f.insert("arch".into(), Value::String(info.arch));
+            f.insert("page_size".into(), Value::Number(info.page_size.into()));
+            f.insert("identifier".into(), Value::String(info.identifier));
+            f.insert("minos".into(), info.minos.map(Value::String).unwrap_or(Value::Null));
+            files.insert(r, Value::Object(f));
+        }
+    }
+    if files.is_empty() {
+        bail!("{}: no Mach-O in the bundle", bundle.display());
+    }
+    let mut cdhashes: Vec<String> = files.values().filter_map(|f| if let Value::Object(m) = f { m.get("cdhash").map(Value::text) } else { None }).collect();
+    cdhashes.sort();
+    let mut pins = Map::new();
+    for s in sources {
+        match s.split_once('=') {
+            Some((name, commit)) => pins.insert(name.into(), Value::String(commit.into())),
+            None => pins.insert(s.clone(), Value::String(git_head(&root.join("external").join(s)))),
+        };
+    }
+    let mut r = Map::new();
+    r.insert("bundle".into(), Value::String(addon_bundle_name(bundle).to_string() + ".bundle"));
+    r.insert("target".into(), Value::String(target.into()));
+    r.insert("files".into(), Value::Object(files));
+    r.insert("cdhashes".into(), Value::Array(cdhashes.into_iter().map(Value::String).collect()));
+    r.insert("sources".into(), Value::Object(pins));
+    let text = oneios_json::to_pretty(&Value::Object(r)) + "\n";
+    std::fs::write(record, text).with_context(|| record.display().to_string())?;
+    println!("metal: {}: the build record of {}", record.display(), bundle.display());
+    Ok(())
+}
 
 /// The files of a sidecar: (name, mode, the unpacked bytes). The reader the tests check `gpuaddon` with.
 pub fn read_gpuaddon(blob: &[u8]) -> Result<Vec<(String, u32, Vec<u8>)>> {
@@ -566,7 +703,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(b.join("bin"), std::fs::Permissions::from_mode(0o755)).unwrap();
         let out = dir.join("a.gpuaddon");
-        gpuaddon(&b, &out).unwrap();
+        gpuaddon(&b, &out, None).unwrap();
         let blob = std::fs::read(&out).unwrap();
         let files = read_gpuaddon(&blob).unwrap();
         let names: Vec<(&str, u32, usize)> = files.iter().map(|(n, m, d)| (n.as_str(), *m, d.len())).collect();
@@ -580,6 +717,67 @@ mod tests {
             ]
         );
         assert_eq!(files[1].2, vec![7u8; 100_000]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_a56_gl_bundle_goes_beside_the_metal_plugin() {
+        // userland/metal-amd/gl's OneiOSRadeonGL.bundle (docs/a56-gpu.md 4a): its own name under addons/, after the Metal
+        // plug-in and its .publish marker, with no marker of its own (xnuhost's gl_in_addon looks for its executable)
+        let dir = std::env::temp_dir().join(format!("oneios-ios-addon-a56gl-{}", std::process::id()));
+        let (m, g) = (dir.join("OneiOSRadeonMetal.bundle"), dir.join("OneiOSRadeonGL.bundle"));
+        for (b, exe) in [(&m, "OneiOSRadeonMetal"), (&g, "OneiOSRadeonGL")] {
+            std::fs::create_dir_all(b).unwrap();
+            std::fs::write(b.join("Info.plist"), b"<plist/>").unwrap();
+            std::fs::write(b.join(exe), b"mach-o").unwrap();
+            std::fs::write(b.join("oneios-target"), b"iPhone10,3 20F66\n").unwrap();
+        }
+        let out = dir.join("a.gpuaddon");
+        gpuaddon(&m, &out, Some(&g)).unwrap();
+        let names: Vec<String> = read_gpuaddon(&std::fs::read(&out).unwrap()).unwrap().into_iter().map(|f| f.0).collect();
+        assert_eq!(
+            names,
+            vec![
+                "addons/OneiOSRadeonMetal.bundle/Info.plist",
+                "addons/OneiOSRadeonMetal.bundle/OneiOSRadeonMetal",
+                "addons/OneiOSRadeonMetal.bundle/oneios-target",
+                "addons/OneiOSRadeonMetal.publish",
+                "addons/OneiOSRadeonGL.bundle/Info.plist",
+                "addons/OneiOSRadeonGL.bundle/OneiOSRadeonGL",
+                "addons/OneiOSRadeonGL.bundle/oneios-target",
+            ]
+        );
+        // the same through `ios addon --gl`; a folder of another name is refused as --gl, the GL bundle as the Metal one
+        addon(&dir.join("b.gpuaddon"), Some(&m), None, Some(&g)).unwrap();
+        assert_eq!(read_gpuaddon(&std::fs::read(dir.join("b.gpuaddon")).unwrap()).unwrap().len(), 7);
+        assert!(gpuaddon(&m, &out, Some(&m)).is_err());
+        assert!(gpuaddon(&g, &out, None).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_a56_bundle_keeps_its_name_in_the_sidecar() {
+        // userland/metal-amd's OneiOSRadeonMetal.bundle: its own name under addons/ and its own .publish marker
+        let dir = std::env::temp_dir().join(format!("oneios-ios-addon-a56-{}", std::process::id()));
+        let b = dir.join("OneiOSRadeonMetal.bundle");
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::write(b.join("Info.plist"), b"<plist/>").unwrap();
+        std::fs::write(b.join("OneiOSRadeonMetal"), b"mach-o").unwrap();
+        let out = dir.join("a.gpuaddon");
+        gpuaddon(&b, &out, None).unwrap();
+        let files = read_gpuaddon(&std::fs::read(&out).unwrap()).unwrap();
+        let names: Vec<&str> = files.iter().map(|(n, _, _)| n.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "addons/OneiOSRadeonMetal.bundle/Info.plist",
+                "addons/OneiOSRadeonMetal.bundle/OneiOSRadeonMetal",
+                "addons/OneiOSRadeonMetal.publish",
+            ]
+        );
+        // any other folder name is the Adreno plug-in, as before
+        assert_eq!(addon_bundle_name(Path::new("out/userland-rt/NativeAdrenoMetal.bundle")), "NativeAdrenoMetal");
+        assert_eq!(addon_bundle_name(Path::new("x/OneiOSRadeonMetalX.bundle")), "NativeAdrenoMetal");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -628,7 +826,7 @@ mod tests {
         std::fs::write(cam.join("H9ISP.mediacapture"), b"not a Mach-O").unwrap();
         // the camera plug-in alone: one file under camera/, no Metal file (hosted 0090 keeps the seed's Metal plug-in)
         let out = dir.join("c.gpuaddon");
-        addon(&out, None, Some(&cam)).unwrap();
+        addon(&out, None, Some(&cam), None).unwrap();
         let files = read_gpuaddon(&std::fs::read(&out).unwrap()).unwrap();
         assert_eq!(files.iter().map(|f| (f.0.as_str(), f.1)).collect::<Vec<_>>(), vec![("camera/MediaCapture/H9ISP.mediacapture", 0o644)]);
         assert_eq!(files[0].2, b"not a Mach-O");
@@ -636,7 +834,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.join("c.gpuaddon.cdhashes")).unwrap(), "");
         // both: the Metal files first (as `ios gpuaddon` writes them), then the camera's; the file itself is taken too
         let both = dir.join("b.gpuaddon");
-        addon(&both, Some(&b), Some(&cam.join("H9ISP.mediacapture"))).unwrap();
+        addon(&both, Some(&b), Some(&cam.join("H9ISP.mediacapture")), None).unwrap();
         let names: Vec<String> = read_gpuaddon(&std::fs::read(&both).unwrap()).unwrap().into_iter().map(|f| f.0).collect();
         assert_eq!(
             names,
@@ -644,13 +842,13 @@ mod tests {
         );
         // the Metal part is byte for byte `ios gpuaddon`'s
         let metal = dir.join("m.gpuaddon");
-        gpuaddon(&b, &metal).unwrap();
-        addon(&dir.join("m2.gpuaddon"), Some(&b), None).unwrap();
+        gpuaddon(&b, &metal, None).unwrap();
+        addon(&dir.join("m2.gpuaddon"), Some(&b), None, None).unwrap();
         assert_eq!(std::fs::read(&metal).unwrap(), std::fs::read(dir.join("m2.gpuaddon")).unwrap());
         // refusals: nothing asked for, a file of another name
-        assert!(addon(&dir.join("x"), None, None).is_err());
+        assert!(addon(&dir.join("x"), None, None, None).is_err());
         std::fs::write(dir.join("other.dylib"), b"x").unwrap();
-        assert!(addon(&dir.join("x"), None, Some(&dir.join("other.dylib"))).is_err());
+        assert!(addon(&dir.join("x"), None, Some(&dir.join("other.dylib")), None).is_err());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

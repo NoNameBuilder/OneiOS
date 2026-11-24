@@ -1823,6 +1823,58 @@ fn make_image_takes_the_apps_request_with_the_released_runtimes_profiles() {
 }
 
 #[test]
+fn make_image_takes_the_staged_runtimes_metal_plugin_for_its_own_image_only() {
+    // The phone's Make iOS image gives no Metal plug-in (the app sends none): the staged runtime's lib/guest/ bundle
+    // (runtime/package.sh's METAL_DIR, runtime.json "metal") stands in, when its oneios-target is the image's
+    // <device> <build>; a runtime for another iOS gives none and the build goes on (another phone's fork).
+    let b = Box::new("make-metal");
+    let (_, profile) = stand_in_ipsw(&b, 9000, false);
+    b.put("stage/runtime/kernel/xnu.macho", &noise(4096, 43));
+    let bundle = b.stage("runtime/lib/guest/NativeAdrenoMetal.bundle");
+    let with_guest = br#"{"format": 1, "kernel": {"path": "kernel/xnu.macho"}, "metal": {"bundle": "lib/guest/NativeAdrenoMetal.bundle", "record": "lib/guest/NativeAdrenoMetal.build.json", "target": "x", "cdhashes": []}, "camera": {"path": "lib/guest/camera", "cdhash": "00"}}"#;
+    b.put("stage/runtime/runtime.json", with_guest);
+    b.put("stage/runtime/lib/guest/NativeAdrenoMetal.bundle/Info.plist", b"<plist/>");
+    b.put("stage/runtime/lib/guest/camera/H9ISP.mediacapture", b"stand-in");
+    begin_image(&b);
+    let mut s = Serve::start(&b, &[]);
+    let metal_line = |s: &mut Serve, more: Value| -> String {
+        s.send(make_image(&b, "m", more.clone()));
+        let events = s.request("m");
+        let last = events.last().unwrap().clone();
+        // past the check step, to the kernel's inputs (kb/ is empty): the same refusal as without a plug-in
+        assert_eq!((last["ev"].as_str(), last["code"].as_str()), (Some("refused"), Some("not-found")), "{more}: {last}");
+        assert!(last["text"].as_str().unwrap().contains("the kernel's inputs are missing"), "{more}: {last}");
+        nothing_left(&b, &more.to_string());
+        let lines: Vec<String> = events.iter().filter(|v| v["ev"] == "line").filter_map(|v| v["text"].as_str()).filter(|t| t.starts_with("Metal plug-in: ")).map(str::to_string).collect();
+        assert_eq!(lines.len(), 1, "{more}: one Metal line: {events:#?}");
+        lines[0].clone()
+    };
+    // the runtime's bundle is for this image (the stand-in profile's iTest1,1 0T1): taken
+    b.put("stage/runtime/lib/guest/NativeAdrenoMetal.bundle/oneios-target", b"iTest1,1 0T1\n");
+    assert_eq!(metal_line(&mut s, json!({"profile": profile})), format!("Metal plug-in: {bundle} (the staged runtime's, for iTest1,1 0T1)"));
+    // for another image (a runtime for the S24 Ultra's iOS 27, an image of another iOS): left out, the build goes on
+    b.put("stage/runtime/lib/guest/NativeAdrenoMetal.bundle/oneios-target", b"iPhone18,2 24A446\n");
+    assert_eq!(
+        metal_line(&mut s, json!({"profile": profile})),
+        format!("Metal plug-in: none: the staged runtime's ({bundle}) is for iPhone18,2 24A446, this image is iTest1,1 0T1 (CPU composition)")
+    );
+    // "runtime_plugins": false, and a runtime without them (before this package layout): none
+    b.put("stage/runtime/lib/guest/NativeAdrenoMetal.bundle/oneios-target", b"iTest1,1 0T1\n");
+    let none = "Metal plug-in: none: none given, and the staged runtime carries none (CPU composition)";
+    assert_eq!(metal_line(&mut s, json!({"profile": profile, "runtime_plugins": false})), none);
+    b.put("stage/runtime/runtime.json", br#"{"format": 1, "kernel": {"path": "kernel/xnu.macho"}}"#);
+    assert_eq!(metal_line(&mut s, json!({"profile": profile})), none);
+    // a bundle the request gives is the request's (the preflight checks its target)
+    b.put("stage/runtime/runtime.json", with_guest);
+    assert_eq!(metal_line(&mut s, json!({"profile": profile, "metal_plugin": bundle})), format!("Metal plug-in: {bundle} (given)"));
+    // no root tweaks: no plug-in
+    assert_eq!(metal_line(&mut s, json!({"profile": profile, "tweaks": false})), "Metal plug-in: none (no root tweaks)");
+    let (status, rest, _) = s.end(true);
+    assert_eq!(status, 0);
+    clean_bye(&rest, "eof");
+}
+
+#[test]
 fn make_image_asks_for_its_room_once_and_is_refused_when_it_is_short() {
     let b = Box::new("make-space");
     let (web, profile) = stand_in_ipsw(&b, 9000, false);

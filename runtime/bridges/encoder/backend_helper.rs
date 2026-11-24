@@ -19,13 +19,21 @@
 //! in MediaCodec), and the next open starts a new one, [`HELPER_HANGS`] times at most a session. [`stop`] (xnuhost's
 //! stop) kills the helper, also one that hangs and would never see its socket's end. Session ids are never reused, so
 //! a late reply cannot be taken for a new open.
+//!
+//! The decoder (2026-11-24) is the same helper's: [`HelperBackend`] is a [`DecodeBackend`] too. Right after the HELLO
+//! the device sends the media pool (ENC_MSG_POOL, the RAM's memfd by SCM_RIGHTS, [`HelperBackend::set_pool`]): the
+//! helper writes the decoded pictures straight into the guest's CAPTURE buffers there, and says each one
+//! (DEC_MSG_FRAME), which the receive thread hands to the session's [`DecodeSink`]; the frames go over the socket
+//! (they are small).
 use crate::backend::{Backend, Coding, Polled, Session};
+use crate::decoder::{CapLayout, DecEvent, DecodeBackend, DecodeSink, Decoder};
 use crate::link::*;
+use crate::pod::Pod;
 use onecamera::spawn::{reap_nowait, spawn_with_fd3};
 use std::collections::VecDeque;
 use std::io::Read;
 use std::net::Shutdown;
-use std::os::fd::{AsFd, OwnedFd};
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, TryLockError, Weak};
@@ -61,6 +69,17 @@ struct Slot {
     coding: Coding,
     ring: VecDeque<Coded>,
     got_eos: bool,
+    /// a decoder session's results go here (the receive thread calls it, the state's lock not held)
+    sink: Option<DecodeSink>,
+}
+
+/// The media pool as the helper maps it: the RAM's memfd (xnuhost's, open for the process's life), the pool's offset
+/// in it and its size.
+#[derive(Clone, Copy, Debug)]
+pub struct PoolFd {
+    pub fd: RawFd,
+    pub offset: u64,
+    pub size: u64,
 }
 
 #[derive(Default)]
@@ -101,6 +120,8 @@ struct Shared {
     writer: Mutex<Option<UnixStream>>,
     /// the helper's pid while it may run (0: none), for a stop that finds the state locked
     pid: AtomicI32,
+    /// the media pool, sent to each helper after its HELLO (none: the helper decodes nothing)
+    pool: Mutex<Option<PoolFd>>,
 }
 
 fn kill_now(pid: libc::pid_t) {
@@ -179,7 +200,22 @@ impl Shared {
         }
     }
 
-    /// The receive loop: open replies, coded buffers and EOS from the helper.
+    /// ENC_MSG_POOL: the pool's memfd as SCM_RIGHTS on the header (one sendmsg of the 32 bytes), its offset and size.
+    fn send_pool(&self, to: &UnixStream) -> Result<(), i32> {
+        let pool = *lock(&self.pool);
+        let (offset, size) = pool.map_or((0, 0), |p| (p.offset, p.size));
+        let m = EncMsg { pts: offset as i64, a: size as u32, b: (size >> 32) as u32, ..EncMsg::new(ENC_MSG_POOL, 0) };
+        // SAFETY: xnuhost's RAM memfd, open for the process's life (set_pool's promise).
+        let fds: Vec<BorrowedFd<'_>> = pool.map(|p| unsafe { BorrowedFd::borrow_raw(p.fd) }).into_iter().collect();
+        let header = m.as_bytes();
+        match xh_core::fd::send_with_fds(to.as_fd(), &[std::io::IoSlice::new(header)], &fds, libc::MSG_NOSIGNAL) {
+            Ok(n) if n == header.len() => Ok(()),
+            Ok(_) => Err(libc::EIO),
+            Err(e) => Err(errno(&e)),
+        }
+    }
+
+    /// The receive loop: open replies, coded buffers and EOS from the helper; a decoder's results to its sink.
     fn receive(&self, mut from: UnixStream) {
         while let Ok(m) = EncMsg::receive(&mut from) {
             let mut payload = vec![0u8; m.len as usize];
@@ -197,6 +233,7 @@ impl Shared {
                 continue;
             }
             let mut st = self.lock();
+            let mut result = None;
             if let Some(s) = st.slot_of(m.session) {
                 match m.type_ {
                     ENC_MSG_OPEN_REPLY => {
@@ -205,11 +242,27 @@ impl Shared {
                     ENC_MSG_CODED if !payload.is_empty() && s.ring.len() < HELPER_CODED_RING => s
                         .ring
                         .push_back(Coded { bytes: payload, pts: m.pts, key: m.a & 1 != 0, eos: (m.a >> 1) & 1 != 0 }),
+                    // a decoder's results (2026-11-24): to its sink, below, the lock let go
+                    ENC_MSG_EOS if s.sink.is_some() => result = s.sink.clone().map(|k| (k, DecEvent::Eos)),
                     ENC_MSG_EOS => s.got_eos = true,
+                    DEC_MSG_FORMAT => {
+                        let layout = CapLayout { width: m.a, height: m.b, stride: m.c };
+                        result = s.sink.clone().map(|k| (k, DecEvent::Format(layout)));
+                    }
+                    DEC_MSG_FRAME => {
+                        let decode_us = payload.get(..4).map_or(0, |b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+                        let frame =
+                            DecEvent::Frame { index: m.a, bytes: m.b, pts: m.pts, error: m.c & 1 != 0, decode_us };
+                        result = s.sink.clone().map(|k| (k, frame));
+                    }
                     _ => {}
                 }
             }
             self.cond.notify_all();
+            drop(st);
+            if let Some((sink, event)) = result {
+                sink(event);
+            }
         }
         // The last thing this thread does with the state: a start that finds `gone` may join it at once.
         self.lock().gone = true;
@@ -266,6 +319,12 @@ impl Shared {
             loge!("encoder: the helper {} (pid {pid}) sent no HELLO in {HELPER_IO_MS} ms: killed", self.path);
             kill_and_wait(pid);
             return Err(libc::EPROTO);
+        }
+        // The media pool, always (none: no descriptor, size 0): the helper maps it for its decoders (2026-11-24).
+        if let Err(e) = self.send_pool(&stream) {
+            loge!("encoder: the helper {} (pid {pid}) took no pool: {}: killed", self.path, xh_core::sys::strerror(e));
+            kill_and_wait(pid);
+            return Err(e);
         }
         let ends = stream.set_read_timeout(None).and_then(|()| Ok((stream.try_clone()?, stream.try_clone()?)));
         let (reader, sock) = match ends {
@@ -356,6 +415,7 @@ impl HelperBackend {
             cond: Condvar::new(),
             writer: Mutex::new(None),
             pid: AtomicI32::new(0),
+            pool: Mutex::new(None),
         });
         let mut list = lock(all());
         list.retain(|w| w.strong_count() > 0);
@@ -367,34 +427,31 @@ impl HelperBackend {
     pub fn stop(&self) {
         self.shared.stop();
     }
-}
 
-struct HelperSession {
-    shared: Arc<Shared>,
-    id: u32,
-    coding: Coding,
-}
-
-impl Backend for HelperBackend {
-    fn name(&self) -> &'static str {
-        "mediacodec-helper"
+    /// The media pool the helper's decoders write into (2026-11-24): `fd` the RAM's memfd, the pool `size` bytes at
+    /// `offset` in it. Each helper started from now on gets it. The descriptor must stay open for the process's life
+    /// (xnuhost's RAM memfd does).
+    pub fn set_pool(&self, fd: RawFd, offset: u64, size: u64) {
+        *lock(&self.shared.pool) = Some(PoolFd { fd, offset, size });
     }
 
-    fn open(&self, codec: u32, input: u32, width: u32, height: u32) -> Option<Box<dyn Session>> {
+    /// An OPEN or DEC_OPEN (`open`, its session filled in here) of a new session, and its reply (OPEN_MS at most; a
+    /// helper that misses it is killed). The session's id and coding, None when refused.
+    fn open_session(&self, mut open: EncMsg, payload: &[u8], sink: Option<DecodeSink>) -> Option<(u32, Coding)> {
         let shared = &self.shared;
         let mut st = shared.lock();
         shared.start(&mut st).ok()?;
         let index = st.slots.iter().position(|s| !s.used)?;
         st.next_id = st.next_id.wrapping_add(1).max(1); // 0 is no session
         let id = st.next_id;
-        st.slots[index] = Slot { used: true, id, ..Slot::default() };
+        st.slots[index] = Slot { used: true, id, sink, ..Slot::default() };
         drop(st);
-        let open = EncMsg { a: codec, b: width, c: height, ..EncMsg::new(ENC_MSG_OPEN, id) };
-        let sent = shared.send(open, &input.to_le_bytes());
+        open.session = id;
+        let sent = shared.send(open, payload);
         let mut st = shared.lock();
         if sent.is_err() {
             if let Some(s) = st.slot_of(id) {
-                s.used = false;
+                *s = Slot::default();
             }
             if st.alive() {
                 shared.kill(&mut st, "took no OPEN");
@@ -414,11 +471,72 @@ impl Backend for HelperBackend {
         }
         if !ok {
             if let Some(s) = st.slot_of(id) {
-                s.used = false;
+                *s = Slot::default();
             }
             return None;
         }
-        Some(Box::new(HelperSession { shared: Arc::clone(shared), id, coding }))
+        Some((id, coding))
+    }
+}
+
+impl DecodeBackend for HelperBackend {
+    fn name(&self) -> &'static str {
+        "mediacodec-helper"
+    }
+
+    /// A decoder in the helper (2026-11-24): its results come back through the receive thread to `sink`.
+    fn open_decoder(&self, codec: u32, width: u32, height: u32, sink: DecodeSink) -> Option<Box<dyn Decoder>> {
+        if lock(&self.shared.pool).is_none() {
+            return None; // the helper would have nowhere to put the pictures
+        }
+        let open = EncMsg { a: codec, b: width, c: height, ..EncMsg::new(DEC_MSG_OPEN, 0) };
+        let (id, coding) = self.open_session(open, &[], Some(sink))?;
+        Some(Box::new(HelperDecoder(HelperSession { shared: Arc::clone(&self.shared), id, coding })))
+    }
+}
+
+/// A decoder session in the helper: its messages; its close is the session's (Drop).
+struct HelperDecoder(HelperSession);
+
+impl Decoder for HelperDecoder {
+    fn feed(&mut self, data: &[u8], pts: i64) -> Result<(), i32> {
+        let m = EncMsg { pts, ..EncMsg::new(DEC_MSG_FEED, self.0.id) };
+        self.0.send(m, data, "did not take a frame to decode")
+    }
+
+    fn capture(&mut self, index: u32, offset: u64, size: u64) {
+        let m = EncMsg { a: index, pts: offset as i64, b: size as u32, ..EncMsg::new(DEC_MSG_CAPTURE, self.0.id) };
+        let _ = self.0.send(m, &[], "did not take a CAPTURE buffer");
+    }
+
+    fn reset_capture(&mut self) {
+        let _ = self.0.send(EncMsg::new(DEC_MSG_RESET, self.0.id), &[], "did not take a reset");
+    }
+
+    fn drain(&mut self) -> Result<(), i32> {
+        self.0.send(EncMsg::new(ENC_MSG_DRAIN, self.0.id), &[], "did not take a drain")
+    }
+
+    fn restart(&mut self) -> Result<(), i32> {
+        self.0.send(EncMsg::new(DEC_MSG_START, self.0.id), &[], "did not take a start")
+    }
+}
+
+struct HelperSession {
+    shared: Arc<Shared>,
+    id: u32,
+    coding: Coding,
+}
+
+impl Backend for HelperBackend {
+    fn name(&self) -> &'static str {
+        "mediacodec-helper"
+    }
+
+    fn open(&self, codec: u32, input: u32, width: u32, height: u32) -> Option<Box<dyn Session>> {
+        let open = EncMsg { a: codec, b: width, c: height, ..EncMsg::new(ENC_MSG_OPEN, 0) };
+        let (id, coding) = self.open_session(open, &input.to_le_bytes(), None)?;
+        Some(Box::new(HelperSession { shared: Arc::clone(&self.shared), id, coding }))
     }
 
     /// The helper started at a guest's first virtio-media session (its transport's check at boot), not at the first

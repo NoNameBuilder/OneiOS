@@ -22,6 +22,16 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub const TARGET: &str = "arm64e-ios";
+
+/// The stubs' target: arm64e-ios for an arm64e cache (iOS 27), arm64-ios for an arm64 one (iOS 16.5 of the iPhone X,
+/// the Galaxy A56's image: `--cache out/ios16-cache --out out/ios16-tbd`, docs/a56-gpu.md).
+pub fn target_of(main_name: &str) -> &'static str {
+    if main_name.ends_with("arm64e") {
+        TARGET
+    } else {
+        "arm64-ios"
+    }
+}
 const CACHE_IN_VOLUME: &str = "System/Library/Caches/com.apple.dyld";
 
 fn uleb(d: &[u8], at: &mut usize) -> Result<u64> {
@@ -215,8 +225,9 @@ pub struct Options {
 fn cache_dir(repo: &Path, o: &Options) -> Result<(PathBuf, bool)> {
     if let Some(c) = &o.cache {
         let dir = if c.is_dir() { c.clone() } else { c.parent().map(Path::to_path_buf).unwrap_or_default() };
-        if c.is_file() && c.file_name().and_then(|n| n.to_str()) != Some(oneios_sym::cache::MAIN_NAME) {
-            bail!("--cache {}: the main file is named {}", c.display(), oneios_sym::cache::MAIN_NAME);
+        let named = c.file_name().and_then(|n| n.to_str()).is_some_and(|n| oneios_sym::cache::MAIN_NAMES.contains(&n));
+        if c.is_file() && !named {
+            bail!("--cache {}: the main file is named {}", c.display(), oneios_sym::cache::MAIN_NAMES.join(" or "));
         }
         return Ok((dir, false));
     }
@@ -240,6 +251,7 @@ fn cache_dir(repo: &Path, o: &Options) -> Result<(PathBuf, bool)> {
 pub fn run(repo: &Path, o: &Options) -> Result<i32> {
     let (dir, copied) = cache_dir(repo, o)?;
     let cache = Cache::open(&dir).with_context(|| dir.display().to_string())?;
+    let stub_target = target_of(cache.main_name);
     let images: Vec<(u64, String)> = cache.images.clone();
     let mut wanted: Vec<usize> = (0..images.len()).collect();
     if !o.names.is_empty() {
@@ -292,7 +304,7 @@ pub fn run(repo: &Path, o: &Options) -> Result<i32> {
                     None => {}
                 }
             }
-            let text = tbd::write_file(&docs, TARGET);
+            let text = tbd::write_file(&docs, stub_target);
             let write = || -> Result<()> {
                 std::fs::create_dir_all(target.parent().unwrap_or(&o.out))?;
                 let part = target.with_extension("tbd.part");
@@ -305,7 +317,7 @@ pub fn run(repo: &Path, o: &Options) -> Result<i32> {
         .collect();
     aliases(&o.out)?;
     let mut record = oneios_json::Map::new();
-    let main = dir.join(oneios_sym::cache::MAIN_NAME);
+    let main = dir.join(cache.main_name);
     let shown = if copied { format!("{} (copied from {})", rel(repo, &main), rel(repo, &o.image)) } else { rel(repo, &main) };
     record.insert("cache".into(), Value::String(shown));
     record.insert("uuid".into(), Value::String(uuid_text(&cache.uuid)));
@@ -328,6 +340,19 @@ fn rel(repo: &Path, p: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An arm64e cache (iOS 27) gives arm64e stubs, an arm64 one (iOS 16.5 of the iPhone X) arm64 stubs.
+    #[test]
+    fn the_target_follows_the_cache() {
+        assert_eq!(target_of("dyld_shared_cache_arm64e"), "arm64e-ios");
+        assert_eq!(target_of("dyld_shared_cache_arm64"), "arm64-ios");
+        let dir = std::env::temp_dir().join(format!("tbds-target-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(oneios_sym::cache::main_name(&dir), "dyld_shared_cache_arm64e");
+        std::fs::write(dir.join("dyld_shared_cache_arm64"), b"").unwrap();
+        assert_eq!(oneios_sym::cache::main_name(&dir), "dyld_shared_cache_arm64");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     /// A trie of `_a` (regular), `_ab` (weak), `_t` (thread-local) and `_r` (a re-export).
     fn trie() -> Vec<u8> {

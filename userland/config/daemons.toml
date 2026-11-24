@@ -176,6 +176,9 @@ labels = [
 # osanalyticshelper.agent: the same binary's second job ("agent-init", LaunchDaemons/com.apple.osanalytics.osanalyticshelper.agent.plist,
 # started by the notifyd event com.apple.trial.NamespaceUpdate.STEEL_ROSE_CHECK_IN_COHORT): with only the first label
 # disabled, osanalyticshelper still ran at 15-49 % of a CPU in the session of 2026-11-23 20:23 (hosted 0094).
+# Both labels (and diagnosticextensionsd, symptomsd-diag) are DisableAllowed = false in 24A446's jetsam properties, so on
+# the sealed root launchd ran them although disabled: with 0093 and 0094 in, osanalyticshelper still ran at 31-85 % in
+# the session of 2026-11-24 01:17. The kernel shows launchd the plist with that mark renamed (hosted 0098).
   "com.apple.osanalytics.osanalyticshelper", "com.apple.osanalytics.osanalyticshelper.agent",
   "com.apple.analyticsagent", "com.apple.audioanalyticsd", "com.apple.cloudtelemetryd", "com.apple.diagnosticextensionsd",
   "com.apple.diagnosticspushd", "com.apple.ecosystemanalyticsd", "com.apple.geoanalyticsd", "com.apple.hangtelemetryd",

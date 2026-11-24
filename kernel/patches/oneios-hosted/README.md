@@ -55,6 +55,9 @@ on the panic stub). In order, with the console in xnuhost's log:
 3. The Data volume's first start (0004): `/sbin/newfs_apfs` runs as pid 2. It is the first user process of the boot,
    so its dyld registers the signature of every shared cache file and `cs_native4k_prepare` reads and hashes all of
    them (5.8 GiB; 0014 does it on 8 threads: about 3 minutes here). The cache maps and slides (0013: 8 GiB region).
+   (Since 2026-11-24 it runs as `newfs_apfs -e -x -v Data`, and again without `-x` when it exits 64, usage: iOS 16.5's
+   `newfs_apfs` (20F66, the Galaxy A56, issue 73) has no `-x`, and the first A56 boot of our image panicked with
+   `newfs_apfs failed: wait status 0x4000`, then `offline scratch Data mount failed: 5`.)
    Then `OneiOS Data: /dev/disk8s3 on /dev/disk4 (new)`, the mount, `seed verified: 6024 files (1216961847 bytes),
    14813 folders` (61 s). On a second start of the same store the volume is mounted as it is and launchd is the
    process that pays for the hashing.
@@ -2171,3 +2174,342 @@ pairs (level normal throughout, 2804 MiB available at the end, no rise), each li
 counts, a phone boot. **Watch in its first boot:** the `oneios-wired` lines (`IOKIT` near the GPU's own +
 imported, `unnamed` small), and in `oneios-pressure` a warning round whose first notes are backboardd and the other
 large GPU clients (`big first` above 0), then `oneios-gpu-memory` own bytes falling within seconds of the rise.
+
+## 0098-disable-allowed.patch (fix/disable-allowed, 2026-11-24)
+
+**Why.** In the session of 2026-11-24 01:17 (`out/session-logs/2026-11-24-mac-gpumem/live.log`, kernel `e79886d9` with
+0093, 0094 and 0096) the boot logged `oneios-jobs: com.apple.osanalytics.osanalyticshelper: disabled there already`
+and `...osanalyticshelper.agent: disabled in disabled.plist`, and still `osanalyticshelper[263]` ran at 31-77% of a CPU
+from the first crash on (ReportCrash[259] at 108542.6, the helper right after), crossed its 15 MB limit (`process
+osanalyticshelpe [263] crossed memory high watermark (15 MB); EXC_RESOURCE`), was started again as `[441]` and ran at
+54-85%. **The cause** is in the sealed root, not in disabled.plist: 24A446's
+`/System/Library/LaunchDaemons/com.apple.jetsamproperties.V54.plist` marks 19 jobs `DisableAllowed = false`, and
+launchd (`Ignoring disabled state because DisableAllowed=false: %s`, a string of 24A446's `/sbin/launchd`) runs such a
+job whatever disabled.plist says. The 19: ReportCrash, ReportCrash.Root, ReportCrashService, osanalyticshelper and its
+`.agent`, analyticsd, diagnosticextensionsd, symptomsd-diag, OTATaskingAgent, mobile.softwareupdated, logd, logd_helper,
+logd_reporter, mobileactivationd, mobile.obliteration, DumpPanic, sysdiagnose, sysdiagnose_helper, pluginkit.pkd (read
+with `oneios-tool image apfs-copy` from `out/image/24A446/os.img` and plistutil). Of them the daemon policy disables
+osanalyticshelper, its agent, diagnosticextensionsd, symptomsd-diag (telemetry), OTATaskingAgent and softwareupdated
+(replace): all six could run. The image tool knew (`tweaks.rs`, the contract's `DisableAllowed` line); only the `rw`
+layout could act on it (vphone's `patch-jetsam-disable-allowed`). So 0094 (the agent label) was not the missing piece.
+
+**What.** Before launchd, in `native_gpu_addon_prepare` before 0031's daemons mount: the sealed plist (binary, 129739
+bytes) is read, every key string object `DisableAllowed` (marker `0x5e` and 14 bytes; the plist's writer did not unique
+them: 19 copies) becomes `OneiOSDisAllow`, of the same length, so no offset of the plist moves and every other property
+(priorities, memory limits) stays. The copy is written to `/private/var/ngpu/daemons` (only when it differs), which
+0031 already shows over `/System/Library/LaunchDaemons` as a read-only union (the sealed files stay visible beside it).
+launchd then honours disabled.plist for every job; no job is disabled that disabled.plist does not name. Switch
+`oneios-disable-allowed` (docs/switches.md): `1` (default, product type V54), `NAME` (another product type's plist), `0`
+(nothing written, an earlier boot's copy removed: iOS's rule again). One line, after the mount:
+
+```text
+oneios-disable-allowed: com.apple.jetsamproperties.V54.plist: 19 DisableAllowed marks renamed (written 0; -1: the same
+    as before), launchd sees 19 renamed through /System/Library/LaunchDaemons (daemons mount stage 4, status 2)
+```
+
+Stage 4 status 2 is expected: the union is mounted and shows the sealed `com.apple.backboardd.plist`; 0031's own probe
+(`org.blu-sharky.adrenoprobed.plist`) is not there. Not done when `sheng-gpu-addon=0` (0031's function returns first).
+
+Tested: `kernel/tests/host.sh` builds `oneios_disable_allowed_marks_in` from the patch's own lines with
+`tests/test_disable_allowed.c` (made-up plists: 3 marks renamed in place, a longer string, the bare bytes and a key at
+the end left alone, an XML plist refused). The same rename of the real 24A446 plist (sed on a copy in the scratch
+folder): 266 bytes changed (19 x 14), plistutil reads it, its XML is the original's with only the key renamed.
+`git apply --check` after 0097 on the patched tree; built and prelinked (see "0100"). **Not booted.** Watch in the first boot: the
+line above with 19 and 19; no `osanalyticshelper` in `oneios-cpu`; in iOS's log (`phone pull-log`) no `Ignoring disabled
+state because DisableAllowed=false` and `JetsamProperties loaded from path`; a crash still leaves an `.ips`. **Risk:**
+if launchd refused a plist from the union, it would run without jetsam properties (no priorities or limits): its
+`JetsamProperties not loaded` in iOS's log says so; `oneios-disable-allowed=0` takes the copy away.
+
+## 0100-kill-reason-line.patch (fix/disable-allowed, 2026-11-24)
+
+**Why.** In the same session PosterBoard's wallpaper extensions were started again every 7-22 s with no touch in
+between (MercuryPosterExtension 409, 417, 420, 429, 436 between 108666 and 108726; Collections, Aegir, Rhizome, Weather,
+Unity2025 likewise), at 50-206% of a CPU each. xnuhost logged no trap of theirs, `oneios-mem` no jetsam kill and no
+`crossed memory high watermark` of theirs: nothing said who ended them or why.
+
+**What.** A lasting line (no switch: logging) when a process ends another with a reason (`terminate_with_payload`, what
+`terminate_with_reason` calls: runningboardd, FrontBoard, launchd's extension watchdog) or sends another single process
+SIGKILL with kill(2), at most 600 lines a boot:
+
+```text
+oneios-kill: KILLER[pid] -> TARGET[pid]: namespace N code 0xC flags 0xF: "the caller's text, its first 80 bytes"
+oneios-kill: KILLER[pid] -> TARGET[pid]: SIGKILL (kill)
+```
+
+The namespace and code are XNU's `os_reason` ones (`sys/reason.h`: 15 RunningBoard, 10 SpringBoard, 7 libxpc, 20
+watchdog); the text is copied in only for the line. A process ending itself is not counted. In `kern_sig.c`, no other
+patch's file. Numbered 0100: 0099 is left to the audio fix (fix/audio-late).
+
+Tested: `git apply --check` after 0098 on the patched tree. Built with 0098 on the laptop (`HOSTED_OUT=disallow
+ONEIOS_CRYPTO=original`, 184 patches, 367 s): `xnu.macho` `7ecd6622`, releasable; prelinked to
+`out/kernel/24A446-disallow/kernel.kc` `a07f5426` (`.hashes` `80688378`), audit 0 failures, stubs-check 666 good 0 bad;
+the lines of 0098 and 0100 are in it (`strings`). **Not booted** (no phone boot yet; no qemu boot: the owner's rule of
+2026-11-24). Watch in the first boot: `oneios-kill` lines naming the posters' killer and reason (FrontBoard's scene
+watchdog, RunningBoard's, or launchd's), which decides the next fix.
+## 0101-unmap-fanout.patch (fix/unmap-fanout, 2026-11-24)
+
+**Why.** The phone, 2026-11-24 01:17-01:22 (kernel.kc `e79886d9`, xnuhost `35f74348`, takeover mode;
+`out/session-logs/2026-11-24-mac-gpumem/live.log`), ran at 620-724% host CPU (sys 243-387%) at 94-96 C. Per 30 s:
+`pmap: user maps 843359-970500, unmaps 11139390-12352829`, and in the 0045 line `unmaps: 492823-983077 for a task's
+own flushes, 10316293-11860063 from 37017-42548 shared-region or commpage flushes`. So the unmaps were 12-13 times the
+maps, and 90% of them came from about 1,400 shared-region flushes a second, each sent to the 240-290 tasks whose 32 MiB
+block bit (0045) was set. Nearly every task has filled a page in libsystem's blocks, and almost none had the flushed
+page. Each order took the task's TLB word and queued a `task_unmap` in xnuhost (`task_unmap 11647376 queued`). In the
+same periods `VM_pageout_scan` used 14.7-18.1 s of CPU per 30 s and 408,000-550,000 faults went to vm_fault's path
+(45-49 s of CPU). What issues them, read from the code: the pageout's reference clear (`arm_force_fast_fault`, an
+unmap: the page then waits for its access-flag fault), then at the next touch `arm_fast_fault` -> `arm_clear_fast_fault`,
+which sets the bit back on every mapping of the page and flushed each one again (for the shared region, again to every
+task of the block), and which ran on the exception path (sleh's `handle_user_abort`, the return, the refill).
+
+**The change, three parts, each behind a boot-arg (docs/switches.md):**
+
+1. `oneios-nested-exact=1` (0: 0045's block bits only). A task that fills a page of the shared region first gets a
+   bitmap of that page's 32 MiB block (1 KiB, 8192 bits; `hosted_nested_prepare`, in thread context before the fill's
+   locks; a table of 511 pointers per task). The fill sets the page's bit under the task's TLB word, as 0045 set the
+   block bit. A shared-region flush sends `task_unmap` only to a task with a bit set in its range and clears those bits
+   after the unmap (`hosted_nested_forget`, also on a task's own flushes). A block with no bitmap (the allocation
+   failed) keeps 0045's rule. The bitmaps go with the task.
+2. `oneios-upgrade-flush=0` (1: the flush as before). An entry changed to the same page with no less access needs no
+   host unmap: the host maps no more than the old entry allowed (every change that takes access away flushes), so an
+   access the host refuses faults and is filled from the new entry. `arm_clear_fast_fault` (the reference or modified
+   fault taken) and `pmap_enter_pte` (the same page entered again with write added or wired) keep the tasks' host
+   mappings (`hosted_upgrade_only`). The kernel pmap keeps its flush (it maps its entries again at once).
+3. `oneios-fill-fast-fault=1` (0: the exception path as before). When a user fault's fill fails only because the entry
+   waits for its reference fault (no access flag) or modified fault (read-only, was writable), the trap path calls
+   `arm_fast_fault` itself and fills the page at once (`hosted_user_fill_trap`). On an iPhone this is the cheap
+   access-flag fault.
+
+The modified bit stays exact (docs/gpu.md 2.5 item 4): a clear of it still takes write away in the host (an unmap).
+The referenced bit stays exact too: its clear still unmaps the page in every task that has it, now only those.
+
+**Lines (lasting).** Each `oneios-perf` period, two lines under 240 characters:
+
+```text
+oneios-perf:   0101: flushes/task unmaps: remove F/U, protect F/U, page_protect F/U, refmod F/U
+oneios-perf:   0101: upgrade F/U, enter F/U, tables F/U, other F/U; kept mapped K; fast fills N (not M); nested exact=1: B KiB
+```
+
+F is the user, shared-region and commpage flushes by cause (`hosted_flush_why`, set at each flush site of pmap.c:
+`remove` pmap_remove, `protect` pmap_protect, `page_protect` pmap_page_protect, `refmod` the reference/modified clears,
+`upgrade` arm_clear_fast_fault, `enter` pmap_enter replacing an entry, `tables` table frees, nest and unnest), U the
+task unmaps they gave. `kept mapped`: entries changed with no unmap (part 2). `fast fills`: faults filled on the fill
+path (part 3); `not`: the fast fault ran but the fill still failed (the access needs vm_fault). `B KiB`: the bitmaps and
+tables alive (part 1's memory). Cost: two loads and a store per flush, the counts per vCPU.
+
+**Tested.** `git apply --check` after 0100 on the patched tree; built release-style (`HOSTED_OUT=unmap
+ONEIOS_CRYPTO=original`) and prelinked (the build is in docs/switches.md "Tests"). `kernel/tests/host.sh`. Two qemu
+boots of the first build (then numbered 0098, the same code) ran side by side for about 23 minutes each, with the same
+binaries: one with all four switches of this change off (`oneios-nested-exact=0 oneios-upgrade-flush=1
+oneios-fill-fast-fault=0`, xnuhost `timer-coalesce=0`), one at the defaults. They were stopped there by the owner's rule
+of 2026-11-24 (no qemu boots to check a change), so they are not a full boot test, but both reached launchd and
+SpringBoard with no panic. Summed over the same span (logs `out/session-logs/2026-11-24-pc-unmap/`):
+
+| | switches off | defaults |
+|---|---|---|
+| user maps / unmaps | 2,725,593 / 1,180,885 | 2,745,122 / 598,940 |
+| `upgrade` flushes / task unmaps | 492,909 / 492,909 | 0 / 0 (485,134 kept mapped) |
+| `page_protect` flushes / task unmaps | 1,129 / 33,141 | 1,182 / 3,947 |
+| shared-region flushes / task unmaps (0045 line) | 1,338 / 35,586 | 1,342 / 3,455 |
+| faults filled on the fill path / to vm_fault's path | 1,487,701 / 1,235,340 | 1,970,826 / 772,566 (436,286 fast fills, 17 not) |
+| xnuhost `timer_set` / `timer_settime` | 4,433,745 / 4,207,380 | 4,455,773 / 2,950,554 (1,271,656 kept, 338,051 re-armed) |
+| bitmaps | - | 25,383 KiB at the end |
+
+qemu-user makes few shared-region flushes (the pageout hardly runs in 4 GiB); the phone made 30 times as many, so
+part 1 is measured there. Part 1's memory is the cost to watch: 25 MiB of bitmaps under qemu (about 80 blocks per task
+[from the totals]); on the phone with 300-400 tasks perhaps 30-50 MiB [guess]. `oneios-nested-exact=0` frees it.
+**Not booted on the phone.** Watch in its first boot: the 0045 line's `from N shared-region ... flushes` unmaps near N
+times a few, not times 250; `pmap: ... unmaps` near the maps; `0101: ... fast fills` near the old `to vm_fault` count
+and `to vm_fault (us)` a fraction of 45-49 s; `refmod` the largest cause left; `nested exact=1: B KiB` against the
+wired count.
+
+## 0102-0106: the other Galaxy A56 fork's iOS 16.5 fixes (port/a56-full, 2026-11-24)
+
+Taken from Musicalista/OneiOS-A56 (branch `main` to `c83b9ca`, its last push of 2026-11-22; OneiOS issue 73,
+[docs/a56.md](../../../docs/a56.md) "The second port"), renumbered to the next free numbers (fork → here: 0078 → 0102,
+0079 → 0103, 0080 → 0104, its change of 0043 → 0105, 0076 → 0106). None of them does anything for iOS 27: 0103-0105
+act only on boot arguments that xnuhost adds for an image set of build 20F66 (`IOS16_BOOT_ARGS`,
+`runtime/xnuhost/src/config.rs`), 0102 only on one nobody passes, 0106 only when xnuhost asks for a graceful return
+(`return-graceful-ms` > 0: the galaxy-a56 host row only). Built into the release kernel
+`xnu-12377.121.6-ios-27.0.1-24A446-16bd44f9d737` (branch `release-kernel-a56`: v0.1.22's series plus these five and 0107) and
+prelinked with the audit's 0 failures; `git apply` on main's patched tree (to 0101) too. **Not booted** (no A56 here,
+no qemu boot); the fork's own phone results are quoted below.
+
+- **0102** `oneios-dq-head=N` (iokit/Kernel/IODataQueue.cpp, `sendDataAvailableNotification`): the first N entries at a
+  data queue's head (0x20..0x800 bytes, 0x200 shown), in hex, one line per 32 bytes: `oneios-dq-head: I size 0xS @0xO:
+  ...`. IOHIDFamily's event queues to backboardd write their entries without `IOSharedDataQueue::enqueue`; the
+  notification goes out when a write made the queue non-empty, so its head is that write. A lasting tool, off without
+  the argument. The fork's 0074 and 0075 (an `enqueue` dump that saw nothing of the HID queues, and notification
+  counters) are not taken: 0102 is the one that found the cause.
+- **0103** `oneios-hid16=1` (the same file): the A56's touch. iOS 27's IOHIDFamily writes a digitizer event as 0xa0
+  bytes (x/y/z as doubles at 16/24/32, six words at 40..64, three doubles at 64..88, the orientation type at 88, six
+  doubles at 96..144, three words at 144..156) and puts a 28-byte header before every child event; 20F66's IOKit
+  (`IOHIDEventCreateWithBytes`, `IOHIDEventGetFloatValueWithOptions`, read by the fork in its shared cache) reads a
+  0x68-byte event (x/y/z as IOFixed at 16/20/24, the words at 28..52, three floats at 52..64, the orientation type at
+  64, six floats at 68..92, three words at 92..104) back to back after one header. So backboardd counted every touch
+  and found no finger. At each "data available" notification the queue's unread elements made only of iOS 27
+  digitizer events are rewritten in place (header kept, IOFixed and floats from the doubles' bits without floating
+  point, the rest of the entry zeroed); a rewritten element no longer matches, so a second pass leaves it alone. An
+  element written while the queue was not empty is rewritten at the next notification if still unread (else read
+  unconverted: the fork's limit, kept). Lines: `oneios-hid16: digitizer events rewritten for iOS 16.5 (first: N
+  events)`, then `oneios-hid16: N touch elements rewritten for iOS 16.5` every 1000. The fork's A56 (2026-11-21,
+  kernel.kc `e831dec7`): touch works, 371 frames in the test session against about 10. `kernel/tests/host.sh` builds
+  the patch's own conversion and runs it on an element made like the fork's dumped entry (`tests/test_hid16.c`: x
+  0.50002 → 32769, y 0.43588 → 28565, finger, identity 2, mask 0x804, radius 5.0; a second pass, another event type,
+  another sender, the edges).
+- **0104** `oneios-grant=PROC:ENTITLEMENT[,...]` (iokit/Kernel/IOUserClient.cpp, `copyClientEntitlement`): when AMFI
+  has no value for the entitlement and the process name (as `proc_name` gives it) and the entitlement match a listed
+  pair, the answer is `kOSBooleanTrue`. 20F66's configd (InterfaceNamer) lacks
+  `com.apple.networking.ionetworkstack.user-client`, which iOS 27's `IONetworkStackUserClient::initWithTask` wants, so
+  the open failed (`0xe00002c2`), en0 was never named and wifid found no Wi-Fi interface ("Device manager not
+  present"). Line once per pair: `oneios-grant: configd[N] given com.apple.networking.ionetworkstack.user-client`. The
+  fork's A56 (kernel.kc `00d8b9cc`): the grant line, `ONEIOS WIFI: first naming (en0 attached ...) by configd`, en0 up
+  and wifid's Apple80211 requests; no scan or join seen there.
+- **0105** `oneios-ls-keep=3` (bsd/kern/kern_exec.c, 0043's code): 0043's test (`=2`, the default) with the
+  /Applications bundles that have no `Info.plist` of their own left out. 20F66 has `DisplayCal.app`, a macOS bundle
+  (`Contents/Info.plist`) that lsd never registers; counted, no database ever named every app, so every boot dropped
+  it and SpringBoard's main thread waited about 66 s for lsd after the first frame (the fork's A56). The fork ran with
+  `oneios-ls-keep=1` (keep every one); 3 keeps the drop of a database saved before the registration ended.
+- **0106** (bsd/kern/kern_sig.c): `oneios_power_request()` over the bridge's weak default
+  (`drivers/bridge/OneiOSBridge.c`): a thread call that sends every `logd` `SIGTERM` (what launchd sends it at a
+  power-off), so its buffers reach the Data store before xnuhost's kill; launchd starts a new logd. Not a power-off:
+  iOS keeps running to xnuhost's deadline. Line: `oneios-power: return asked: SIGTERM to logd (N process(es))`. The
+  fork: iOS's log on the Data store held only the first ~40 s of each boot before it. A later clean power-off replaces
+  this definition.
+
+The fork's 0077 (`oneios-log-debug`, Debug logging profiles written before launchd) is not taken: a debugging aid of
+its touch hunt, which 0102-0103 closed. Its series ends at 0080; every other patch of it is in this series (docs/a56.md).
+
+## 0107-ios16-port-policy.patch (a56-full, 2026-11-24)
+
+- **The fault** (OneiOS issue 73, the A56 user's logs of 2026-11-24 20:05 and 20:31: runtime 0.1.22/0.1.23, kernel
+  `7d540ae9e518`, our 20F66 image): iOS 16.5 reached the lock screen, then SpringBoard died again and again (46 times
+  in the second boot, which then hung at the Apple logo), and so did assistantd, coreduetd, contactsd, searchd,
+  IMDPersistenceAgent and maild: `ERROR: [NAME:PID] EXC_GUARD AST: type=0x1 flavor=F ...`, then `FATAL exception:
+  type=0xc reason=0x17`, then `[NAME: killed] exiting with signal 9`, and "Too many corpses being created" for the
+  widgets after them. Not jetsam: "kills since boot 0", 2.3 GiB available. Two flavors only, in both boots (20 + 5
+  of 0x42, 4 + 22 of 0x6):
+  - `flavor=0x42 target=0x4010 code=0x2000004200004010`: kGUARD_EXC_INVALID_MPO_ENTITLEMENT. 0x4010 is
+    `MPO_WEAK_REPLY_PORT` (0x4000, iOS 16's `MPO_PROVISIONAL_REPLY_PORT`) | `MPO_INSERT_SEND_RIGHT`: iOS 16's
+    libraries construct provisional reply ports, and iOS 27's `mach_port_construct` wants an entitlement for that
+    (osfmk/ipc/mach_port.c's entitlement step, `IPC_SEC_POLICY_DISALLOW_CONSTRUCT_WEAK_REPLY_PORT_WITHOUT_ENTITLEMENT`,
+    enforced on iOS by `ipc_sec_policy_should_apply_weak_reply_port`, ipc_policy.c);
+  - `flavor=0x6 target=0x1 subcode=0x22` (searchd): kGUARD_EXC_EXCEPTION_BEHAVIOR_ENFORCE, osfmk/kern/ipc_tt.c's
+    `set_exception_behavior_violation`, by the tunable `thid_should_crash` (default true).
+- **The fix**: with `oneios-ios16-port-policy=1` the weak reply port policy's callback says "not applied" (the
+  construct goes on, as on iOS 16's own kernel) and `set_exception_behavior_violation` ignores the violation (as with
+  `thid_should_crash=0`, for every task). Its default is the value of `oneios-legacy-registered-ports` (hosted 0068),
+  which every 20F66 image's boot arguments carry (roottweak, 2026-11-21), so the A56 user only updates the kernel;
+  iOS 27 has neither, and both policies stay as they are there. One line at boot, beside 0068's:
+  `oneios-ios16-port-policy: on: weak reply port construct and exception behaviour not enforced (iOS 16 userland)`.
+- **The proof on the A56**: that line; no `EXC_GUARD AST` with flavor 0x42 or 0x6 and no `FATAL exception: type=0xc
+  reason=0x17` for SpringBoard and the daemons above; SpringBoard stays up past the lock screen. Built into the
+  release kernel (docs/releases.md); not booted (no A56 here).
+
+## 0108-a56-gpu-plugin.patch and the GPU archive's A56 accelerator (a56-gpu, 2026-11-24)
+
+The guest kernel's half of the Galaxy A56's GPU Metal ([docs/a56-gpu.md](../../../docs/a56-gpu.md) 5 has the whole of
+it: the fault, the rule, the sandbox, the lines).
+
+- **The fault** (read from the code; the A56 has no amdgpu host yet). The start counted the host's 3D features
+  alone and then published NativeAdreno's accelerator (`MetalPluginName` `NativeAdrenoMetal`) on any 3D host unless
+  `oneios-gpu-metal=0`. On an amdgpu host that publish is wrong: Turnip needs an msm context, and on iOS 16.5 the
+  accelerator handed backboardd a Metal device that could not draw. 20F66's `oneios-gpu-metal=0` hid this.
+  The kernel itself sends no msm ccmd outside `vgpu-selftest=1`, whose staged form already branches on the context
+  type. So there was no panic and no hang.
+- **The fix, in the GPU archive** (`gpu/`, built by `oneios-tool kernel gen gpu`, no numbered patch):
+  - `OneiOSGpu.cpp` reads the DRM capset's `context_type`.
+  - `OneiOSAdreno.cpp` decides with `gpu/OneiOSGpuChoice.h`:
+    - Adreno on an MSM capset (or none read), by the old rule;
+    - nothing on a capset that is read and is not MSM;
+    - the A56's accelerator with `oneios-gpu-amd=1` on an AMDGPU capset, whatever `oneios-gpu-metal` says;
+    - never Adreno with `oneios-gpu-amd=1`.
+  - The A56's accelerator is the same `AGXAccelerator`, with these differences:
+    - `MetalPluginName` `OneiOSRadeonMetal`, `MetalPluginClassName` `OneiOSRadeonMetalDevice`, `OneiOSDrmContext`
+      `amdgpu`;
+    - only open type 0x4149 and the plug-in's markers;
+    - Metal's and GL's discovery keys hidden from the processes of `oneios-gpu-amd-cpu` (by default backboardd,
+      SpringBoard and the rest of Jesvi-iOS's "core renderers"), in `copyProperty` and in `serializeProperties`;
+    - one line for each of the first 32 DRM contexts.
+  - The staged edits are `staged/gpu.rs` `GPU`, `GPU3D` and `ACCELERATOR`.
+  - **OpenGL ES** (the GL stage, 2026-11-25; docs/a56-gpu.md 4a and 5.3): with `oneios-gpu-amd-gl=1` (xnuhost adds it
+    when the gpuaddon carries `OneiOSRadeonGL.bundle`) the A56's accelerator names `IOGLESBundleName` `OneiOSRadeonGL`
+    for every process (`oneios_gpu_gles_bundle`, staged into `DroidVMGpu.cpp`'s `setProperty`; `AppleMetalGLRenderer`
+    as before otherwise), and the `oneios-gpu-amd-cpu` processes see it: only the four Metal keys stay hidden
+    (`OneiOSGpuChoice.h` `oneios_gpu_cpu_hides`), and `serializeProperties` removes each key by the same rule as
+    `copyProperty`. Tested: `test_choice.c` (the bundle name for every kind and value, what the CPU-composition
+    processes see), `cargo test --test golden` (15 of 15). Not built into a kernel here: **the A56 release kernel needs a
+    rebuild** on top of release-kernel-a56 0888d97 with this archive.
+- **0108** (kern_exec.c, kern_descrip.c: 0031's and 0039's code):
+  - 0039's list file is named after the published `MetalPluginName` (the archive's `oneios_gpu_metal_plugin`, weak;
+    `NativeAdrenoMetal` without it).
+  - One `oneios-gpu-addon:` line says whether a plug-in other than NativeAdrenoMetal is visible under
+    `/System/Library/Extensions`.
+  - 0031's dyld lines name `OneiOSRadeon*` files.
+- **The S24 Ultra and iOS 27 are unchanged:**
+  - The capset is MSM and no `oneios-gpu-amd` is passed, so the decision is the old rule. `test_choice.c` checks it
+    for every gpu state and `oneios-gpu-metal` value.
+  - The names are the old literals, the hooks answer false, 0039's file is `NativeAdrenoMetal.clients`, and 0108's
+    new line is not printed.
+  - The one difference is two read-only capset queries at the start.
+- **Tested:** `kernel/tests/host.sh` (the new `gpu: the accelerator's choice ...` case, `gpu/tests/test_choice.c`), `cargo
+  test --test golden` in `tools/oneios-tool/crates/oneios-kernel` (15 of 15, with the edit lists on the real pinned
+  sources), 0108 applied in order on main's series (190 patches) and on `release-kernel-a56`'s (183), and the hosted
+  build below. **Not booted** (no A56 here, no qemu boot: qemu has no 3D).
+- **The build** (build laptop, 2026-11-24): `HOSTED_OUT=a56gpu ONEIOS_CRYPTO=original kernel/build-hosted.sh`, 376 s:
+  - `xnu-12377.121.6-ios-27.0.1-24A446-b14aa6445129`, `xnu.macho` 24,717,776 bytes, SHA-256 `39fba0f6bee80890267eaaedb7947da746e43cbb90e1330271c765776e86f878`;
+  - 192 patches (main's series to 0108), releasable;
+  - `kernel gen gpu`: no warning in any GPU archive object's log; `adreno/status.json` compiled and linked;
+    `OneiOSAdreno.o` defines the new hooks, and `AGXAccelerator::serializeProperties` is in the archive.
+  - The prelink, `KERNEL=out/kernel/current-hosted-a56gpu/xnu.macho OUT=out/kernel/24A446-a56gpu kernel/prelink/build.sh`
+    (the 24A446 collection, which the A56's 20F66 image set also carries): `kernel.kc` 96,321,536 bytes, SHA-256
+    `f090804df3460214c776a4d065692d5d9b3b494d81c04f7e7cd4b9517ce73693`, audit 2711 paired, 93 on the stub, 0 failures.
+  - This is main's series, not the release branch's. It is not a release kernel.
+- **The release branch, prepared, not published** (build laptop, 2026-11-24):
+  - The branch: local `a56gpu/release-kernel-a56`, pushed to origin under that name. It is `release-kernel-a56`
+    (`82fa3b0`) plus this change's kernel part (`b5e706a`: `gpu/`, 0108 and its series entry, the edit lists and
+    their tests, `kernel/tests/host.sh`'s gpu case, this section).
+  - The build: `HOSTED_OUT=a56gpu-rel ONEIOS_CRYPTO=original kernel/build-hosted.sh`, 442 s.
+    `xnu-12377.121.6-ios-27.0.1-24A446-f8def7dad866`, `xnu.macho` 24,657,296 bytes, SHA-256
+    `21bc9f9f2337cfd62cea9b66d96d777d7430fc9ec10c22626a4070b133528419`, 184 patches, releasable.
+  - Its prelink: `kernel.kc` 96,272,384 bytes, `780ca6ec5efff7ebe1d3c29ae9eb854cbf76b88b0ab3130f2e49e2aefef04668`,
+    audit 2711 paired, 93 on the stub, 0 failures.
+  - Tests there: `kernel/tests/host.sh` 9 of 9, `cargo test --test golden` 15 of 15.
+  - To release it, on the Mac's say:
+    1. `git push origin a56gpu/release-kernel-a56:release-kernel-a56`.
+    2. `kernel/publish.sh --hosted a56gpu-rel --upload` in that worktree
+       (`/home/akshay/Documents/GitHub/OneiOS/out/a56gpu-relwt`).
+    3. On main, `kernel/release-kernel.txt` gets
+       `kernel-xnu-12377.121.6-ios-27.0.1-24A446-f8def7dad866 <the archive's SHA-256>`, and docs/releases.md its paragraph.
+  - Not booted.
+  - **Superseded, not published** (2026-11-24, fix/a56-ios16-faults): `release-kernel-a56` is now `0888d97`, this
+    kernel part (`2786c3d`, the same change as `b5e706a`) plus 0109, published as
+    `xnu-12377.121.6-ios-27.0.1-24A446-181d8bf2d60a` and pinned in `kernel/release-kernel.txt` (docs/releases.md): one
+    A56 kernel with both. `f8def7dad866` was never uploaded, and the push above would no longer be a fast-forward.
+
+## 0109-ios16-arm64-slices.patch (fix/a56-ios16-faults, 2026-11-24)
+
+- **The fault** (OneiOS issue 73, the A56 user's boot of 2026-11-24 21:47: runtime 0.1.24, kernel `16bd44f9d737`, our
+  20F66 image): webbookmarksd died 27 times in the boot, about every 10 s, `trap kind 2 signal 11 far 0x61f80001c0b0
+  esr 0x92000004 ... pc 0x1dfc9056c` (the first one at pc 0x100a3b56c), and it was the only process with
+  `shared_region: ... [216(webbookmarksd)] check_np(...) vm_shared_region_start_address() returned 0x1` (two lines,
+  as from launchd before the first cache is mapped). 20F66 is iOS 16.5 of the iPhone X, an A11 without pointer
+  authentication: its shared cache is `dyld_shared_cache_arm64` (no arm64e cache) and `/usr/lib/dyld` is arm64 only.
+  Its App cryptex (`/System/Cryptexes/App`) is shared across iPhones, and `/System/Cryptexes/App/usr/libexec/
+  webbookmarksd` is fat: arm64 and arm64e (caps PAC00). An A11's kernel grades arm64e 0 (its host subtype is
+  ARM64_V8) and runs the arm64 slice. This kernel is arm64e: `ml_grade_binary` gave the arm64e slice 12 and the arm64
+  one 9, so the arm64e slice ran, in a shared region of its own (the region is keyed by the CPU subtype) with no cache
+  in it, and the first arm64e chained pointer nobody had resolved faulted (`far` = `x0` = 0x61f80001c0b0, a pointer
+  with its fixup bits still in it). The 20F66 cache's slide and the slices were read on the build laptop
+  (`oneios-tool sym find|callers`, `file`).
+- **The fix**: with `oneios-arm64e-slices=0`, `grade_arm64e_binary` (bsd/dev/arm/kern_machdep.c) answers 0: a fat
+  binary runs its arm64 slice, as on the iPhone X, and an arm64e-only one is refused at exec (it could not run on an
+  arm64 userland anyway). The default is 0 when `oneios-legacy-registered-ports` (hosted 0068) is on, which every
+  20F66 image's boot arguments carry (roottweak's 20F66 `xnuhost.conf`), and 1 otherwise: iOS 27 grades as before
+  and the S24 Ultra's binaries (arm64e) run as they do. So the A56 user only updates the kernel. One line at boot:
+  `oneios-arm64e-slices: off: fat binaries run their arm64 slice, arm64e-only ones are refused (iOS 16 userland, arm64
+  shared cache)`. OneiOS's own guest helpers are arm64e builds for iOS 27; the A56's seed has none (`OneiOS launch
+  policy: no /private/var/oneios/bin/oneios-init in this seed`), and the A56's Metal plug-in is arm64 (docs/a56-gpu.md).
+- **The proof on the A56**: that line; no `check_np` line for webbookmarksd; no `trap ... far 0x61f80001c0b0` and no
+  `Process[N] crashed: webbookmarksd`. Built into the release kernel `xnu-12377.121.6-ios-27.0.1-24A446-181d8bf2d60a` (`release-kernel-a56`
+  `0888d97`, with 0108; prelink audit 0 failures; docs/releases.md); not booted (no A56 here, no
+  qemu boot).

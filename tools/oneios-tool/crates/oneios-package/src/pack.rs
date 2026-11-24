@@ -9,7 +9,7 @@
 //!                                    uses it where tar is not GNU tar, as on macOS)
 //!
 //! The manifest is the one oneos/interface.md section 1 defines (format 1), with these keys added:
-//! git, min_oneos_fork, placeholder, kernel.
+//! git, min_oneos_fork, placeholder, kernel, metal, camera (the guest plug-ins of lib/guest/, below; null without them).
 //!
 //! Apple rule (README "Rules"): a release carries nothing of Apple's. Refused by name: kernelcaches, cryptexes,
 //! .ipsw, .dmg, .aea, .img and the other firmware names of .gitignore. Refused by content: IMG4/IM4P containers,
@@ -18,6 +18,12 @@
 //! file's SHA-256, says no kernelcache kexts were added and lists no source whose licence forbids redistribution.
 //! A kernel collection (MH_FILESET) is refused with or without a record: it holds Apple's kexts and belongs to the
 //! image set.
+//! The other exception is the guest's own code under lib/guest/ (runtime/package.sh's METAL_DIR and CAMERA_DIR): our
+//! iOS plug-ins, built from source against the SDK's stubs. Each Mach-O there must be a thin arm64 library or bundle,
+//! signed ad hoc for iOS with an identifier that is not com.apple.* (Apple's own code is never ad hoc signed), and a
+//! file of NAME.bundle must have the CDHash that NAME.build.json beside the bundle lists for it. The Metal bundle
+//! (lib/guest/NativeAdrenoMetal.bundle) goes whole, with its oneios-target and a record of the same target; the
+//! capture plug-in (lib/guest/camera/H9ISP.mediacapture) only with it.
 //!
 //! Every rule of the script is here in the script's order, with its message (`package: refused: ...`, status 3).
 //! Where the script ended with a traceback instead (a Mach-O magic with no header behind it, a record that is no
@@ -211,6 +217,185 @@ fn own_kernel(path: &Path, relative: &str) -> Result<Value> {
     Ok(record)
 }
 
+/// The guest's own code: our iOS plug-ins (runtime/package.sh's METAL_DIR and CAMERA_DIR), built from source against
+/// the SDK's stubs and signed ad hoc by our builds (userland/metal/build.sh, userland/camera/build.sh).
+const GUEST: &str = "lib/guest/";
+const MH_DYLIB: u32 = 6;
+const MH_BUNDLE: u32 = 8;
+/// What runtime/package.sh places there, and what the phone's `serve make-image` takes (runtime.json "metal", "camera").
+pub const METAL_BUNDLE: &str = "lib/guest/NativeAdrenoMetal.bundle";
+pub const METAL_RECORD: &str = "lib/guest/NativeAdrenoMetal.build.json";
+pub const CAMERA_DIR: &str = "lib/guest/camera";
+const CAMERA_PLUGIN: &str = "H9ISP.mediacapture";
+/// The Galaxy A56's GPU plug-ins for iOS 16.5 (docs/a56-gpu.md 6): the Metal plug-in and its OpenGL ES, each with its
+/// build record (`oneios-tool ios bundle-record`), runtime.json "metal_a56". The phone builds the image's
+/// kernel.kc.gpuaddon of them (Update the kernel, Make iOS image: oneios-imagebuild a56gpu).
+pub const A56_METAL_BUNDLE: &str = "lib/guest/OneiOSRadeonMetal.bundle";
+pub const A56_METAL_RECORD: &str = "lib/guest/OneiOSRadeonMetal.build.json";
+pub const A56_GL_BUNDLE: &str = "lib/guest/OneiOSRadeonGL.bundle";
+pub const A56_GL_RECORD: &str = "lib/guest/OneiOSRadeonGL.build.json";
+
+/// The build record of the bundle that holds `relative` (`lib/guest/NAME.bundle/FILE` -> `lib/guest/NAME.build.json`,
+/// `userland/metal/build.sh`'s), and FILE; None outside a bundle.
+fn bundle_record(relative: &str) -> Option<(String, String)> {
+    let at = relative.find(".bundle/")?;
+    Some((format!("{}{RECORD_SUFFIX}", &relative[..at]), relative[at + ".bundle/".len()..].to_string()))
+}
+
+fn load_record(stage: &Path, relative: &str, of: &str) -> Result<Value> {
+    let path = stage.join(relative);
+    if !path.is_file() {
+        return refused(format!("{of}: a Mach-O in a bundle without its build record ({relative})"));
+    }
+    let text = io(std::fs::read(&path), &path)?;
+    match String::from_utf8(text).map_err(|e| e.to_string()).and_then(|text| json::parse(&text)) {
+        Ok(record) if record.as_dict().is_some() => Ok(record),
+        Ok(_) => refused(format!("{of}: unreadable build record {relative}: not a JSON object")),
+        Err(error) => refused(format!("{of}: unreadable build record {relative}: {error}")),
+    }
+}
+
+/// A Mach-O under lib/guest/ is taken only as our own iOS plug-in: a thin 64-bit arm64 library or bundle (never an
+/// executable, a kext or a kernel collection), signed ad hoc for iOS with an identifier that is not Apple's (Apple's
+/// own code is never ad hoc signed), and, inside a bundle, with the CDHash its build record lists for it.
+fn own_guest_code(stage: &Path, relative: &str) -> Result<oneios_tweaks::macho::Slice> {
+    let path = stage.join(relative);
+    let data = io(std::fs::read(&path), &path)?;
+    if data.get(..4) != Some(&[0xcf, 0xfa, 0xed, 0xfe]) {
+        return refused(format!("{relative}: a Mach-O that is not a thin 64-bit little-endian image"));
+    }
+    if data.len() < 32 {
+        return refused(format!("{relative}: a Mach-O magic with no header behind it"));
+    }
+    let word = |at: usize| u32::from_le_bytes(data[at..at + 4].try_into().unwrap());
+    let (cputype, filetype) = (word(4), word(12));
+    if filetype == MH_FILESET {
+        return refused(format!("{relative}: a kernel collection (MH_FILESET) holds Apple's kexts; it belongs to the image set"));
+    }
+    if cputype != 0x0100_000c || !(filetype == MH_DYLIB || filetype == MH_BUNDLE) {
+        return refused(format!("{relative}: a Mach-O under {GUEST} that is not an arm64 library or bundle (filetype {filetype})"));
+    }
+    let slices = match oneios_tweaks::macho::describe(&data) {
+        Ok(slices) => slices,
+        Err(error) => return refused(format!("{relative}: a guest Mach-O without a readable signature ({error})")),
+    };
+    let [slice] = &slices[..] else {
+        return refused(format!("{relative}: a guest Mach-O with {} architectures, not one", slices.len()));
+    };
+    if !slice.adhoc {
+        return refused(format!("{relative}: not signed ad hoc ({}): our builds sign ad hoc, Apple's code never is", slice.identifier));
+    }
+    if slice.identifier.starts_with("com.apple.") || slice.identifier.is_empty() {
+        return refused(format!("{relative}: signed as {}, not as our own code", repr_str(&slice.identifier)));
+    }
+    if slice.platform.as_deref() != Some("ios") {
+        return refused(format!("{relative}: built for {}, not iOS", slice.platform.as_deref().unwrap_or("no platform")));
+    }
+    if let Some((record_path, file)) = bundle_record(relative) {
+        let record = load_record(stage, &record_path, relative)?;
+        let listed = record.get("files").and_then(|f| f.get(&file)).and_then(|f| f.get("cdhash")).and_then(Value::as_str);
+        if listed != Some(slice.cdhash.as_str()) {
+            return refused(format!(
+                "{relative}: CDHash {} is not the one its build record {record_path} lists ({})",
+                slice.cdhash,
+                listed.unwrap_or("none")
+            ));
+        }
+    }
+    Ok(slice.clone())
+}
+
+/// runtime.json's "metal" and "camera": the guest plug-ins the package carries for the phone's image build (None
+/// without them). The Metal bundle is taken whole or not at all: its executable, its `oneios-target` and the build
+/// record beside it, which names the same `<device> <build>`.
+fn guest_entries(stage: &Path, guest: &[(String, oneios_tweaks::macho::Slice)]) -> Result<(Value, Value, Value)> {
+    let mut metal = Value::Null;
+    if stage.join(METAL_BUNDLE).exists() {
+        let target_path = stage.join(METAL_BUNDLE).join("oneios-target");
+        let executable = format!("{METAL_BUNDLE}/NativeAdrenoMetal");
+        if !stage.join(&executable).is_file() || !target_path.is_file() {
+            return refused(format!("{METAL_BUNDLE}: not a whole Metal bundle (NativeAdrenoMetal and oneios-target)"));
+        }
+        let target = io(std::fs::read_to_string(&target_path), &target_path)?.trim().to_string();
+        let record = load_record(stage, METAL_RECORD, METAL_BUNDLE)?;
+        if record.get("target").and_then(Value::as_str) != Some(target.as_str()) {
+            return refused(format!("{METAL_BUNDLE}: oneios-target says {}, its record {METAL_RECORD} {}", repr_str(&target), record.get("target").map_or("None".to_string(), repr_value)));
+        }
+        let mut cdhashes: Vec<String> = guest.iter().filter(|(r, _)| r.starts_with(&format!("{METAL_BUNDLE}/"))).map(|(_, s)| s.cdhash.clone()).collect();
+        cdhashes.sort();
+        let mut entry = Value::dict();
+        entry.set("bundle", METAL_BUNDLE);
+        entry.set("record", METAL_RECORD);
+        entry.set("target", target);
+        entry.set("cdhashes", cdhashes);
+        metal = entry;
+    }
+    let mut camera = Value::Null;
+    let plugin = format!("{CAMERA_DIR}/{CAMERA_PLUGIN}");
+    if let Some((_, slice)) = guest.iter().find(|(r, _)| *r == plugin) {
+        if metal.is_null() {
+            return refused(format!("{plugin}: the capture plug-in without the Metal bundle, whose target says which iOS both are built for"));
+        }
+        let mut entry = Value::dict();
+        entry.set("path", CAMERA_DIR);
+        entry.set("cdhash", slice.cdhash.as_str());
+        camera = entry;
+    }
+    let metal_a56 = a56_entry(stage, guest)?;
+    Ok((metal, camera, metal_a56))
+}
+
+/// runtime.json's "metal_a56" (null without the bundles): the A56's Metal plug-in whole (OneiOSRadeonMetal,
+/// oneios-target, its record naming the same target), its OpenGL ES bundle the same way when it is there, and the
+/// CDHashes of every Mach-O of both (sorted): what the image's owner-trust.json gets with the addon.
+fn a56_entry(stage: &Path, guest: &[(String, oneios_tweaks::macho::Slice)]) -> Result<Value> {
+    if !stage.join(A56_METAL_BUNDLE).exists() {
+        if stage.join(A56_GL_BUNDLE).exists() {
+            return refused(format!("{A56_GL_BUNDLE}: the A56's OpenGL ES without its Metal plug-in ({A56_METAL_BUNDLE})"));
+        }
+        return Ok(Value::Null);
+    }
+    let one = |bundle: &str, record_path: &str, executable: &str| -> Result<(String, Value)> {
+        let target_path = stage.join(bundle).join("oneios-target");
+        if !stage.join(bundle).join(executable).is_file() || !target_path.is_file() {
+            return refused(format!("{bundle}: not a whole bundle ({executable} and oneios-target)"));
+        }
+        let target = io(std::fs::read_to_string(&target_path), &target_path)?.trim().to_string();
+        let record = load_record(stage, record_path, bundle)?;
+        if record.get("target").and_then(Value::as_str) != Some(target.as_str()) {
+            return refused(format!(
+                "{bundle}: oneios-target says {}, its record {record_path} {}",
+                repr_str(&target),
+                record.get("target").map_or("None".to_string(), repr_value)
+            ));
+        }
+        let mut entry = Value::dict();
+        entry.set("bundle", bundle);
+        entry.set("record", record_path);
+        Ok((target, entry))
+    };
+    let (target, metal) = one(A56_METAL_BUNDLE, A56_METAL_RECORD, "OneiOSRadeonMetal")?;
+    let gl = if stage.join(A56_GL_BUNDLE).exists() {
+        let (gl_target, gl) = one(A56_GL_BUNDLE, A56_GL_RECORD, "OneiOSRadeonGL")?;
+        if gl_target != target {
+            return refused(format!("{A56_GL_BUNDLE}: for {}, the Metal plug-in for {}", repr_str(&gl_target), repr_str(&target)));
+        }
+        gl
+    } else {
+        Value::Null
+    };
+    let (m, g) = (format!("{A56_METAL_BUNDLE}/"), format!("{A56_GL_BUNDLE}/"));
+    let mut cdhashes: Vec<String> =
+        guest.iter().filter(|(r, _)| r.starts_with(&m) || r.starts_with(&g)).map(|(_, s)| s.cdhash.clone()).collect();
+    cdhashes.sort();
+    let mut entry = Value::dict();
+    entry.set("target", target);
+    entry.set("metal", metal);
+    entry.set("gl", gl);
+    entry.set("cdhashes", cdhashes);
+    Ok(entry)
+}
+
 /// `fnmatch.fnmatch(name, pattern)` for a pattern whose only wildcard is `*`.
 fn name_matches(name: &str, pattern: &str) -> bool {
     let mut parts = pattern.split('*');
@@ -230,11 +415,31 @@ fn name_matches(name: &str, pattern: &str) -> bool {
 /// The build record of the kernel in the stage, with "path" set to the kernel's (None without one); a refusal
 /// for anything else of Apple's.
 pub fn check(stage: &Path) -> Result<Option<Value>> {
+    checked(stage).map(|c| c.kernel)
+}
+
+/// What the check found: the kernel's build record (with "path" set to the kernel's), and runtime.json's "metal"
+/// and "camera" (lib/guest/; null without them).
+struct Checked {
+    kernel: Option<Value>,
+    metal: Value,
+    camera: Value,
+    /// runtime.json "metal_a56" (the Galaxy A56's GPU plug-ins; null without them)
+    metal_a56: Value,
+}
+
+fn checked(stage: &Path) -> Result<Checked> {
     let mut kernel: Option<Value> = None;
+    let mut guest = Vec::new();
     for relative in files_of(stage)? {
         let path = stage.join(&relative);
         let name = relative.rsplit('/').next().unwrap_or(&relative).to_lowercase();
         match content_kind(&path)? {
+            Some("Mach-O") if relative.starts_with(GUEST) => {
+                let slice = own_guest_code(stage, &relative)?;
+                guest.push((relative, slice));
+                continue;
+            }
             Some("Mach-O") => {
                 let mut record = own_kernel(&path, &relative)?;
                 if kernel.is_some() {
@@ -251,12 +456,13 @@ pub fn check(stage: &Path) -> Result<Option<Value>> {
             return refused(format!("{relative}: the name matches {pattern} (Apple firmware)"));
         }
     }
-    Ok(kernel)
+    let (metal, camera, metal_a56) = guest_entries(stage, &guest)?;
+    Ok(Checked { kernel, metal, camera, metal_a56 })
 }
 
 /// STAGE/runtime.json: every file with its size, SHA-256 and mode (which is set to 0755 or 0644 on the way).
 pub fn manifest(stage: &Path, version: &str, commit: &str, dirty: &str, min_fork: &str, placeholder: &str) -> Result<()> {
-    let kernel = check(stage)?;
+    let Checked { kernel, metal, camera, metal_a56 } = checked(stage)?;
     let mut entries = Value::list();
     let mut has_xnuhost = false;
     for relative in files_of(stage)?.into_iter().filter(|r| r != MANIFEST) {
@@ -291,6 +497,9 @@ pub fn manifest(stage: &Path, version: &str, commit: &str, dirty: &str, min_fork
     document.set("min_oneos_fork", min_fork);
     document.set("placeholder", placeholder == "1");
     document.set("kernel", kernel.map(|record| kernel_entry(&record)));
+    document.set("metal", metal);
+    document.set("camera", camera);
+    document.set("metal_a56", metal_a56);
     document.set("files", entries);
     let path = stage.join(MANIFEST);
     io(std::fs::write(&path, json::dumps(&document, Some(2), false) + "\n"), &path)?;

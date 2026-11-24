@@ -141,8 +141,11 @@ pub fn apply(a: &Apply) -> Result<Applied> {
         // exec, and without mediaserverd SpringBoard waits on the boot logo for com.apple.coremedia.systemcontroller.xpc (the
         // other A56 fork's lock-screen run of 2026-11-18 passed it on its switch's command line; here the image carries it,
         // 2026-11-23, so the OneOS switch passes nothing of the A56's own).
+        // 2026-11-24 (port/a56-full): kernel 0103-0105's switches from the other A56 fork (touch, configd's IONetworkStack
+        // entitlement, LaunchServices' keep) and its idle jobs off (0053); xnuhost adds the same words to an older 20F66
+        // image's boot-args (runtime/xnuhost/src/config.rs IOS16_BOOT_ARGS: keep the two lists the same).
         conf.push_str(
-            "boot-args=debug=0x14e serial=3 -v kt_fixed_zones=120 -no_slto_panic ml-timeout-lock-panic-scale=40 tlto_us=0 sheng-smp=1 armcpu-self-ipi=1 armcpu-spi-ipi=1 use_contiguous_hint=0 interrupt-masked-debug-mode=0 sched_preemption_disable_debug_mode=0 wdt=-1 native-source-storage=1 vgpu-3d=1 oneios-gpu-metal=0 ool_port_array_enforced=0 oneios-legacy-bootstrap-replies=1 oneios-legacy-registered-ports=1 oneios-mac-exec-skip=mediaserverd,TVRemoteConnectionService\n",
+            "boot-args=debug=0x14e serial=3 -v kt_fixed_zones=120 -no_slto_panic ml-timeout-lock-panic-scale=40 tlto_us=0 sheng-smp=1 armcpu-self-ipi=1 armcpu-spi-ipi=1 use_contiguous_hint=0 interrupt-masked-debug-mode=0 sched_preemption_disable_debug_mode=0 wdt=-1 native-source-storage=1 vgpu-3d=1 oneios-gpu-metal=0 ool_port_array_enforced=0 oneios-legacy-bootstrap-replies=1 oneios-legacy-registered-ports=1 oneios-mac-exec-skip=mediaserverd,TVRemoteConnectionService oneios-hid16=1 oneios-grant=configd:com.apple.networking.ionetworkstack.user-client oneios-ls-keep=3 oneios-disable-jobs=com.apple.accessibility.axassetsd,com.apple.aonsensed,com.apple.prngseedd,com.apple.suggestd,com.apple.spotlightknowledged,com.apple.corespotlightservice,com.apple.siriknowledged,com.apple.tipsd,com.apple.gamed,com.apple.followupd,com.apple.tailspind\n",
         );
         let keybagd = "usr/libexec/keybagd";
         // Scope the software keystore path to keybagd: the 20F66 binary only.

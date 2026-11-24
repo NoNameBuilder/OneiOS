@@ -157,6 +157,12 @@ named!(
     Encoder10 { Main10 = "main10", EightBit = "8bit", Nv12 = "nv12" }
 );
 named!(
+    /// decoder= (docs/switches.md, 2026-11-24): auto (the video device decodes too: the phone's MediaCodec for iOS's
+    /// paravirtualized VideoToolbox decoder; needs encoder=auto or sim, whose device and media pool it shares) | off (an
+    /// encoder only: iOS decodes video in software, as before).
+    Decoder { Auto = "auto", Off = "off" }
+);
+named!(
     /// gpu-down= (docs/switches.md): governor (3b36ff0: the level comes down when a frame fits at the governor's clock
     /// in a burst) or bottom (when it would fit at KGSL's lowest clock, as before 3b36ff0).
     GpuDown { Governor = "governor", Bottom = "bottom" }
@@ -192,7 +198,8 @@ named!(
     DisplayFormat { Bgrx8 = "bgrx", Rgba16f = "rgba16f" }
 );
 named!(
-    /// gpu=: auto (3D when the host has KGSL, udmabuf and a dma heap), 3d (or do not start), 2d.
+    /// gpu=: auto (3D when the host has KGSL, udmabuf and a dma heap; on an amdgpu host without KGSL, the amdgpu
+    /// renderer when the gpuaddon carries OneiOSRadeonMetal and its self-test passes), 3d (or do not start), 2d.
     Gpu { Auto = "auto", ThreeD = "3d", TwoD = "2d" }
 );
 named!(
@@ -425,6 +432,7 @@ const GIVEN_KEYS: &[&str] = &[
     "host-mem-log",
     "usb-log",
     "ram-giveback",
+    "ram-ondemand",
     "ram-prefault",
     "ram-lock",
     "ram-session-reserve",
@@ -445,10 +453,13 @@ const GIVEN_KEYS: &[&str] = &[
     "scale-fixup",
     "corner-radius",
     "artwork-subtype",
+    "ios16-fixup",
     "display-direct",
     "touch-exclusive",
     "session-mode",
     "takeover-stops",
+    "takeover-reclaim",
+    "takeover-swappiness",
     "pen",
     "pen-rotate",
     "pen-mirror",
@@ -473,12 +484,16 @@ const GIVEN_KEYS: &[&str] = &[
     "wifi-joined-scan",
     "encoder-10bit",
     "encoder-warmup",
+    "display-post",
+    "decoder",
+    "decoder-codecs",
     "gpu-blob-entries",
     "gpu-down",
     "stop-loop",
     "uclamp-rule",
     "task-trim",
     "task-trim-idle",
+    "timer-coalesce",
     "ram-tasks-awake",
     "ram-task-idle-cost",
 ];
@@ -527,6 +542,12 @@ pub struct Config {
     /// locked, free pages given back (and ram=auto as before, without the MemAvailable bound). 0 since fix-ram-locked,
     /// 2026-11-15: the RAM held fixed and locked.
     pub ram_giveback: bool,
+    /// ram-ondemand=0|1 (0; option C of 2026-11-23, the owner's to choose, against the rule that iOS's RAM is
+    /// fixed): the guest's RAM is not prefaulted; each page is locked as it is first touched (mlock2 MLOCK_ONFAULT, so
+    /// the host never swaps it) and iOS's free pages are given back (ram-giveback=1's way). A guest larger than what
+    /// fits is backed only as iOS uses it; when it fills, the valve or the host's OOM killer ends it (docs/booter.md
+    /// 2.2, "On demand").
+    pub ram_ondemand: bool,
     /// ram-prefault=0|1 (1)
     pub ram_prefault: bool,
     /// ram-lock=0|1 (1): mlock the prefaulted RAM where Linux allows and it fits
@@ -581,6 +602,8 @@ pub struct Config {
     pub display: DisplayBackend,
     pub display_format: DisplayFormat,
     pub gpu: Gpu,
+    /// gpu-node=PATH: the amdgpu render node (gpu3d_amdgpu; "" = /dev/dri/renderD128)
+    pub gpu_node: String,
     pub gpu_level: GpuLevel,
     /// gpu-priority=0: KGSL queue priorities as the guest asks, not by the owner's class (1)
     pub gpu_priority: bool,
@@ -606,6 +629,8 @@ pub struct Config {
     /// the iPhone18,2's Pro Max). The Pro Max's metrics on the S25's 360x780 canvas are the "iPad with humongous
     /// spacing" the owner saw; 2868 here is the A/B switch back. docs/userland.md, "The artwork answers".
     pub artwork_subtype: u32,
+    /// the iOS 16.5 (20F66) text fixups (ios16_fixups: CoreImage's OpenGL ES fallback answers no context): on by default
+    pub ios16_fixup: bool,
     pub text_fixups: TextFixups,
     /// read /dev/input
     pub input: bool,
@@ -625,6 +650,12 @@ pub struct Config {
     /// names it in the takeover line; the switch reads it from the image's xnuhost.conf and does the stops. "" = not
     /// given (the switch's default list)
     pub takeover_stops: String,
+    /// takeover-reclaim=0|1 (1) and takeover-swappiness=N|keep (keep; N 0-200): the OneOS switch's memory steps in
+    /// session-mode=takeover, after its stops and before xnuhost (docs/booter.md 2.9d, "More RAM in the takeover";
+    /// oneos/interface.md 4a): the caches dropped and zram compacted; vm.swappiness for the session, put back by the
+    /// return. xnuhost only checks the words and names a value other than the default in the takeover line.
+    pub takeover_reclaim: bool,
+    pub takeover_swappiness: Option<u32>,
     /// --host-info: print the host table's answer for this phone (host-info: device=... takeover=...) and exit
     pub host_info: bool,
     /// touch-sleep=0: the brightness bridge never puts the touch IC to sleep (ONEIOS_TSP_OFF=0)
@@ -672,6 +703,12 @@ pub struct Config {
     /// encoder-10bit (main10), encoder-warmup (1): the video encoder
     pub encoder_10bit: Encoder10,
     pub encoder_warmup: bool,
+    /// display-post (apart): the display helper reads and answers each frame while it waits for a buffer and posts
+    /// the last (fix/frame-path); serial: it reads no frame until the last is posted (before 2026-11-24)
+    pub display_post_serial: bool,
+    /// decoder (auto), decoder-codecs (h264,hevc,vp9,av1; bits of oneencoder::proto::DECODER_CODECS): the video decoder
+    pub decoder: Decoder,
+    pub decoder_codecs: u32,
     /// gpu-blob-entries=N (65532, 78c4b86; 16384 before): the most entries of a guest 3D blob the device takes
     pub gpu_blob_entries: u32,
     /// gpu-down (governor): when the GPU level leaves the top
@@ -684,6 +721,8 @@ pub struct Config {
     pub task_trim: bool,
     /// task-trim-idle=SECONDS (30): no release for this long and a task is trimmed
     pub task_trim_idle: u32,
+    /// timer-coalesce (on): a later deadline or a cancel leaves the vCPU's host timer armed (cpu::TIMER_COALESCE)
+    pub timer_coalesce: bool,
     pub selftest: bool,
     /// runtime/bridges devices (network, sound, haptics, Bluetooth, CPU placement); by mode unless given
     pub bridges: bool,
@@ -840,6 +879,7 @@ impl Config {
             ram_auto_available: 0,
             ram_auto_bound: None,
             ram_giveback: false,
+            ram_ondemand: false,
             ram_prefault: true,
             ram_lock: true,
             ram_lock_expected: false,
@@ -867,6 +907,7 @@ impl Config {
             display_format: DisplayFormat::Bgrx8,
             gpu: Gpu::Auto,
             gpu_level: GpuLevel::Deadline,
+            gpu_node: String::new(),
             gpu_priority: true,
             width: 0,
             height: 0,
@@ -876,12 +917,15 @@ impl Config {
             scale_fixup: true,
             corner_radius: 0,
             artwork_subtype: 0,
+            ios16_fixup: true,
             text_fixups: TextFixups::default(),
             input: true,
             display_direct: true,
             touch_exclusive: false, // the touchscreen grab: a bench preview, or session-mode=takeover (which turns it on)
             session_mode: SessionMode::Hosted, // the default session, byte for byte as before session-mode existed
             takeover_stops: String::new(),
+            takeover_reclaim: true,
+            takeover_swappiness: None,
             host_info: false,
             touch_sleep: true,
             input_script: String::new(),
@@ -908,12 +952,16 @@ impl Config {
             wifi_joined_scan: WifiJoinedScan::Cache,
             encoder_10bit: Encoder10::Main10,
             encoder_warmup: true,
+            display_post_serial: false,
+            decoder: Decoder::Auto,
+            decoder_codecs: oneencoder::switches::ALL_CODECS,
             gpu_blob_entries: GPU_BLOB_ENTRIES,
             gpu_down: GpuDown::Governor,
             stop_loop: StopLoop::Wait,
             uclamp_rule: UclampRule::Work,
             task_trim: true,
             task_trim_idle: TASK_TRIM_IDLE,
+            timer_coalesce: true,
             selftest: false,
             bridges: true,
             clusters: String::new(),
@@ -981,6 +1029,7 @@ impl Config {
             "display-format" => self.display_format = named(DisplayFormat::parse(value))?,
             "gpu" => self.gpu = named(Gpu::parse(value))?,
             "gpu-level" => self.gpu_level = named(GpuLevel::parse(value))?,
+            "gpu-node" => self.gpu_node = text(value, 128)?,
             "gpu-priority" => self.gpu_priority = number(value, 0, 1)? == 1,
             "cpus" => {
                 let n = i64::from(parse::atoi(value));
@@ -1010,6 +1059,7 @@ impl Config {
             "host-mem-log" => self.host_mem_log = number(value, 0, 86400)?,
             "usb-log" => self.usb_log = number(value, 0, 3600)?,
             "ram-giveback" => self.ram_giveback = flag(value)?,
+            "ram-ondemand" => self.ram_ondemand = flag(value)?,
             "ram-prefault" => self.ram_prefault = flag(value)?,
             "ram-lock" => self.ram_lock = flag(value)?,
             "ram-session-reserve" => self.ram_session_reserve = size_below_tib(value)?,
@@ -1057,6 +1107,7 @@ impl Config {
                 fmt_ok(subtype <= 10000)?;
                 self.artwork_subtype = subtype;
             }
+            "ios16-fixup" => self.ios16_fixup = flag(value)?,
             "text-fixup" => {
                 // FILE,OFFSET,ORIGINAL,REPLACEMENT in hex, as UniXNU's [payload] text_fixups (the kernel checks them again)
                 let commas = value.bytes().filter(|&b| b == b',').count();
@@ -1071,6 +1122,9 @@ impl Config {
             // the switch's stop list in session-mode=takeover: checked here, done by the switch
             "takeover-stops" if takeover_stops_ok(value) => self.takeover_stops = value.to_owned(),
             "takeover-stops" => return Err(BadSetting),
+            "takeover-reclaim" => self.takeover_reclaim = flag(value)?,
+            "takeover-swappiness" if value == "keep" => self.takeover_swappiness = None,
+            "takeover-swappiness" => self.takeover_swappiness = Some(number(value, 0, 200)?),
             "input-script" => self.input_script = text(value, 512)?,
             "tasks" => self.tasks = flag(value)?,
             "task-uid" => self.task_uid = u32::try_from(parse::atoi(value)).ok(),
@@ -1113,12 +1167,22 @@ impl Config {
             "wifi-joined-scan" => self.wifi_joined_scan = named(WifiJoinedScan::parse(value))?,
             "encoder-10bit" => self.encoder_10bit = named(Encoder10::parse(value))?,
             "encoder-warmup" => self.encoder_warmup = flag(value)?,
+            "display-post" => {
+                self.display_post_serial = named(match value {
+                    "apart" => Some(false),
+                    "serial" => Some(true),
+                    _ => None,
+                })?
+            }
+            "decoder" => self.decoder = named(Decoder::parse(value))?,
+            "decoder-codecs" => self.decoder_codecs = named(oneencoder::switches::parse_codecs(value))?,
             "gpu-blob-entries" => self.gpu_blob_entries = number(value, 16384, i64::from(GPU_BLOB_ENTRIES))?,
             "gpu-down" => self.gpu_down = named(GpuDown::parse(value))?,
             "stop-loop" => self.stop_loop = named(StopLoop::parse(value))?,
             "uclamp-rule" => self.uclamp_rule = named(UclampRule::parse(value))?,
             "task-trim" => self.task_trim = flag(value)?,
             "task-trim-idle" => self.task_trim_idle = number(value, 1, 86400)?,
+            "timer-coalesce" => self.timer_coalesce = flag(value)?,
             "ram-tasks-awake" => self.ram_tasks_awake = number(value, 0, 4096)?,
             "ram-task-idle-cost" => self.ram_task_idle_cost = size_below_tib(value)?,
             // hw-backend, hw-backend-<bridge>, hw-backend-fallback (onebridges::hw)
@@ -1280,6 +1344,8 @@ impl Config {
         take!(self, image, "camera-vm", camera_vm);
         take!(self, image, "camera-model", camera_model);
         take!(self, image, "takeover-stops", takeover_stops);
+        take!(self, image, "takeover-reclaim", takeover_reclaim);
+        take!(self, image, "takeover-swappiness", takeover_swappiness);
         // session-mode= of the image set (its overlay/userland/xnuhost.conf) when the command line has none.
         take!(self, image, "session-mode", session_mode);
         let takeover_mode = self.session_mode == SessionMode::Takeover;
@@ -1325,6 +1391,9 @@ impl Config {
         if !self.given("gpu") {
             self.gpu = if image.given("gpu") { image.gpu } else { device.gpu };
         }
+        if self.gpu_node.is_empty() {
+            self.gpu_node = image.gpu_node.clone();
+        }
         if self.boot_args.is_empty() {
             self.boot_args = image.boot_args.clone();
         }
@@ -1345,12 +1414,16 @@ impl Config {
         take!(self, image, "wifi-joined-scan", wifi_joined_scan);
         take!(self, image, "encoder-10bit", encoder_10bit);
         take!(self, image, "encoder-warmup", encoder_warmup);
+        take!(self, image, "display-post", display_post_serial);
+        take!(self, image, "decoder", decoder);
+        take!(self, image, "decoder-codecs", decoder_codecs);
         take!(self, image, "gpu-blob-entries", gpu_blob_entries);
         take!(self, image, "gpu-down", gpu_down);
         take!(self, image, "stop-loop", stop_loop);
         take!(self, image, "uclamp-rule", uclamp_rule);
         take!(self, image, "task-trim", task_trim);
         take!(self, image, "task-trim-idle", task_trim_idle);
+        take!(self, image, "timer-coalesce", timer_coalesce);
         take!(self, image, "cpu-pin", cpu_pin);
         self.hw.merge(&image.hw); // each hw-backend setting: the command line's, else the image set's,
         self.hw.merge(&device.hw); // else the host phone's
@@ -1373,6 +1446,9 @@ impl Config {
         if self.hz == 0 {
             self.hz = image.hz;
         }
+        if self.hz == 0 {
+            self.hz = device.hz; // the host phone's rate (the galaxy-a56 row: 60, the fork's CPU-composited A56)
+        }
         // panel-fallback: the command line's, else the image set's, else the host phone's
         self.panel_fallback = self.panel_fallback.or(image.panel_fallback).or(device.panel_fallback);
         take!(self, image, "display-direct", display_direct);
@@ -1382,7 +1458,26 @@ impl Config {
             return Err(ConfigError::new("display-format=rgba16f needs --display shm"));
         }
         take!(self, image, "scale", scale);
+        // The host phone's guest frame (width, height and its UI scale, taken as one): only where neither the command line
+        // nor the image set gives a width or a height. Its scale then wins over the image set's, which is the scale of the
+        // panel-sized frame roottweak made the image for, but not over the command line's. The galaxy-a56 row: 720x1560 @2x,
+        // the fork's A56 frame since 2026-11-22 (Musicalista/OneiOS-A56 c83b9ca: the same 360x780 points as 1080x2340 @3x,
+        // 2.25x fewer pixels for the CPU compositor; the display helper scales it to the panel).
+        // return-graceful-ms: the command line's, else the image set's (finish_ram), else the host phone's (galaxy-a56: 4000,
+        // in which kernel 0106 sends logd SIGTERM so iOS's log reaches the Data store).
+        if !self.given("return-graceful-ms") && !image.given("return-graceful-ms") && device.given("return-graceful-ms")
+        {
+            self.return_graceful_ms = device.return_graceful_ms;
+        }
+        if self.width == 0 && self.height == 0 && device.width != 0 && device.height != 0 {
+            self.width = device.width;
+            self.height = device.height;
+            if device.given("scale") && !self.given("scale") {
+                self.scale = device.scale;
+            }
+        }
         take!(self, image, "scale-fixup", scale_fixup);
+        take!(self, image, "ios16-fixup", ios16_fixup);
         if self.text_fixups.is_empty() {
             self.text_fixups = image.text_fixups.clone();
         }
@@ -1493,6 +1588,12 @@ impl Config {
         // at a fitted 6656 MiB Linux still swapped iOS's RAM (shmem) with 1.9 GB of other page cache there, 138 -> 604
         // MiB at up to 37.9 MB/s of swap-outs, and only a lock stops that. ram-giveback=1 is 0058's way again.
         take!(self, image, "ram-giveback", ram_giveback);
+        // Option C (2026-11-23, off unless asked): faulted in as used, each page locked as it comes in, free pages given
+        // back: ram-giveback=1's way with a lock on fault (session/memory.rs ram_fix_start). Never prefaulted.
+        take!(self, image, "ram-ondemand", ram_ondemand);
+        if self.ram_ondemand {
+            self.ram_giveback = true;
+        }
         if !self.given("ram-prefault") {
             self.ram_prefault = if image.given("ram-prefault") { image.ram_prefault } else { !self.ram_giveback };
         }
@@ -1510,7 +1611,7 @@ impl Config {
         take!(self, image, "ram-unlock-below", ram_unlock_below);
         // A locked RAM always has its valve: under it the host may swap the guest again rather than reclaim every other
         // process's pages (the fork's watcher's, surfaceflinger's) on the way to its OOM killer. The way back must fit.
-        if self.ram_lock && self.ram_unlock_below < RAM_UNLOCK_MIN {
+        if (self.ram_lock || self.ram_ondemand) && self.ram_unlock_below < RAM_UNLOCK_MIN {
             eprintln!(
                 "xnuhost: ram-unlock-below={} MiB is under {} MiB with the RAM locked: {} MiB is used (the valve stays on)",
                 self.ram_unlock_below >> 20,
@@ -1522,7 +1623,8 @@ impl Config {
         // The headroom: smaller with a lock that can work (no zram pool or working set for the guest's pages), which is
         // asked here, before the size is known (ramfix::can_lock: CAP_IPC_LOCK, or no RLIMIT_MEMLOCK).
         take!(self, image, "ram-fit-terms", ram_fit_terms_old);
-        self.ram_lock_expected = self.ram_lock && can_lock();
+        // ram-ondemand locks each page as it comes in: the same headroom as a whole lock.
+        self.ram_lock_expected = (self.ram_lock || self.ram_ondemand) && can_lock();
         if !self.given("ram-session-reserve") {
             self.ram_session_reserve = if image.given("ram-session-reserve") {
                 image.ram_session_reserve
@@ -1537,7 +1639,7 @@ impl Config {
         }
         // With the lock, what fits leaves at least the valve's level and a margin: else the valve would open as soon
         // as the session is up.
-        if self.ram_lock && self.ram_session_reserve < self.ram_unlock_below + RAM_VALVE_MARGIN {
+        if (self.ram_lock || self.ram_ondemand) && self.ram_session_reserve < self.ram_unlock_below + RAM_VALVE_MARGIN {
             self.ram_session_reserve = self.ram_unlock_below + RAM_VALVE_MARGIN;
         }
         take!(self, image, "ram-fit", ram_fit_on);
@@ -1713,11 +1815,20 @@ impl Config {
     /// docs/booter.md 2.9d).
     pub fn takeover_line(&self) -> Option<String> {
         (self.session_mode == SessionMode::Takeover).then(|| {
+            // The switch's memory steps, named only when they are not the default (takeover-reclaim=1, keep).
+            let mut memory = String::new();
+            if !self.takeover_reclaim {
+                memory.push_str("; takeover-reclaim=0 (the switch drops no cache)");
+            }
+            if let Some(n) = self.takeover_swappiness {
+                memory.push_str(&format!("; takeover-swappiness={n} (vm.swappiness for the session, put back by the return)"));
+            }
             format!(
-                "session: Android takeover (session-mode=takeover; {} allows it): the native touchscreen is grabbed for iOS{}; the side keys are read, never grabbed; Android's services stopped by the switch: takeover-stops={}; the switch's CPU cap, its stops and the way back are the OneOS fork's",
+                "session: Android takeover (session-mode=takeover; {} allows it): the native touchscreen is grabbed for iOS{}; the side keys are read, never grabbed; Android's services stopped by the switch: takeover-stops={}{}; the switch's CPU cap, its stops and the way back are the OneOS fork's",
                 self.host.map_or("?", |h| h.0.name),
                 if self.touch_exclusive { "" } else { " (not: touch-exclusive=0 was given)" },
-                if self.takeover_stops.is_empty() { "default" } else { &self.takeover_stops }
+                if self.takeover_stops.is_empty() { "default" } else { &self.takeover_stops },
+                memory
             )
         })
     }
@@ -1729,6 +1840,16 @@ impl Config {
             "panel-fallback" => self.panel_fallback.is_some() || image.panel_fallback.is_some(),
             // Added, not replaced: the table's words come before the image set's and the command line's.
             "boot-args-add" => false,
+            "hz" => self.hz != 0 || image.hz != 0,
+            // the frame is taken as one (width, height, scale): not where a width or a height is given above
+            "width" | "height" | "scale" => {
+                self.width != 0
+                    || self.height != 0
+                    || image.width != 0
+                    || image.height != 0
+                    || (key == "scale" && self.given("scale"))
+            }
+            "return-graceful-ms" => self.given(key) || image.given(key),
             _ => {
                 let mut one = HwSettings::default();
                 if one.setting(key, value).is_err() {
@@ -1783,7 +1904,11 @@ sched_preemption_disable_debug_mode=0 wdt=-1 native-source-storage=1 vgpu-3d=1 d
 
 /// The keys a host table entry may give as device defaults.
 fn device_key(key: &str) -> bool {
-    matches!(key, "gpu" | "panel-fallback" | "corner-radius" | "artwork-subtype" | "boot-args-add")
+    matches!(
+        key,
+        "gpu" | "panel-fallback" | "corner-radius" | "artwork-subtype" | "boot-args-add" | "hz" | "width" | "height" | "scale"
+            | "return-graceful-ms"
+    )
         || key.starts_with("hw-backend")
 }
 
@@ -1830,6 +1955,35 @@ fn native_impacts_boot_arg(args: &mut String, size: usize) -> Result<(), NoRoom>
         return Ok(());
     }
     append_arg(args, size, "oneios_native_impacts=1")
+}
+
+/// The boot arguments an iOS 16.5 (20F66) userland needs on the 24A446 kernel collection beyond the image set's own
+/// (roottweak's 20F66 xnuhost.conf), from the Galaxy A56 fork's switch (Musicalista/OneiOS-A56 e8747cc, c83b9ca;
+/// docs/a56.md). xnuhost adds them for an image set of build 20F66 only, so the user updates the runtime and the
+/// kernel and keeps the image: oneios-hid16=1 (kernel 0103: touch events in 16.5's layout), oneios-grant=configd's
+/// IONetworkStack entitlement (0104: en0 is named, Wi-Fi comes up), oneios-ls-keep=3 (0105: LaunchServices' database
+/// kept), oneios-disable-jobs (0053: 0053's three defaults and the fork's eight idle jobs; 250 bytes, the kernel's list
+/// holds 255).
+pub const IOS16_BOOT_ARGS: &str = "oneios-hid16=1 \
+oneios-grant=configd:com.apple.networking.ionetworkstack.user-client oneios-ls-keep=3 \
+oneios-disable-jobs=com.apple.accessibility.axassetsd,com.apple.aonsensed,com.apple.prngseedd,com.apple.suggestd,\
+com.apple.spotlightknowledged,com.apple.corespotlightservice,com.apple.siriknowledged,com.apple.tipsd,com.apple.gamed,\
+com.apple.followupd,com.apple.tailspind";
+
+/// The words of [`IOS16_BOOT_ARGS`] that `args` does not name already, added (the command line's and the image set's
+/// win); the names of those added, space-separated (empty: all were named). Err when they do not fit `size` bytes.
+pub fn ios16_boot_args(args: &mut String, size: usize) -> Result<String, NoRoom> {
+    let mut next = args.clone();
+    let mut added = Vec::new();
+    for w in words(IOS16_BOOT_ARGS) {
+        let name = w.split('=').next().unwrap_or(w);
+        if !boot_arg_named(&next, name) {
+            append_arg(&mut next, size, w)?;
+            added.push(name);
+        }
+    }
+    *args = next;
+    Ok(added.join(" "))
 }
 
 /// Whether `args` has a boot argument named `name`: a word equal to it, or one that starts with it and then '='.
@@ -1993,6 +2147,73 @@ pub fn scale_fixups(build: Option<&str>, scale: u32, list: &mut TextFixups) {
     }
 }
 
+/// Whether the guest's boot arguments give the Galaxy A56's processes OpenGL ES: oneios-gpu-amd-gl=1, the first
+/// oneios-gpu-amd-gl= word, as the kernel's PE_parse_boot_argn reads it (docs/a56-gpu.md 4a: the accelerator then names
+/// OneiOSRadeonGL as IOGLESBundleName for every process).
+pub fn amd_gl_on(boot_args: &str) -> bool {
+    boot_args.split(' ').find(|w| w.starts_with("oneios-gpu-amd-gl=")) == Some("oneios-gpu-amd-gl=1")
+}
+
+/// Whether this boot has the A56's OpenGL ES driver, so that CoreImage's GL fallback needs no fixup (ios16_fixups):
+/// xnuhost found OneiOSRadeonGL.bundle in the gpuaddon of the amdgpu renderer it picked (`bundle`) and the guest's
+/// boot arguments turn it on. A hand-written oneios-gpu-amd-gl=1 without the bundle keeps the fixup: the kernel would
+/// name a bundle that is not there, CoreImage would get no EAGLContext and die as before.
+pub fn ios16_gl_driver(bundle: bool, boot_args: &str) -> bool {
+    bundle && amd_gl_on(boot_args)
+}
+
+/// The text fixups an iOS 16.5 (20F66) userland needs (docs/gpu.md, "iOS 16.5 without a Metal device"). Read in
+/// 20F66's dyld_shared_cache_arm64 (out/ios16-cache, `oneios-tool sym find` / `sym callers`): CoreImage's
+/// -[CIContext initWithOptions:] makes a Metal context when MTLCreateSystemDefaultDevice has a device, and else falls
+/// back to +[CIContext internalGLContextWithOptions:] (0x1949bd62c unslid, reached from nowhere else), an OpenGL ES
+/// context through internalContextWithEAGLContext:nil. On iOS 16 there is no CPU renderer (kCIContextUseSoftwareRenderer
+/// still takes GL) and CIGLIsUsable answers 1 always. With no GL driver (the Galaxy A56: no Apple GPU, no GL of ours)
+/// the context has no EAGL macro context, GetMacroContext leaves its dispatch table zero, and CI::GLContext::init calls
+/// glDisable(GL_DEPTH_TEST) through it: pc 0, lr CI::GLContext::init + 0xcc. SpringBoard died so 9 times in the A56's
+/// boot of 2026-11-24 21:47, at each start after Bold Text was turned on (UIKit's styled images: +[CUIShapeEffectStack
+/// sharedCIContext], iOSPlus10 docs/boldtext-crash.md, the same fault on 20H392); any app reaching that context can.
+/// The fixup makes the GL fallback answer no context (mov x0, #0; ret): initWithOptions: then returns nil, as it does
+/// when GL is not usable, and CoreUI renders into a blank bitmap through a nil context (-[CUIShapeEffectStack
+/// _newFlattenedImageFromShapeCGImage:...] sends render:toBitmap: to it) instead of crashing. A Metal device (the
+/// Metal plug-in, docs/a56-gpu.md) is taken before the fallback, so it keeps working. Appends to `list` what fits and
+/// is not there yet; the kernel applies an entry only where its original bytes match. The number of entries added.
+pub fn ios16_fixups(build: Option<&str>, list: &mut TextFixups) -> usize {
+    const FIXUPS_20F66: &[&str] = &[
+        // +[CIContext internalGLContextWithOptions:]: mov x3, x2; adrp x8, ... -> mov x0, #0; ret
+        "dyld_shared_cache_arm64.07,a162c,e30302aa88512490,000080d2c0035fd6",
+    ];
+    if build != Some("20F66") {
+        return 0;
+    }
+    let mut added = 0;
+    for f in FIXUPS_20F66 {
+        if list.entries().iter().any(|e| e == f) {
+            continue;
+        }
+        if !list.push_within(f, TEXT_FIXUPS_SIZE) {
+            break;
+        }
+        added += 1;
+    }
+    added
+}
+
+/// iOS 16.5's (20F66) product: the iPhone X's /product product-id (DeviceTree.d22ap of the restore file the image is
+/// made from, iPhone10,3/iPhone10,6 16.5, read with `oneios-tool remotezip get`, `image im4p` and `xnuloader-inspect
+/// adt`), entry 36 of 20F66 libMobileGestalt's table of 363 products (product type 0x669eebc5). MobileGestalt finds
+/// the product by it; without it MGGetProductType is -1, Settings has no model name, and bluetoothd's chip factory
+/// (MGIsDeviceOneOfType against lists of these ids) leaves its chip null and dies on it (status 11 every 10 s:
+/// [chip + 0x260] at 0x100274cf0 of 20F66's /usr/sbin/bluetoothd). With it the factory makes the iPhone X's chip (15).
+/// The root's model and target-type stay the generic machine's (docs/userland.md, "The iOS 16.5 identity").
+pub const IOS16_PRODUCT_ID: [u8; 20] = [
+    0xfd, 0x07, 0x9b, 0x29, 0x81, 0x44, 0xa7, 0xde, 0xb4, 0xd7, 0xc8, 0x7f, 0xef, 0x3e, 0xb4, 0x74, 0xd8, 0xf0, 0xe7,
+    0xeb,
+];
+
+/// The serial number an iOS 16.5 guest shows (Settings > General > About): OneiOS's own, made up, the same on every
+/// phone; never an Apple serial. 11 characters, the most XNU's IODTPlatformExpert gives from serial-number.
+pub const IOS16_SERIAL: &str = "ONEIOS16A56";
+
 /// xh_panel_native: the panel's native mode among the modes of its connector: the largest, at its highest refresh
 /// rate. Not the current one: One UI's resolution setting may run the panel at 1080x2340.
 pub fn panel_native(modes: &[PanelMode]) -> Option<PanelMode> {
@@ -2114,8 +2335,12 @@ impl Config {
         let all = [
             ("session-mode", self.session_mode.as_str().to_string(), "hosted"),
             ("stop-loop", self.stop_loop.as_str().to_string(), "wait"),
+            ("takeover-reclaim", on(self.takeover_reclaim).to_string(), "1"),
+            ("takeover-swappiness", self.takeover_swappiness.map_or("keep".to_string(), |n| n.to_string()), "keep"),
             ("task-trim", on(self.task_trim).to_string(), "1"),
+            ("timer-coalesce", on(self.timer_coalesce).to_string(), "1"),
             ("ram-fit-terms", (if self.ram_fit_terms_old { "old" } else { "tasks" }).to_string(), "tasks"),
+            ("ram-ondemand", on(self.ram_ondemand).to_string(), "0"),
             ("uclamp-rule", self.uclamp_rule.as_str().to_string(), "work"),
             ("gpu-down", self.gpu_down.as_str().to_string(), "governor"),
             ("gpu-blob-entries", self.gpu_blob_entries.to_string(), "65532"),
@@ -2125,10 +2350,22 @@ impl Config {
             ("wifi-joined-scan", self.wifi_joined_scan.as_str().to_string(), "cache"),
             ("encoder-10bit", self.encoder_10bit.as_str().to_string(), "main10"),
             ("encoder-warmup", on(self.encoder_warmup).to_string(), "1"),
+            ("display-post", (if self.display_post_serial { "serial" } else { "apart" }).to_string(), "apart"),
+            ("decoder", self.decoder.as_str().to_string(), "auto"),
+            ("decoder-codecs", oneencoder::switches::codecs_text(self.decoder_codecs), "h264,hevc,vp9,av1"),
             ("oneios-wifi-rssi", arg("oneios-wifi-rssi", "1"), "1"),
             ("oneios-telemetry-jobs", arg("oneios-telemetry-jobs", "0"), "0"),
             ("oneios-pool-cut", arg("oneios-pool-cut", "1"), "1"),
             ("oneios-pressure-big", arg("oneios-pressure-big", "512"), "512"),
+            ("oneios-disable-allowed", arg("oneios-disable-allowed", "1"), "1"),
+            ("oneios-nested-exact", arg("oneios-nested-exact", "1"), "1"),
+            ("oneios-upgrade-flush", arg("oneios-upgrade-flush", "0"), "0"),
+            ("oneios-fill-fast-fault", arg("oneios-fill-fast-fault", "1"), "1"),
+            ("oneios-idle-spares", arg("oneios-idle-spares", "1"), "1"),
+            ("oneios-bo-cache-idle", arg("oneios-bo-cache-idle", "1"), "1"),
+            // The rt Metal add-on's (userland/metal/rt/RtSwitches.inc); the 624bab3 add-on reads neither.
+            ("oneios-dont-care", arg("oneios-dont-care", "1"), "1"),
+            ("oneios-queue-priority", arg("oneios-queue-priority", "1"), "1"),
         ];
         let changed: Vec<&str> = all.iter().filter(|(_, v, d)| v != d).map(|(k, _, _)| *k).collect();
         let words: Vec<String> = all.iter().map(|(k, v, _)| format!("{k}={v}")).collect();
