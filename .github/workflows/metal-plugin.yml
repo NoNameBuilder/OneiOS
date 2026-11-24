@@ -56,8 +56,12 @@ jobs:
           set -euo pipefail
           python3 -m venv "$RUNNER_TEMP/py"
           "$RUNNER_TEMP/py/bin/pip" install --quiet --upgrade pip
-          "$RUNNER_TEMP/py/bin/pip" install --quiet meson mako pyyaml
+          # packaging: Mesa's meson.build reads packaging.version when the interpreter is 3.12+
+          # (distutils is gone there), and a fresh venv has mako and yaml but not packaging, so
+          # configure stopped at "One of Python (3.x) packaging or distutils module is required."
+          "$RUNNER_TEMP/py/bin/pip" install --quiet meson mako pyyaml packaging
           echo "$RUNNER_TEMP/py/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/py/bin/python3" -c 'import packaging.version, mako, yaml, mesonbuild; print("python tools ok")'
       - name: Rust 1.98.0 with rust-src (the bridge builds std for the guest)
         run: |
           set -euo pipefail

@@ -6,7 +6,7 @@
 #          │                             phone and oneios-tool-VERSION-android-arm64 beside the package
 #          ├── apk        (ubuntu-24.04) app/ at the head of the fork's branch, JDK 21, tribalfs' packages,
 #          │                             ./gradlew test assembleFullDebug, the APK's assets checked
-#          ├── apk-macos  (macos-15)     ./gradlew test of the same checkout on a Mac (core:root's script tests)
+#          ├── apk-macos  (xcode-27)     ./gradlew test of the same checkout on a Mac (core:root's script tests)
 #          └──────────────── release     needs runtime and apk; a tag v* or a dispatch only
 #
 # Triggers: a pull request or a push to main builds both and releases nothing. A tag vN.N.N[-suffix] on main builds
@@ -317,10 +317,14 @@ jobs:
   # macOS. Homebrew's folders are taken off PATH for the tests, so core:root's harness uses its own stand-ins for
   # GNU stat, sha256sum, timeout and tac over macOS's own tools (the fork's docs/oneios.md): the case of a Mac without
   # coreutils. Not a release gate: the release needs runtime and apk only.
+  #
+  # xcode-27, not macos-15: both are arm64 macOS images with the Android SDK and JDK 21, but the 3-core macos-15 pool
+  # was starved ("The job was not acquired by Runner of type hosted even after multiple attempts") and GitHub
+  # cancelled the job after ~15 minutes, turning every push red while plan/runtime/apk had passed.
   apk-macos:
     needs: plan
     if: needs.plan.outputs.apk == 'true'
-    runs-on: macos-15
+    runs-on: xcode-27
     timeout-minutes: 60
     permissions:
       contents: read
