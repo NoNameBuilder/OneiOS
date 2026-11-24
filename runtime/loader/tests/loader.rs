@@ -322,6 +322,21 @@ fn machine_cameras_and_identity() {
 }
 
 #[test]
+fn machine_corner_radius() {
+    // The panel's corners in points, as /product display-corner-radius: two little-endian u32s, the radius and 1
+    // (the Galaxy S25: 102 px at the UI scale of 3 is 34). 0 writes nothing (the guest lays out for square corners).
+    let mut m = machine_default();
+    m.display_scale = 3;
+    m.corner_radius = 34;
+    let t = m.tree().unwrap();
+    let pr = t.find("product").unwrap();
+    assert_eq!(pr.get("display-corner-radius").unwrap().value, [34, 0, 0, 0, 1, 0, 0, 0]);
+    m.corner_radius = 0;
+    let t = m.tree().unwrap();
+    assert!(t.find("product").unwrap().get("display-corner-radius").is_none());
+}
+
+#[test]
 fn machine_identity_tree() {
     use DeviceKind::*;
     // identity from a donor tree: model, target-type, board first in compatible, /product filtered

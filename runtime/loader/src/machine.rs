@@ -194,6 +194,12 @@ pub struct Machine {
     pub display_height: u32,
     pub display_scale: u32,
     pub display_hz: u32,
+    /// The panel's rounded corners in points (0 = say nothing): /product display-corner-radius, two little-endian
+    /// u32s, the radius and 1 (24A446's V54 tree has 62 and 1 on the 62-point Pro Max). iOS insets the status bar and
+    /// masks the screen by it; without it the guest lays out for square corners and the phone's own corner cut clips
+    /// the picture (the Galaxy S25's is 34: its stock ROM's framework overlay says rounded_corner_radius_top and
+    /// _bottom = 34 dp, 102 px at the UI scale of 3).
+    pub corner_radius: u32,
     /// The cameras iOS is told about (CAMERA_*; 0 = none), used only with an "oneios,camera" device: /arm-io/isp
     /// camera-rear and camera-front (MobileGestalt's rear-facing-camera, front-facing-camera and still-camera, which
     /// SpringBoard shows Camera.app by), an empty /product/camera (video-camera), and /product unique-model
@@ -267,6 +273,7 @@ impl Default for Machine {
             display_height: 0,
             display_scale: 0,
             display_hz: 0,
+            corner_radius: 0,
             cameras: 0,
             unique_model: None,
             text_fixups: None,
@@ -724,6 +731,17 @@ impl Machine {
         // stays the identity's (2868 for iPhone18,2): it names a set of assets, and no set exists for another height.
         if self.display_scale != 0 {
             product.put_u32("artwork-scale-factor", self.display_scale);
+        }
+        // The panel's corners, in points: two little-endian u32s (the radius, then 1, as the V54 tree has 62 and 1 on
+        // the Pro Max). iOS insets the status bar and masks the screen by it; a phone whose corners are rounder than
+        // the guest believes shows its own cut through the picture ("the padding is too small on the corners", the
+        // owner, 2026-11-24). An identity tree's own value stays unless corner-radius= was given (xnuhost's
+        // config.corner_radius, the host phone's row).
+        if self.corner_radius != 0 {
+            let mut v = [0u8; 8];
+            v[..4].copy_from_slice(&self.corner_radius.to_le_bytes());
+            v[4..].copy_from_slice(&1u32.to_le_bytes());
+            product.put("display-corner-radius", v);
         }
         product.put_str("model", "oneios,xnuhost");
         // The cameras (with the camera device only, so a host without one keeps the tree it had). 24A446's

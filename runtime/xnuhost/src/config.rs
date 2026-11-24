@@ -443,6 +443,7 @@ const GIVEN_KEYS: &[&str] = &[
     "panel-fallback",
     "scale",
     "scale-fixup",
+    "corner-radius",
     "display-direct",
     "touch-exclusive",
     "session-mode",
@@ -595,6 +596,10 @@ pub struct Config {
     pub scale: u32,
     /// the QuartzCore text fixups a scale of 3 needs (scale_fixups): on by default
     pub scale_fixup: bool,
+    /// corner-radius=N: the panel's rounded corners in points, written to /product display-corner-radius (0 = say
+    /// nothing, the guest lays out for square corners). The host phone's own: 34 on the Galaxy S25 (its dumpsys
+    /// reports 102 px at the UI scale of 3), set by its row in runtime/bridges/hw/host_device.rs.
+    pub corner_radius: u32,
     pub text_fixups: TextFixups,
     /// read /dev/input
     pub input: bool,
@@ -863,6 +868,7 @@ impl Config {
             panel_fallback: None,
             scale: 3,
             scale_fixup: true,
+            corner_radius: 0,
             text_fixups: TextFixups::default(),
             input: true,
             display_direct: true,
@@ -1032,6 +1038,12 @@ impl Config {
                 self.scale = scale;
             }
             "scale-fixup" => self.scale_fixup = flag(value)?,
+            // the panel's corner radius in points: 0 = say nothing (up to 200: no phone is rounder)
+            "corner-radius" => {
+                let radius = parse::atoi(value) as u32;
+                fmt_ok(radius <= 200)?;
+                self.corner_radius = radius;
+            }
             "text-fixup" => {
                 // FILE,OFFSET,ORIGINAL,REPLACEMENT in hex, as UniXNU's [payload] text_fixups (the kernel checks them again)
                 let commas = value.bytes().filter(|&b| b == b',').count();
@@ -1758,7 +1770,7 @@ sched_preemption_disable_debug_mode=0 wdt=-1 native-source-storage=1 vgpu-3d=1 d
 
 /// The keys a host table entry may give as device defaults.
 fn device_key(key: &str) -> bool {
-    matches!(key, "gpu" | "panel-fallback" | "boot-args-add") || key.starts_with("hw-backend")
+    matches!(key, "gpu" | "panel-fallback" | "corner-radius" | "boot-args-add") || key.starts_with("hw-backend")
 }
 
 /// `<dir>/<name>` when it is a regular file.

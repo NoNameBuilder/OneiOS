@@ -143,6 +143,13 @@ static TABLE: [HostDevice; 5] = [
         platforms: &["sun"],
         config: &[
             "panel-fallback=1080x2340@120",
+            // The panel's rounded corners: 34 dp in the stock ROM's own framework overlay
+            // (product_a/overlay/framework-res__pa1qxxx__auto_generated_rro_product.apk: rounded_corner_radius_top
+            // and _bottom, 0x7f03000d/0x7f03000c), which is 102 px at the UI scale of 3 (the phone's dumpsys agrees:
+            // RoundedCorner{position=TopLeft, radius=102} on its 1080x2340 panel). Without it iOS laid out for square
+            // corners and the panel's cut clipped the status bar's ends and the corners' content (the owner,
+            // 2026-11-24).
+            "corner-radius=34",
             // The side keys and the power key reached the guest's HID device and iOS did nothing with them: backboardd
             // had the buttons for an external keyboard (docs/hardware.md 5, the PC boot of 2026-11-14), and the
             // documented answers are these two switches (Boot B and Boot E there). Only this phone's row: the S24

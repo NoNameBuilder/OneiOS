@@ -44,8 +44,8 @@ fn host_device() {
     std::fs::create_dir_all(&empty).unwrap();
 
     // The table: the home device first; names unique; every entry matches by a model; its xnuhost settings are only the
-    // keys the config merges as device defaults (gpu, panel-fallback, hw-backend*), its environment ones only
-    // variables a bridge reads. The S24 Ultra's entry holds nothing: its behaviour is today's.
+    // keys the config merges as device defaults (gpu, panel-fallback, corner-radius, hw-backend*), its environment ones
+    // only variables a bridge reads. The S24 Ultra's entry holds nothing: its behaviour is today's.
     let t = host_table();
     assert!(t.len() == 5 && t[0].name == "galaxy-s24-ultra");
     for (i, e) in t.iter().enumerate() {
@@ -56,6 +56,7 @@ fn host_device() {
             assert!(
                 c.starts_with("gpu=")
                     || c.starts_with("panel-fallback=")
+                    || c.starts_with("corner-radius=")
                     || c.starts_with("boot-args-add=")
                     || c.starts_with("hw-backend"),
                 "{c}"

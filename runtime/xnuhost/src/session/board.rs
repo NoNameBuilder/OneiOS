@@ -528,6 +528,7 @@ impl Session {
         machine.display_height = fb_height;
         machine.display_scale = config.scale;
         machine.display_hz = self.fb.2;
+        machine.corner_radius = config.corner_radius;
         // Signed text the kernel changes at page-in (/chosen text-fixups): the configured ones, and what the UI scale
         // needs.
         if config.scale_fixup {

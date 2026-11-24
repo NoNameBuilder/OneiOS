@@ -999,6 +999,12 @@ fn display_mode() {
     ];
     let c = run(&mode1).unwrap();
     assert!(c.scale == 2 && c.hz == 60 && !c.scale_fixup);
+    // corner-radius= (the panel's corners in points, /product display-corner-radius): 0 says nothing, 34 is the S25's
+    assert_eq!(c.corner_radius, 0);
+    let mut r = c.clone();
+    assert!(r.set("corner-radius", "34").is_ok() && r.corner_radius == 34);
+    assert!(r.set("corner-radius", "0").is_ok() && r.corner_radius == 0);
+    assert!(r.set("corner-radius", "201").is_err() && r.set("corner-radius", "-1").is_err());
     assert_eq!(c.display_mode(Some(&pm(1440, 3120, 120))), pm(1320, 2868, 60));
     // the connector of the panel: not the Virtual (writeback, 5120x2560) ones of the S24 Ultra, not DisplayPort
     assert!(
@@ -1162,7 +1168,7 @@ fn host_device() {
     let c = rig.finish(Some(&props), None, None).unwrap();
     assert!(c.host == find("galaxy-s25") && c.panel_fallback == Some(PanelMode { width: 1080, height: 2340, hz: 120 }));
     assert!(c.host_line.contains(
-        "; defaults: panel-fallback=1080x2340@120, boot-args-add=oneios-hid-buttons-builtin=1 \
+        "; defaults: panel-fallback=1080x2340@120, corner-radius=34, boot-args-add=oneios-hid-buttons-builtin=1 \
          oneios-button-haptics=1, ONEIOS_THERMAL_SOC_TRIPS=1, ONEIOS_THERMAL_SOC_SAMPLES=3"
     ));
     assert!(
