@@ -1105,8 +1105,8 @@ second time).
 ## 8. Releases
 
 A tag `vN.N.N` on `main` (or a dispatch with a version) runs `.github/workflows/release.yml`, which builds the
-runtime package with the pinned NDK and the fork's APK (submodule `app/`, the head of `oneios`) on two runners at
-once, and attaches both with their `.sha256` to the release. No kernel, no image, no package set. See
+S24 Ultra Metal and camera plug-ins with Xcode 27.2, then packages them into the runtime alongside the pinned kernel;
+the fork's APK (submodule `app/`, the head of `oneios`) builds in parallel. No image or package set is released. See
 [releases.md](releases.md).
 `scripts/release/release.sh VERSION [--build-only]` (run under `scripts/bg.sh`) builds the same files on the build
 machine, runs CI's checks and the host tests in parallel, and publishes the release without waiting for the

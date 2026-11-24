@@ -85,14 +85,15 @@ NDK's `ANativeWindow` on that `Surface`, from the mapped memfd straight into the
   1440x3120: 1436x3120 at x = 2). Both layers are at the top of the built-in display's stack.
 - **The panel.** The modes come from surfaceflinger (`DisplayControl`, the way scrcpy reads them): the active
   one, and the native one, which is the largest the panel has at its highest refresh rate. With `--takeover` (a
-  session: system_server is gone) a panel that One UI left in a lower mode (FHD+ 1080x2340 is One UI's default
-  resolution setting) is put in the native mode: the display's desired mode specs are read, their default mode
-  replaced and their refresh ranges opened to that mode's rate, and written back
+  session: system_server is gone) the helper requests the native mode and opens its refresh ranges on every takeover,
+  including when One UI left the phone at native resolution but capped app refresh at 60 Hz. The display's desired
+  mode specs are read, their default mode replaced and their refresh ranges opened to that mode's rate, and written back
   (`SurfaceControl.setDesiredDisplayModeSpecs`); the helper waits up to a second for the mode to become active.
   Then the display's projection is set to the active mode, unrotated, so the layer space is the panel's own
-  pixels whatever rotation One UI left. If the mode is refused the panel stays as it was and the frame is
-  scaled. The return restarts surfaceflinger, which forgets both. Without `--takeover` nothing of the display is
-  changed and the logical size comes from the display manager. The layer votes for the mode's highest refresh
+  pixels whatever rotation One UI left. The helper checks the active mode id as well as its size, so it waits for the
+  requested mode when either differs. If the mode is refused the panel stays as it was and the frame is
+  scaled only when its size differs. The return restarts surfaceflinger, which forgets both. Without `--takeover` nothing
+  of the display is changed and the logical size comes from the display manager. The layer votes for the mode's highest refresh
   rate (`setFrameRate`, 120 Hz on this panel), which is the rate the guest's vsync tick runs at.
   Whether One UI's resolution setting is a panel mode or only a logical size on this phone is not known; the
   helper's `panel modes: active ..., native ...` line of the first run says.

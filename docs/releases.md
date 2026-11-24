@@ -200,24 +200,28 @@ One workflow, `.github/workflows/release.yml` ("build and release"; `ci.yml` and
 before 2026-11-15 were merged into it). Its jobs:
 
 ```
-plan ──┬── runtime    ubuntu-24.04   the runtime package and its checks
+plan ──┬── metal      xcode-27       the iPhone18,2 plug-ins, built with Xcode 27.2 from pinned sources
        ├── apk        ubuntu-24.04   the OneOS app (submodule app/) and its checks
        ├── apk-macos  macos-15       ./gradlew test of the same app on a Mac
+       ├── runtime    ubuntu-24.04   needs metal; the runtime package and its checks
        └───────────── release        needs runtime and apk; a tag or a dispatch only
 ```
 
-`runtime`, `apk` and `apk-macos` start together after `plan` and run on their own runners.
+`metal`, `apk` and `apk-macos` start together after `plan`; `runtime` starts after the Metal artifact is verified.
 
 | Trigger | Builds | Releases |
 |---|---|---|
-| a pull request, a push to `main` | runtime, apk, apk-macos | nothing (the runtime package and the APK are artifacts for 14 days) |
-| a tag `vN.N.N` or `vN.N.N-suffix` on `main` | all three | the runtime and the APK on the release of the tag |
-| a dispatch on `main` (Actions, "build and release", Run workflow; inputs `version` and `both` / `runtime only` / `apk only`) | what was asked (apk-macos with the APK) | the release `v<version>`, its tag made at the dispatched commit when missing |
+| a pull request, a push to `main` | metal, runtime, apk, apk-macos | nothing (the Metal artifact, runtime package and APK are artifacts for 14 days) |
+| a tag `vN.N.N` or `vN.N.N-suffix` on `main` | all four jobs | the runtime and the APK on the release of the tag |
+| a dispatch on `main` (Actions, "build and release", Run workflow; inputs `version` and `both` / `runtime only` / `apk only`) | what was asked (Metal with runtime; apk-macos with APK) | the release `v<version>`, its tag made at the dispatched commit when missing |
 
 - **plan**: whether the run releases, the version (`0.0.0-ci` when not), what it builds. A release's version must be
   `N.N.N[-suffix]` and its commit on `main`. A tag whose release exists already (published from a build machine by
   `scripts/release/release.sh`, "Releasing from a build machine" below) does not release again: its run builds and
   tests only.
+- **metal**: Xcode 27.2 on the `xcode-27` runner, with pinned Rust, Python, Mesa and Metal source references. Builds
+  `NativeAdrenoMetal.bundle` and `H9ISP.mediacapture` for iPhone18,2 / 24A446, verifies the target, and uploads a
+  checksum-protected archive with source license texts. The runtime job needs this artifact.
 - **runtime**: what `ci.yml` and the old `release.yml` did, on every build. `app/` must be an empty submodule
   folder (this job never checks the fork out); no firmware and no Python in git (`check-tracked-files.sh`: a
   tracked `*.py`, or an executable with a python shebang, fails it since 2026-11-21); `bash -n`, `shellcheck -S error`; NDK 28.2.13676358, Rust and
@@ -231,8 +235,10 @@ plan ──┬── runtime    ubuntu-24.04   the runtime package and its check
   --self-test`; every executable `*/tests/host.sh` of another area, among them `runtime/tests/host.sh`: the Rust
   workspace's `cargo test`, `cargo fmt --check`, `cargo clippy -D warnings` and `runtime/xnuhost/check-arm64.sh smoke
   check`); the pinned kernel when
-  `kernel/release-kernel.txt` names one; `runtime/package.sh <version>` (the Apple-file refusal and the elf-check of
-  the stage, and `bin/oneios-tool` built for the phone); the drm2kgsl check and `runtime/package/elf-check.sh` on
+  `kernel/release-kernel.txt` names one (fetched from `akshaynexus/OneiOS`, where `kernel/publish.sh` publishes it);
+  `runtime/package.sh <version>` with `REQUIRE_METAL=1` and the Metal/camera artifact (the Apple-file refusal, plug-in
+  manifest and elf-check of the stage, plus `bin/oneios-tool` built for the phone); the drm2kgsl check and
+  `runtime/package/elf-check.sh` on
   the unpacked archive; the members check (above); `.github/scripts/check-phone-tool.sh <version>` ("oneios-tool for
   the phone", below). Artifact `oneios-runtime`: the `.tar.zst`, its `.sha256`, `.runtime.json`, and
   `oneios-tool-<version>-android-arm64` with its `.sha256`. Its limit is 45 min (the tool's Android build comes on
