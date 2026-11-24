@@ -74,11 +74,13 @@ Primary target: the rooted Galaxy S24 Ultra. S25, S25 Ultra, S26 Ultra and Galax
 |---|---|---|---|
 | ![Galaxy S24 Ultra](docs/images/s24-ultra.jpg) | Galaxy S24 Ultra (SM-S928, SM8650) — **this repo** | Boots to Home Screen, returns to One UI | Daily driver target |
 | ![Galaxy S25 Ultra](docs/images/s25-ultra.jpg) | Galaxy S25 Ultra (SM-S938, SM8750) — [YumikoHayamato/OneiOS](https://github.com/YumikoHayamato/OneiOS) (branch `s25-ultra-sm8750`), denis fork, [s25ver snapshot](https://github.com/xaxaapple/s25ver) | SpringBoard, touch and the key return on device (fork sessions 1-7); ported: Oryon topology, Adreno 830 fences, the thermal trips rule, udmabuf ENOMEM fallback | Big-only-SoC bug fixed for all |
-| | Galaxy S25 (SM-S931B, SM8750) — [NoNameBuilder/OneiOS](https://github.com/NoNameBuilder/OneiOS) | Source-level port, no on-device run; ported: host profile, stand-in tests, firmware facts | `panel-fallback=1080x2340@120` by detection |
+| ![Galaxy S25](docs/media/s25/home-2026-11-24.jpg) | Galaxy S25 (SM-S931B, SM8750) — [NoNameBuilder/OneiOS](https://github.com/NoNameBuilder/OneiOS) | Boots to Home Screen on the phone (2026-11-23/24, runtime 0.1.27): touch, display, audio and Wi-Fi; YouTube plays in Safari, choppy, with sound; returns to One UI | The artwork/layout set now follows the panel (2340); `panel-fallback=1080x2340@120` by detection |
 | ![Galaxy S26 Ultra](docs/images/s26-ultra.jpg) | Galaxy S26 Ultra (SM-S988, SM8850) — [YMGPwcca/OneiOS](https://github.com/YMGPwcca/OneiOS) | ~600 s iOS run on device | Haptics + backend tests ported |
 | ![Galaxy A56](docs/images/a56.jpg) | Galaxy A56 (SM-A566E, Exynos 1580) — [Musicalista/OneiOS-A56](https://github.com/Musicalista/OneiOS-A56) | iOS 16.5 to lock screen on device; touch works in the fork since 2026-11-21 (its kernel patch 0079, not here yet) | GPU template, bootstrap, triage tools; since 2026-11-23 our own iOS 16.5 image and the OneOS app's A56 path ([docs/a56.md](docs/a56.md); not run on an A56) |
 
 Device photos: official Samsung product images ([samsung.com](https://www.samsung.com/us/smartphones/galaxy-s25-ultra/), Samsung Newsroom press kits), © Samsung Electronics — used for device identification. A56 photo: [Captainmorlypogi1959 via Wikimedia Commons](https://commons.wikimedia.org/wiki/File:Samsung_Galaxy_A56_5G_2025_(cropped).jpg) (CC BY-SA 4.0).
+
+The S25 row's photo is the phone itself, 2026-11-24, with [the same screen on google.com](docs/media/s25/google-2026-11-24.jpg) and [10 s of YouTube in Safari](docs/media/s25/youtube-2026-11-24.mp4) (sound, choppy).
 
 ## Layout
 
