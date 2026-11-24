@@ -2477,6 +2477,18 @@ yet: the audio test cycle adds it (below).
     system_server runs (audioserver's endpoint thread registers itself through `scheduling_policy` and would wait
     for it forever in a session), else a mixer track (MMAP refused, LOW_LATENCY: what the rest of this bullet
     describes). `ONEIOS_AUDIO_MMAP=exclusive|shared|off`, `ONEIOS_AUDIO_PERF=none` (the path before 2026-11-15).
+  - **A stream whose server takes no frames is reopened as a mixer track (2026-11-24).** On the S25's HAL an MMAP
+    exclusive stream sometimes never leaves STARTING: no timestamp, and every blocking write times out with 0 while
+    the DSP reads nothing (the boot's probe saw `no timestamp … in 1.5 s` in sessions 3, 4 and 5; session 5's 1 s
+    sound played 240 of 48240 frames, and the next stream played 0 of 10.1 M while the guest's engine ran 6 s late
+    and audiomxd spun). Two places notice and reopen on the third path above, once for the helper's run
+    (`mmap_dead`, so no later open asks for MMAP): the probe, after its 1.5 s with no read (before the guest's boot,
+    so iOS's first sound already finds the mixer track; the boot costs one more 1.5 s), and the writer, when three
+    writes in a row take nothing (600 ms: the stream never started, so AAudio holds nothing and the read alone cannot
+    tell) or when AAudio holds frames the server has not read for 1 s (it stopped; the receive loop closes the stream
+    and opens the mixer track while the guest's stream stays up: a gap of the ring's fill). A mixer track's silence
+    does not fill it to AudioFlinger's start threshold, so the probe's measurement on that path is 0 ("a mixer track
+    starts on the guest's first period"): the kernel then publishes no host latency, as before.
   - **Performance mode before 2026-11-15: NONE by default; LOW_LATENCY opt-in since 2026-11-13** (`ONEIOS_AUDIO_PERF=low`, not run on the phone), asked only when the MMAP
     refusal worked (AAudio tries MMAP only for LOW_LATENCY; a stream that says `AAudioStream_isMMapUsed` anyway is
     closed and opened again with NONE). What it gives a blocking writer, read in AOSP `main` (2026-11-13; not read
@@ -2798,7 +2810,10 @@ its start and a mixer track opened, with it kept; AAudio_setMMapPolicy refused: 
 `ONEIOS_AUDIO_PERF=none` and `ONEIOS_AUDIO_MMAP=off`; a guest 40 ms late every 0.5 s on MMAP: 3 underruns, the
 target up to 10-25 ms and back down as far as the guest's lateness allows. `origin/main`'s helper and test under the same load failed 5
 checks (overflows, the stall's silence cut, the markers): this test now skips those, as the other timing checks,
-when the host ran it late. `test_bridges.c` (now `devices/test_devices.rs`): the probe of a non-helper back end is `-ENOTSUP`. The kernel's edit
+when the host ran it late. Also (2026-11-24) an MMAP exclusive fake that never takes a frame: the probe's second
+attempt opens the mixer track (`out_opens +2`, `!mmap`, `POLICY_NEVER`), the guest's sound plays on it, and a stream
+whose DSP stops in the middle of a run is replaced by one the same way within about 2 s; a stream dead from its
+first write (no probe) is replaced within a second (the 600 ms of timeouts) and the periods already queued play. `test_bridges.c` (now `devices/test_devices.rs`): the probe of a non-helper back end is `-ENOTSUP`. The kernel's edit
 list against the pinned `DroidVMAudio.cpp` and the goldens: `cargo test -p oneios-kernel`; the hosted kernel build
 (`HOSTED_OUT=audiolat`, 1229 s; `compare-golden.sh`: the audio files the same) and its prelink (`kernel.kc`
 `ee72d94886023f31`, audit 0 failures). A PC boot of it was not run: the box's qemu queue had five boots of up to 100
