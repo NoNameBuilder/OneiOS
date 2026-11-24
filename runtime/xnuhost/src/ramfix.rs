@@ -931,7 +931,12 @@ mod tests {
                 libc::close(ready[0]);
             }
             let s2 = shmem_now();
-            back = held && s1 + 32 * M >= s0 + big && s2 + 32 * M <= s1 && s2 <= s0 + 32 * M;
+            // The child's 256 MiB appeared (s1 over s0) and went back (s2 under s1); and what the host holds after it is
+            // no more than it held before, within 128 MiB: on a machine running the other tests of this binary at the
+            // same time (the GPU's 30x72 MiB blobs and the display's), and other work beside them, Shmem drifts by
+            // 50-100 MiB between the samples (2026-11-24: 89, 83 and 76 MiB in three tries). The child's pages are
+            // what this test is about, so the fall is measured from the peak, not from a 32 MiB baseline.
+            back = held && s1 + 32 * M >= s0 + big && s2 + big <= s1 + 32 * M && s2 <= s0 + 128 * M;
             if back {
                 break;
             }
