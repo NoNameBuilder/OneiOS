@@ -1906,10 +1906,17 @@ sched_preemption_disable_debug_mode=0 wdt=-1 native-source-storage=1 vgpu-3d=1 d
 fn device_key(key: &str) -> bool {
     matches!(
         key,
-        "gpu" | "panel-fallback" | "corner-radius" | "artwork-subtype" | "boot-args-add" | "hz" | "width" | "height" | "scale"
+        "gpu"
+            | "panel-fallback"
+            | "corner-radius"
+            | "artwork-subtype"
+            | "boot-args-add"
+            | "hz"
+            | "width"
+            | "height"
+            | "scale"
             | "return-graceful-ms"
-    )
-        || key.starts_with("hw-backend")
+    ) || key.starts_with("hw-backend")
 }
 
 /// `<dir>/<name>` when it is a regular file.
