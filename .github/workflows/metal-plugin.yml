@@ -20,7 +20,10 @@ permissions:
   contents: read
 jobs:
   build:
-    runs-on: macos-15
+    # xcode-27 is the image that carries the toolchain and SDK this plug-in is built for (iOS 27, arm64e); the
+    # generic macos-15 label only has Xcode 26 and its queue was starved ("The job was not acquired by Runner of
+    # type hosted even after multiple attempts"), so two runs in a row built nothing at all.
+    runs-on: xcode-27
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
