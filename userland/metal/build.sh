@@ -138,7 +138,9 @@ stage() {
   echo 'int x;' | "$IOS_DIR/ios-clang" -Werror -Wno-error=unused-but-set-global -x c -c - -o /dev/null 2>/dev/null && knows=1
   local rt=()
   [ "$RUNTIME" = rt ] && rt=(--rt)
-  "$ONEIOS_TOOL" ios metal-stage-edit "$R" "$HOOKS" "$JOBS" "$knows" "${rt[@]}"
+  # ${rt[@]+...}: macOS's bash 3.2 reports an empty array as unbound under set -u, and the default runtime
+  # has no flag to give.
+  "$ONEIOS_TOOL" ios metal-stage-edit "$R" "$HOOKS" "$JOBS" "$knows" ${rt[@]+"${rt[@]}"}
   # drivers/brightness/BacklightMode.inc (owner: brightness): backboardd's CoreBrightness gets BLControl, not the
   # VMBLControl that vmm-present selects, and no frame-synchronous brightness (no handler for it here), so the slider
   # reaches the backlight service as brightness-nits. The plug-in is the OneiOS code
