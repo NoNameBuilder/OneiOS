@@ -28,7 +28,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Restore executable bits (an upload drops them)
-        run: git ls-files -z | xargs -0 grep -lZI '^#!' 2>/dev/null | xargs -0 -r chmod +x
+        # git grep -z: macOS's grep has no -Z, so the old ls-files|xargs grep pipeline handed chmod one
+        # newline-joined name and the step failed on every runner.
+        run: git grep -zIl -e '^#!' | xargs -0 -r chmod +x
       - name: Xcode with the iPhoneOS SDK
         run: |
           set -euo pipefail
