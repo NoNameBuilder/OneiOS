@@ -78,17 +78,23 @@ Board facts the base DT does not carry, from the port record (docs/forks.md and 
 `PA1_S6E3FAE_AMB616FL03` (Samsung S6E3FAE, 1080x2340, seven modes 120/80/60/48/30/24/10 Hz, DSI **command mode with
 DSC**), touch `stm,stm_ts_spi` (`samsung,ss_touch`), haptics `cirrus,cs40l26a`.
 
-**Gap:** the board overlay with those nodes is in the phone's `dtbo` partition, which is not in the dump, so the panel
-timings, touch SPI lines/rails and regulator names are not measured here yet. Pulling `dtbo` read-only is the first
-task below; until then the board uses the port record's names and the panel driver's own table.
+**The board overlay is measured, not guessed.** The `dtbo` partition is not in the dump, but it is not needed: the Sun
+*graphics* DTB in `partitions/vm-bootsys_a` carries the panel, touch and rail nodes for this board, and that partition
+*is* in the dump. `baremetal/board/pa1q-overlay.dts` holds them, extracted verbatim, and
+`baremetal/board/check.sh --firmware` re-reads the partition and proves they still match. Measured: panel
+`PA1_S6E3FAE_AMB616FL03` (Samsung S6E3FAE, AMB616FL03), 1080x2340 (`0x438` x `0x924`), seven mode nodes
+120/80/60/48/30/24/10 Hz, DSI **command mode with DSC** (2 encoders, 540-pixel x 60-row slices, `rgb_swap_rgb`, 30
+bpp), reset `&tlmm 98 0`; touch `stm_spi` on QUPv3 SE4 `spi@a90000` with CS gpio 51, irq gpio 162, reset gpio 161,
+4096x4096; rails vddio 1.8 V, vdd 1.0-1.1 V, vci 3.0 V, tvdd 1.8 V. So the board file no longer waits on a live
+`/proc/device-tree` pull.
 
 ## 5. Milestones
 
 | Milestone | Where | Done when |
 |---|---|---|
 | **M0** — board and payload on the host | PC only | a `pa1q` board on the SM8750 layer builds a kernel and a payload; every measured input is in the board file; the Apple DT it emits has the panel, GIC, timer, UFS and memory window, and a host check reads it back |
-| **M1** — the load and the panel | phone, one boot | `-v` output on the panel (or the UART), no panic, ten minutes stable. This is "screen on the first step" |
-| **M2** — touch and keys | phone | taps land on the probe screen; volume/power keys report |
+| **M1** — first boot: display and touch | phone, one boot | `-v` output on the panel **and** taps land on the probe screen, no panic, ten minutes stable. The owner's bar for a first boot is both, not one ("the bare minimum for first boot is touch and display working") |
+| **M2** — keys and brightness | phone | volume/power keys report, brightness follows the panel |
 | **M3** — UFS root and Data | phone | SpringBoard's home screen on a real root. From here this track can replace the hosted session |
 | **M4** — GPU | phone | Adreno 830 through `AdrenoPM4` + `ArmSmmu4K` + `NativeAdreno` + metal2vulkan; 120 Hz, no frame over budget |
 | **M5** — the rest | phone | audio (WCD9385/WSA8835), Bluetooth and Wi-Fi (WCN7850), camera, cellular last |
@@ -128,9 +134,9 @@ Each milestone is its own boot, and each boot ends in a power cycle, not a flash
    the caches on calls the stub, the stub drops both and branches into a payload that checks the ABI,
    the window and the breadcrumb under QEMU. The register and `boot_args` contract it pins down is the
    one the injector and the real payload both use.
-1. Pull the phone's merged DT (`/proc/device-tree`, read-only) and read the panel, touch and regulator
-   nodes into the board file. It is the base tree with the `dtbo` overlay applied, so the partition the
-   dump lacks is not needed.
+1. The board overlay is in `baremetal/board/` (`pa1q-overlay.dts`), with `check.sh` to compile it and
+   re-derive its panel facts from the dump's `partitions/vm-bootsys_a`. It already has the panel,
+   touch and rails; what the base tree adds is the SoC. No live phone pull is needed.
 2. Fetch and pin the SM8750 layer and the Pagani board as the base (`external/UniXNU`, schema 2), and write the
    `pa1q` board over it: SoC `sm8750`, 1080x2340 panel, `stm,stm_ts_spi`, UFS LUNs, the memory window.
 3. Build the kernel and payload on the host; check the emitted DT and the ADT against the numbers above.
