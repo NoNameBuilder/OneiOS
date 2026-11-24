@@ -200,6 +200,13 @@ pub struct Machine {
     /// the picture (the Galaxy S25's is 34: its stock ROM's framework overlay says rounded_corner_radius_top and
     /// _bottom = 34 dp, 102 px at the UI scale of 3).
     pub corner_radius: u32,
+    /// /product artwork-device-subtype (0 = from the panel): 2340 for a 1080x2340 panel (at @3x that is the iPhone
+    /// 12/13 mini's 360x780-point grid, and 2340 is the subtype docs/userland.md names for that set), else 2868 (the
+    /// iPhone18,2's Pro Max set). It names both the artwork and the layout metrics that CoreUI, SpringBoard and UIKit
+    /// look up by it: the Pro Max's on a 360x780 canvas lay out for a screen 80 points wider and 176 taller than this
+    /// one, the owner's "iPad with humongous spacing" (2026-11-24). The 2340 set is untested on the phone. The assets
+    /// of a set the image lacks fall back to the closest variant (scaled), never to nothing.
+    pub artwork_subtype: u32,
     /// The cameras iOS is told about (CAMERA_*; 0 = none), used only with an "oneios,camera" device: /arm-io/isp
     /// camera-rear and camera-front (MobileGestalt's rear-facing-camera, front-facing-camera and still-camera, which
     /// SpringBoard shows Camera.app by), an empty /product/camera (video-camera), and /product unique-model
@@ -274,6 +281,7 @@ impl Default for Machine {
             display_scale: 0,
             display_hz: 0,
             corner_radius: 0,
+            artwork_subtype: 0,
             cameras: 0,
             unique_model: None,
             text_fixups: None,
@@ -717,7 +725,17 @@ impl Machine {
             // the display's (sRGB unless display_gamut says so: the helper tags the frames sRGB), and the GPU
             // fallbacks lose APPLE2 and MTL2,2 as with an identity (set_featuresets).
             product.put_str("artwork-device-idiom", "phone");
-            product.put_u32("artwork-device-subtype", 2868);
+            // The subtype names the artwork and the layout metrics: the panel's own (2340 for a 1080x2340 panel, the
+            // iPhone 12/13 mini's grid) unless the host says otherwise; 2868 (the iPhone18,2's Pro Max) for every
+            // other panel, as before.
+            let subtype = if self.artwork_subtype != 0 {
+                self.artwork_subtype
+            } else if (self.display_width, self.display_height) == (1080, 2340) {
+                2340
+            } else {
+                2868
+            };
+            product.put_u32("artwork-device-subtype", subtype);
             product.put_str("artwork-display-gamut", self.display_gamut.as_deref().unwrap_or("sRGB"));
             product.put_str("artwork-dynamic-displaymode", "0");
             product.put_str("graphics-featureset-class", "APPLE10");
@@ -727,8 +745,9 @@ impl Machine {
                 b"APPLE9:APPLE8:APPLE7:APPLE6:APPLE5:APPLE4:APPLE3:APPLE3v1:APPLE2:APPLE1:GLES2,0\0",
             );
         }
-        // The artwork scale follows the UI scale (the identity tree's is the iPhone panel's 3). The artwork subtype
-        // stays the identity's (2868 for iPhone18,2): it names a set of assets, and no set exists for another height.
+        // The artwork scale follows the UI scale (the identity tree's is the iPhone panel's 3). The artwork subtype is
+        // the identity's own, or (no identity) the panel's: 2340 on a 1080x2340 panel (the iPhone 12/13 mini's grid),
+        // else 2868 (the iPhone18,2's). docs/userland.md, "The artwork answers".
         if self.display_scale != 0 {
             product.put_u32("artwork-scale-factor", self.display_scale);
         }

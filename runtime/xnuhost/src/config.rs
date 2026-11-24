@@ -444,6 +444,7 @@ const GIVEN_KEYS: &[&str] = &[
     "scale",
     "scale-fixup",
     "corner-radius",
+    "artwork-subtype",
     "display-direct",
     "touch-exclusive",
     "session-mode",
@@ -600,6 +601,11 @@ pub struct Config {
     /// nothing, the guest lays out for square corners). The host phone's own: 34 on the Galaxy S25 (its dumpsys
     /// reports 102 px at the UI scale of 3), set by its row in runtime/bridges/hw/host_device.rs.
     pub corner_radius: u32,
+    /// artwork-subtype=N: /product artwork-device-subtype, the artwork and layout-metric set CoreUI, SpringBoard and
+    /// UIKit look up by it (0 = from the panel: 2340 on a 1080x2340 panel, the iPhone 12/13 mini's grid; else 2868,
+    /// the iPhone18,2's Pro Max). The Pro Max's metrics on the S25's 360x780 canvas are the "iPad with humongous
+    /// spacing" the owner saw; 2868 here is the A/B switch back. docs/userland.md, "The artwork answers".
+    pub artwork_subtype: u32,
     pub text_fixups: TextFixups,
     /// read /dev/input
     pub input: bool,
@@ -869,6 +875,7 @@ impl Config {
             scale: 3,
             scale_fixup: true,
             corner_radius: 0,
+            artwork_subtype: 0,
             text_fixups: TextFixups::default(),
             input: true,
             display_direct: true,
@@ -1043,6 +1050,12 @@ impl Config {
                 let radius = parse::atoi(value) as u32;
                 fmt_ok(radius <= 200)?;
                 self.corner_radius = radius;
+            }
+            // the artwork/layout set: 0 = from the panel (2340 on a 1080x2340 panel, else 2868); up to 10000
+            "artwork-subtype" => {
+                let subtype = parse::atoi(value) as u32;
+                fmt_ok(subtype <= 10000)?;
+                self.artwork_subtype = subtype;
             }
             "text-fixup" => {
                 // FILE,OFFSET,ORIGINAL,REPLACEMENT in hex, as UniXNU's [payload] text_fixups (the kernel checks them again)
@@ -1770,7 +1783,7 @@ sched_preemption_disable_debug_mode=0 wdt=-1 native-source-storage=1 vgpu-3d=1 d
 
 /// The keys a host table entry may give as device defaults.
 fn device_key(key: &str) -> bool {
-    matches!(key, "gpu" | "panel-fallback" | "corner-radius" | "boot-args-add") || key.starts_with("hw-backend")
+    matches!(key, "gpu" | "panel-fallback" | "corner-radius" | "artwork-subtype" | "boot-args-add") || key.starts_with("hw-backend")
 }
 
 /// `<dir>/<name>` when it is a regular file.

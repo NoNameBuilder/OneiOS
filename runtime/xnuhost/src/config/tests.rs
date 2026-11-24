@@ -1005,6 +1005,13 @@ fn display_mode() {
     assert!(r.set("corner-radius", "34").is_ok() && r.corner_radius == 34);
     assert!(r.set("corner-radius", "0").is_ok() && r.corner_radius == 0);
     assert!(r.set("corner-radius", "201").is_err() && r.set("corner-radius", "-1").is_err());
+    // artwork-subtype= (the artwork/layout set, /product artwork-device-subtype): 0 = from the panel, 2868 the A/B
+    assert_eq!(c.artwork_subtype, 0);
+    let mut r = c.clone();
+    assert!(r.set("artwork-subtype", "2340").is_ok() && r.artwork_subtype == 2340);
+    assert!(r.set("artwork-subtype", "2868").is_ok() && r.artwork_subtype == 2868);
+    assert!(r.set("artwork-subtype", "0").is_ok() && r.artwork_subtype == 0);
+    assert!(r.set("artwork-subtype", "10001").is_err() && r.set("artwork-subtype", "-1").is_err());
     assert_eq!(c.display_mode(Some(&pm(1440, 3120, 120))), pm(1320, 2868, 60));
     // the connector of the panel: not the Virtual (writeback, 5120x2560) ones of the S24 Ultra, not DisplayPort
     assert!(

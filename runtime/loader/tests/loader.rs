@@ -337,6 +337,28 @@ fn machine_corner_radius() {
 }
 
 #[test]
+fn machine_artwork_subtype() {
+    // /product artwork-device-subtype names the artwork and the layout metrics CoreUI, SpringBoard and UIKit look up
+    // by it: the panel's own on the S25 (a 1080x2340 panel at @3x is the iPhone 12/13 mini's 360x780 grid, subtype
+    // 2340), the iPhone18,2's Pro Max (2868) for any other height; artwork-subtype= overrides both.
+    let mut m = machine_default();
+    (m.display_width, m.display_height) = (1080, 2340);
+    let t = m.tree().unwrap();
+    assert_eq!(u32_of(t.find("product").unwrap(), "artwork-device-subtype"), Some(2340));
+    (m.display_width, m.display_height) = (1440, 3120);
+    let t = m.tree().unwrap();
+    assert_eq!(u32_of(t.find("product").unwrap(), "artwork-device-subtype"), Some(2868));
+    m.display_height = 2340;
+    m.artwork_subtype = 2868;
+    let t = m.tree().unwrap();
+    assert_eq!(u32_of(t.find("product").unwrap(), "artwork-device-subtype"), Some(2868));
+    m.display_height = 3120;
+    m.artwork_subtype = 2340;
+    let t = m.tree().unwrap();
+    assert_eq!(u32_of(t.find("product").unwrap(), "artwork-device-subtype"), Some(2340));
+}
+
+#[test]
 fn machine_identity_tree() {
     use DeviceKind::*;
     // identity from a donor tree: model, target-type, board first in compatible, /product filtered
