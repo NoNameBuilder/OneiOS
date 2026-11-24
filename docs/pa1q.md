@@ -104,9 +104,23 @@ Each milestone is its own boot, and each boot ends in a power cycle, not a flash
   to be reimplemented, and the dada/annibale A830 work is the reference, but their code is not ours.
 - **App Store / Apple ID** needs the Secure Enclave. No non-Apple port has it, and the hosted model does not either.
 - **Thermals and battery:** 8 cores and an Adreno at 120 Hz with no Android thermal daemon is a phone that gets hot.
-- **The load path is the one unknown I cannot test from here:** whether this Android kernel allows `kexec` /
-  `kexec_load` (or a module that does the same) under KernelSU. If it does, M1 is one boot away; if not, the jump
-  is the first thing to port.
+- **The load path is measured, and it is not `kexec`.** The phone's own `vmlinux.elf` carries its config
+  (`IKCONFIG`): `CONFIG_KEXEC` and `CONFIG_KEXEC_FILE` are not set, so `kexec_load` returns `ENOSYS` and no module
+  can add `machine_kexec` — the reboot-into-a-new-kernel machinery is not compiled in. `CONFIG_DEVMEM` and
+  `CONFIG_PROC_KCORE` are not set either, so userspace has no window onto physical memory. What is set: `MODULES=y`
+  with `MODULE_SIG_FORCE=n` (and `is_module_sig_enforced()` returns 0), but `MODULE_SIG_PROTECT=y` and Samsung's
+  DEFEX sit in front of `init_module`/`finit_module` (`defex_syscall_enter`, its file-tailer check), so whether a
+  self-built `.ko` loads is a phone question, not a host one.
+
+  The path that needs none of that is the code execution the exploit root already has: the jump is a **stub** that
+  runs at EL1 with Linux's MMU on, parks the other seven CPUs, cleans the window, turns the MMU and caches off, and
+  branches to the payload. What it hands over is not a guess — it is the ABI XNU already takes (measured from
+  Pagani's loader, which is the only SM8750 loader that has booted): `x0` = boot args, `x1` = entry, `x2` = window,
+  `x3` = window size, `x4` = framebuffer (0 for none), `x5` = its bytes; a 0x480-byte `boot_args` (revision and
+  version 2, video at 0x28, device tree at 0x60, command line at 0x6c, `MemorySizeActual` at 0x478); a 256 MiB,
+  2 MiB-aligned window (the ADT may raise it) holding the kernel segments, then the args, the ADT, the ramdisk and
+  the trust cache. Pagani reaches that point from UEFI at EL2; this phone reaches it from Linux at EL1, which is the
+  normal XNU entry. The stub is the first thing to write and the only piece with no prior art on this phone.
 
 ## 7. Where the work starts
 
