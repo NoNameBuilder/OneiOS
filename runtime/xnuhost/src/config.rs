@@ -1783,7 +1783,8 @@ sched_preemption_disable_debug_mode=0 wdt=-1 native-source-storage=1 vgpu-3d=1 d
 
 /// The keys a host table entry may give as device defaults.
 fn device_key(key: &str) -> bool {
-    matches!(key, "gpu" | "panel-fallback" | "corner-radius" | "artwork-subtype" | "boot-args-add") || key.starts_with("hw-backend")
+    matches!(key, "gpu" | "panel-fallback" | "corner-radius" | "artwork-subtype" | "boot-args-add")
+        || key.starts_with("hw-backend")
 }
 
 /// `<dir>/<name>` when it is a regular file.
