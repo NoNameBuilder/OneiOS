@@ -144,8 +144,18 @@ impl Shared {
     fn sensors_read(&self, run: &mut Run) -> Raw {
         let Source::Hal(h) = &self.source else { return self.sensors.read() };
         match hal_read(h) {
-            Ok((raw, _)) => {
+            Ok((mut raw, _)) => {
                 run.hal_failed = false;
+                // The HAL does not always report every type: Samsung's may leave SKIN out. Keep the case and battery
+                // rules by reading the files for what the HAL left unknown (in this mode the sensors hold no zones,
+                // so this reads the board thermistor, the battery and lrp).
+                let files = self.sensors.read();
+                if raw.skin == UNKNOWN {
+                    raw.skin = files.skin;
+                }
+                if raw.battery == UNKNOWN {
+                    raw.battery = files.battery;
+                }
                 raw
             }
             Err(rc) => {

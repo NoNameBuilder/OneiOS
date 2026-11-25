@@ -45,12 +45,15 @@ Read every 5 s from xnuhost's start (about 40 files), whether or not iOS listens
 Only the sensors differ: the levels, the hysteresis, xnuhost's step and the load line are the same code for both
 (the policy is fix-ram-locked's and not touched here).
 
-- **samsung** (the default): the table above, unchanged.
+- **samsung** (the default, except the Galaxy S25: `hw-backend-thermal=treble`, its host-table entry): the table
+  above, unchanged. On the S25 the stock HAL's SKIN is the case instead of Samsung's `lrp`, which read about 10 C
+  under the back glass the owner could feel (2026-11-25); if that HAL leaves SKIN out, the reading falls back to
+  `lrp`/`ap` and the battery.
 - **treble**: the thermal HAL `android.hardware.thermal.IThermal/default` by name from servicemanager (`hal/`),
   one `getTemperatures()` (code 3 of the frozen `IThermal.aidl`) per reading. `thermal::from_hal`: cpu and gpu the
   hottest of their `TemperatureType`, soc the hottest of CPU, GPU and SOC (its name in `soc_zone`), battery, and the
-  case = the hottest SKIN (the HAL's own skin sensor, where samsung takes Samsung's `lrp`). ddr, xo, ap and lrp are
-  unknown. Values below -40 C or above 200 C (an off sensor) are skipped.
+  case = the hottest SKIN (the HAL's own skin sensor, where samsung takes Samsung's `lrp`). A type the HAL leaves out
+  keeps the files' reading for skin (`lrp`/`ap`) and battery. ddr, xo, ap and lrp are unknown. Values below -40 C or above 200 C (an off sensor) are skipped.
 - Not registered, or no temperature at the open: `hw: thermal: treble: missing: ...; the bridge stays off`, or the
   files with `hw-backend-fallback=1`. A HAL that stops answering: one line, the readings unknown until it answers
   (each reading then counts as a missing file does).

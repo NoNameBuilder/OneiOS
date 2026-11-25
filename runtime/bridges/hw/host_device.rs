@@ -156,6 +156,12 @@ static TABLE: [HostDevice; 5] = [
             // documented answers are these two switches (Boot B and Boot E there). Only this phone's row: the S24
             // Ultra's buttons are its own.
             "boot-args-add=oneios-hid-buttons-builtin=1 oneios-button-haptics=1",
+            // The case temperature from the phone's own thermal service (the stock Samsung HAL's SKIN sensor), not
+            // Samsung's battery/lrp charger proxy: on this phone lrp read about 10 C under the back glass the owner
+            // could feel (2026-11-25, "the case is nowhere near 50 C"). The HAL is stock and stays registered in a
+            // session; hw-backend-fallback=1 keeps Samsung's files if the service is not there.
+            "hw-backend-thermal=treble",
+            "hw-backend-fallback=1",
         ],
         env: &["ONEIOS_THERMAL_SOC_TRIPS=1", "ONEIOS_THERMAL_SOC_SAMPLES=3"],
         takeover: false,
