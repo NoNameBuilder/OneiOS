@@ -40,7 +40,7 @@ for Android, and the kernel-side drivers compile and link-check against the kern
 | Host device (2026-11-21) | - | `runtime/bridges/hw/host_device.rs`: which known phone xnuhost runs on (properties, soc0, the device tree) and its defaults from one table; `host-device=auto\|none\|NAME` (section 7h) | host-tested; not run on a phone |
 | Touch screen and buttons | `kernel/patches/oneios-hosted/hid`: UniXNU's NativeHidInput (digitizer, buttons) under the collection's `IOHIDDevice`, UniXNU-droidvm's virtio-input transport with the side keys | xnuhost's `input.rs` (evdev, no grab) and `virtio_input.rs`; `input_script.rs` for a host with no panel | built; in a PC boot backboardd opens both services and scripted touches and keys are queued for it as HID events; never run on the phone (section 7b) |
 | S Pen (the S24 Ultra image writes `pen=auto`; xnuhost's switch default is off; guest `oneios-pen=1`) | the HID archive's third NativeHidInput, Digitizer / Stylus (`staged/hid_pen.rs`): backboardd's pencil digitizer; the transport's pen code (UniXNU-droidvm, unchanged) | xnuhost's `pen.rs`: one replaceable lookup by bits (`pen::lookup`), evdev read only, no grab, a second virtio-input device `/arm-io/input-1` | built; host-tested; PC boot with the demo script's pen: backboardd "*** acquired pencil digitizer", its touchstats count the strokes as pencil touches (section 7f); the owner's first drawing in Notes on the phone worked (2026-11-22); a rebuilt image lost the hand-added `pen=auto` and the pen stopped (2026-11-25), so the root tweak writes it now |
-| Cellular | none: the guest's tree leaves `/baseband` out (`adt.absent`), and iOS's side is Apple's own baseband over PCIe/SPMI (`AppleBasebandPCI`, `AppleBasebandM20`/`N71`, `AppleBasebandSPMIHEB`), not a generic modem | none: the phone's modem is Qualcomm's (SM8750), driven on the Android side by Samsung's RIL and QMI (`secril_config_svc`, `rild`), a different bus and protocol from the guest's | **not provided** as cellular: no calls, SMS or a cellular interface; CommCenter runs its non-cellular job and idles. **Data over the phone's active network** (mobile data included) is provided by `wifi=cell` (section 3.4b): a made-up joined network over the old TAP route and `oneios-net.sh`'s NAT; needs `/dev/tun` and root; host-tested and host-booted nowhere yet. Section 7i |
+| Cellular | none: the guest's tree leaves `/baseband` out (`adt.absent`), and iOS's side is Apple's own baseband over PCIe/SPMI (`AppleBasebandPCI`, `AppleBasebandM20`/`N71`, `AppleBasebandSPMIHEB`), not a generic modem | none: the phone's modem is Qualcomm's (SM8750), driven on the Android side by Samsung's RIL and QMI (`secril_config_svc`, `rild`), a different bus and protocol from the guest's | **not provided** as cellular: no calls, SMS or a cellular interface; CommCenter runs its non-cellular job and idles. **Data over the phone's active network** (mobile data included) is provided by `wifi=cell` (section 3.4b): a made-up joined network over the old TAP route and `oneios-net.sh`'s NAT, which `wifi=auto` takes by itself when the phone has no Wi-Fi joined; needs `/dev/tun` and root; host-tested, not booted on the phone. Section 7i |
 
 Common pieces:
 
@@ -491,10 +491,14 @@ frames go to the tap of the old route and are NATed by `oneios-net.sh`'s `ip rou
   leases an address, ARP and TCP work, and iOS sees a joined Wi-Fi network — the status bar shows Wi-Fi, not
   cellular, and Settings shows `OneiOS uplink` joined. That naming is deliberate: iOS's cellular path is not what
   this is, and nothing pretends the baseband exists.
-- **The switch.** `wifi=cell` in `xnuhost.conf` (or `--set wifi=cell`) instead of `wifi=auto`; it needs the bridges on,
-  `/dev/tun`, and root for the script (its address, forwarding, policy rules and NAT). `wifi=tap` keeps the raw route
-  (a guest built with the plain Ethernet driver). The DNS the bridge hands out is 8.8.8.8/1.1.1.1 unless configured;
-  the uplink's own carrier DNS is not read (Android's resolver state is netd's, and the query itself is NATed).
+- **The switch.** `wifi=auto` (the default) uses the radio while the phone's Wi-Fi is associated (its
+  `/sys/class/net/wlan0/carrier` is 1) and this uplink route otherwise, so a phone with Wi-Fi off still has data (mobile
+  data included); the log line names which, `wifi: auto: wlan0 has no network (carrier off): the guest's network is the
+  phone's uplink …`. `wifi=cell` asks for this route even while Wi-Fi is joined; `wifi=tap` keeps the raw route (a
+  guest built with the plain Ethernet driver); `wifi=auto` needs the bridges on, `/dev/tun`, and root for the script
+  (its address, forwarding, policy rules and NAT), and if the tap will not open it leaves the radio's path. The DNS the
+  bridge hands out is 8.8.8.8/1.1.1.1 unless configured; the uplink's own carrier DNS is not read (Android's resolver
+  state is netd's, and the query itself is NATed).
 - **Safety, and what changed in the script.** `oneios-net.sh` used to delete its policy rules by priority alone, which
   would have removed netd's rule at priority 16000 (`fwmark 0x10063/0x1ffff iif lo lookup local_network`) — a way to
   break One UI's own mobile data. Every delete now names its selector, and our way-back rule is at 16020
