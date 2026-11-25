@@ -211,8 +211,8 @@ cbf97ea or b704922 back. The defaults are those changes.
 
 Design of 2026-11-12 (owner): **no NAT**. Wi-Fi works the way a Treble GSI gets it: in a session iOS is the only OS
 that uses the radio, and it drives the vendor's own Wi-Fi stack. The tap, the private subnet and `oneios-net.sh` are
-the old route; xnuhost runs them only with `wifi=tap` (a raw link), `wifi=cell` (that link under a made-up joined
-network, 3.4b) or `wifi=auto` while the phone has no Wi-Fi network joined (the same link, so mobile data reaches iOS).
+the old route; xnuhost runs them only with `wifi=tap` (a raw link) or `wifi=cell` (that link under a made-up joined
+network, 3.4b).
 
 ### The phone [F, read on the owner's phone 2026-11-12 unless marked]
 
