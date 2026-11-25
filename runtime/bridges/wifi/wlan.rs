@@ -465,20 +465,6 @@ pub fn present(ifname: &str) -> bool {
     interface(ifname).is_some()
 }
 
-/// Whether the interface's radio is associated right now: its carrier (`/sys/class/net/IFACE/carrier`, "1" when the
-/// phone's Wi-Fi has a network). None when the interface is not there (Wi-Fi off) or the file cannot be read. xnuhost's
-/// `wifi=auto` uses it to give the guest the radio while there is one and the phone's uplink (the tap of `wifi::cell`)
-/// when there is not, so iOS has data over mobile data too. `ONEIOS_WIFI_SYS` reads a stand-in root (tests).
-pub fn carrier(ifname: &str) -> Option<bool> {
-    let root = std::env::var_os("ONEIOS_WIFI_SYS").map(std::path::PathBuf::from).unwrap_or_else(|| "/sys".into());
-    carrier_in(&root, ifname)
-}
-
-fn carrier_in(root: &std::path::Path, ifname: &str) -> Option<bool> {
-    let text = std::fs::read_to_string(root.join("class/net").join(ifname).join("carrier")).ok()?;
-    Some(text.trim() == "1")
-}
-
 /// The interface and nl80211, with their failure logged (C: wlan_new).
 fn open_interface(ifname: &str) -> Option<(String, u32, [u8; 6], Nl80211, OwnedFd)> {
     let name: String = if ifname.is_empty() { "wlan0".into() } else { ifname.chars().take(15).collect() };
@@ -1612,22 +1598,6 @@ impl WonderOps for PhoneWonder {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// wifi=auto's choice: the radio's carrier says whether the phone has a network, and no wlan0 (Wi-Fi off) says no.
-    #[test]
-    fn carrier_of_a_stand_in_sysfs() {
-        let root = std::env::temp_dir().join(format!("oneios-wifi-carrier-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        let dir = root.join("class/net/wlan0");
-        assert_eq!(carrier_in(&root, "wlan0"), None);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("carrier"), "0\n").unwrap();
-        assert_eq!(carrier_in(&root, "wlan0"), Some(false));
-        std::fs::write(dir.join("carrier"), "1\n").unwrap();
-        assert_eq!(carrier_in(&root, "wlan0"), Some(true));
-        assert_eq!(carrier_in(&root, "wlan1"), None);
-        std::fs::remove_dir_all(&root).unwrap();
-    }
 
     /// nl80211's, netlink's and AF_PACKET's numbers above against the build host's headers.
     #[test]

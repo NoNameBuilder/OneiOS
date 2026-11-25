@@ -688,11 +688,9 @@ impl Bridges {
             );
         }
 
-        // The network: the phone's own. wlan0 is iOS's for the session while the radio is associated (docs/hardware.md
-        // section 3): en0 has wlan0's address, frames go between them as they are, scans and joins go to the vendor's
-        // Wi-Fi stack; no NAT. With no network joined (Wi-Fi off, or the phone out of range) the phone's uplink is the
-        // guest's instead, as a made-up joined network over the tap (wifi::cell, section 3.4b): data over mobile data too.
-        // wifi=tap: the old raw route, for a bench; wifi=cell: the uplink always, even while Wi-Fi is joined.
+        // The network: the phone's Wi-Fi. wlan0 is iOS's for the session (docs/hardware.md section 3): en0 has wlan0's
+        // address, frames go between them as they are, scans and joins go to the vendor's Wi-Fi stack; no NAT.
+        // wifi=tap: the old route (a tap and oneios-net.sh's NAT), for a bench.
         let mut net = NetConfig { guest_mac: machine.mac(Mac::Wifi), ..NetConfig::default() }; // en0 (the tap's)
         match config.wifi {
             Wifi::Tap => {
@@ -711,31 +709,12 @@ impl Bridges {
             }
             Wifi::Auto => {
                 let session = Some(config.session.as_str()).filter(|s| !s.is_empty());
-                // No carrier: the phone has no Wi-Fi network, so the guest gets the uplink (the tap and the NAT). The
-                // check is the radio's carrier, so a phone that is on Wi-Fi keeps the proven path above. A tap that the
-                // kernel will not open (/dev/tun, root) leaves the radio's path: better no network than a broken one.
-                let mut uplink = false;
-                if !onebridges::wifi::wlan::carrier("wlan0").unwrap_or(false) {
-                    if net_device(slots, &net, onebridges::wifi::cell::prepare(net.guest_mac)) {
-                        self.net_up = net_script(&config.runtime, "up");
-                        uplink = true;
-                        logi!(
-                            "wifi: auto: wlan0 has no network (carrier off): the guest's network is the phone's uplink \
-                             (the tap of wifi=cell{}); iOS shows it as one joined Wi-Fi network",
-                            if self.net_up { "" } else { " with no NAT: the script failed" }
-                        );
+                if let Some((open, mac)) = onebridges::wifi::wlan::prepare("wlan0", session) {
+                    net.guest_mac = mac; // the Wi-Fi's is wlan0's
+                    if net_device(slots, &net, open) {
+                        self.wifi_up = true;
                     } else {
-                        logi!("wifi: auto: wlan0 has no network and there is no tap (/dev/tun, root): the radio only");
-                    }
-                }
-                if !uplink {
-                    if let Some((open, mac)) = onebridges::wifi::wlan::prepare("wlan0", session) {
-                        net.guest_mac = mac; // the Wi-Fi's is wlan0's
-                        if net_device(slots, &net, open) {
-                            self.wifi_up = true;
-                        } else {
-                            onebridges::wifi::wlan::close();
-                        }
+                        onebridges::wifi::wlan::close();
                     }
                 }
             }
