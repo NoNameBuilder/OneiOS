@@ -84,11 +84,16 @@ jobs:
         run: |
           set -euo pipefail
           userland/metal/build.sh all 2>&1 | tee metal-build.log
+      - name: Build the capture plug-in
+        # The same SDK the bundle uses; userland/camera/build.sh signs with oneios-tool, which the step above built.
+        run: |
+          set -euo pipefail
+          userland/camera/build.sh 2>&1 | tee camera-build.log
       - name: What was built
         if: always()
         run: |
           set -euo pipefail
-          { ls -l out/userland 2>/dev/null || true; cat out/userland/NativeAdrenoMetal.build.json 2>/dev/null || true; } | tee -a metal-build.log
+          { ls -l out/userland out/userland/camera 2>/dev/null || true; cat out/userland/NativeAdrenoMetal.build.json 2>/dev/null || true; cat out/userland/camera/cdhashes.txt 2>/dev/null || true; } | tee -a metal-build.log
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
@@ -99,4 +104,7 @@ jobs:
             out/userland/NativeAdrenoMetal.gpuaddon
             out/userland/NativeAdrenoMetal.build.json
             out/userland/NativeAdrenoMetal.check.txt
+            out/userland/camera/H9ISP.mediacapture
+            out/userland/camera/cdhashes.txt
+            camera-build.log
             metal-build.log
