@@ -213,6 +213,10 @@ pub struct Machine {
     /// (MobileGestalt's HWModelDescriptionForCamera: CMCapture reads its per-model tables from
     /// CMCapture.framework/<it less "AP">). docs/hardware.md section 7.
     pub cameras: u32,
+    /// Keep APPLE2 and MTL2,2 in /product graphics-featureset-fallbacks (xnuhost's astc=1): MobileGestalt then
+    /// answers DeviceSupportsASTC and UIKit compresses with ASTC. Off: they are dropped, because SplashBoard writes
+    /// app snapshots in the AGX GPU's own ASTC layout, which Adreno does not decode (docs/gpu.md).
+    pub astc: bool,
     /// /product product-id when there is no identity tree: the 20 bytes iOS 16's MobileGestalt finds its product by
     /// (libMobileGestalt 20F66 copies IODeviceTree:/product product-id and looks it up in its table of 363 products; with
     /// none, MGGetProductType is -1, every MGIsDeviceOneOfType is false and bluetoothd's chip factory finds no chip).
@@ -293,6 +297,7 @@ impl Default for Machine {
             corner_radius: 0,
             artwork_subtype: 0,
             cameras: 0,
+            astc: false,
             unique_model: None,
             product_id: None,
             serial_number: None,
@@ -349,8 +354,8 @@ fn product_dropped(name: &[u8]) -> bool {
 
 /// graphics-featureset-fallbacks without APPLE2 and MTL2,2 (a NUL-terminated, colon-separated list): with them
 /// MobileGestalt answers DeviceSupportsASTC and SplashBoard writes app snapshots in the AGX GPU's own ASTC layout,
-/// which no other GPU decodes.
-fn set_featuresets(product: &mut Node, name: &[u8], value: &[u8]) {
+/// which no other GPU decodes. astc=1 keeps them (Machine::astc).
+fn set_featuresets(product: &mut Node, name: &[u8], value: &[u8], keep_astc: bool) {
     const OUT: usize = 512; // the C buffer: an entry that would not fit is left out
     let mut length = value.len();
     while length > 0 && value[length - 1] == 0 {
@@ -359,7 +364,7 @@ fn set_featuresets(product: &mut Node, name: &[u8], value: &[u8]) {
     let mut out = Vec::with_capacity(OUT);
     if length > 0 {
         for item in value[..length].split(|b| *b == b':') {
-            let drop = item == b"APPLE2" || item == b"MTL2,2";
+            let drop = !keep_astc && (item == b"APPLE2" || item == b"MTL2,2");
             if !drop && out.len() + item.len() + 2 < OUT {
                 if !out.is_empty() {
                     out.push(b':');
@@ -736,7 +741,7 @@ impl Machine {
         if let Some(idp) = id_product {
             for p in idp.props.iter().filter(|p| !product_dropped(&p.name)) {
                 if p.name == b"graphics-featureset-fallbacks" {
-                    set_featuresets(product, &p.name, &p.value);
+                    set_featuresets(product, &p.name, &p.value, self.astc);
                 } else {
                     product.set(&p.name, &p.value).expect("a parsed property name fits");
                 }
@@ -764,7 +769,7 @@ impl Machine {
             // second in Spotlight, Notes and WebSheet, 105% of a core, keys waiting for the main thread; the phone,
             // 2026-11-22). The values are 24A446's V54 device tree's /product, with this host's choices: the gamut is
             // the display's (sRGB unless display_gamut says so: the helper tags the frames sRGB), and the GPU
-            // fallbacks lose APPLE2 and MTL2,2 as with an identity (set_featuresets).
+            // fallbacks lose APPLE2 and MTL2,2 as with an identity (set_featuresets), unless astc=1 keeps them.
             product.put_str("artwork-device-idiom", "phone");
             // The subtype names the artwork and the layout metrics: the panel's own (2340 for a 1080x2340 panel, the
             // iPhone 12/13 mini's grid) unless the host says otherwise; 2868 (the iPhone18,2's Pro Max) for every
@@ -784,6 +789,7 @@ impl Machine {
                 product,
                 b"graphics-featureset-fallbacks",
                 b"APPLE9:APPLE8:APPLE7:APPLE6:APPLE5:APPLE4:APPLE3:APPLE3v1:APPLE2:APPLE1:GLES2,0\0",
+                self.astc,
             );
         }
         // The artwork scale follows the UI scale (the identity tree's is the iPhone panel's 3). The artwork subtype is

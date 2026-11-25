@@ -255,6 +255,14 @@ fn machine_tree() {
         str_of(pr, "graphics-featureset-fallbacks"),
         Some("APPLE9:APPLE8:APPLE7:APPLE6:APPLE5:APPLE4:APPLE3:APPLE3v1:APPLE1:GLES2,0") // no APPLE2
     );
+    // astc=1 keeps APPLE2, so MobileGestalt answers DeviceSupportsASTC (the S24 Ultra's 46.9 -> 88.6 fps)
+    let mut a = machine_default();
+    a.astc = true;
+    let at = a.tree().unwrap();
+    assert_eq!(
+        str_of(at.find("product").unwrap(), "graphics-featureset-fallbacks"),
+        Some("APPLE9:APPLE8:APPLE7:APPLE6:APPLE5:APPLE4:APPLE3:APPLE3v1:APPLE2:APPLE1:GLES2,0")
+    );
     assert_eq!(str_of(pr, "model"), Some("oneios,xnuhost"));
     assert_eq!(
         u64::from_le_bytes(t.find("chosen/xnuhost").unwrap().get("vector").unwrap().value[..].try_into().unwrap()),
@@ -435,6 +443,14 @@ fn machine_identity_tree() {
     assert_eq!(t.get("compatible").unwrap().value, b"F1AP\0oneios,xnuhost\0");
     assert!(pr.get("has-exclaves").is_none() && pr.get("product-name").is_some());
     assert_eq!(str_of(pr, "graphics-featureset-fallbacks"), Some("MTL1,2:GLES2,0"));
+    // astc=1: the identity's own APPLE2 and MTL2,2 stay (DeviceSupportsASTC)
+    let mut a = m.clone();
+    a.astc = true;
+    let at = a.tree().unwrap();
+    assert_eq!(
+        str_of(at.find("product").unwrap(), "graphics-featureset-fallbacks"),
+        Some("MTL1,2:APPLE2:MTL2,2:GLES2,0")
+    );
     assert!(t.find("product/audio").unwrap().get("acoustic-id").is_some());
     // with an identity and cameras: the identity's own unique-model stays, unless camera-model= names one
     {

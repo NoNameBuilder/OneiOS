@@ -670,6 +670,7 @@ impl Session {
         machine.display_hz = self.fb.2;
         machine.corner_radius = config.corner_radius;
         machine.artwork_subtype = config.artwork_subtype;
+        machine.astc = config.astc;
         // Signed text the kernel changes at page-in (/chosen text-fixups): the configured ones, and what the UI scale
         // needs.
         if config.scale_fixup {

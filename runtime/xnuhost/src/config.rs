@@ -453,6 +453,7 @@ const GIVEN_KEYS: &[&str] = &[
     "scale-fixup",
     "corner-radius",
     "artwork-subtype",
+    "astc",
     "ios16-fixup",
     "display-direct",
     "touch-exclusive",
@@ -629,6 +630,11 @@ pub struct Config {
     /// the iPhone18,2's Pro Max). The Pro Max's metrics on the S25's 360x780 canvas are the "iPad with humongous
     /// spacing" the owner saw; 2868 here is the A/B switch back. docs/userland.md, "The artwork answers".
     pub artwork_subtype: u32,
+    /// astc=1: keep APPLE2 and MTL2,2 in /product graphics-featureset-fallbacks, so MobileGestalt answers
+    /// DeviceSupportsASTC and UIKit compresses with ASTC. The S24 Ultra measured 46.9 -> 88.6 fps with it on. Off by
+    /// default because SplashBoard then writes app snapshots in the AGX GPU's own ASTC layout, which Adreno does not
+    /// decode: the app switcher's snapshots can come out wrong (docs/gpu.md, "The graphics feature sets").
+    pub astc: bool,
     /// the iOS 16.5 (20F66) text fixups (ios16_fixups: CoreImage's OpenGL ES fallback answers no context): on by default
     pub ios16_fixup: bool,
     pub text_fixups: TextFixups,
@@ -917,6 +923,7 @@ impl Config {
             scale_fixup: true,
             corner_radius: 0,
             artwork_subtype: 0,
+            astc: false,
             ios16_fixup: true,
             text_fixups: TextFixups::default(),
             input: true,
@@ -1107,6 +1114,8 @@ impl Config {
                 fmt_ok(subtype <= 10000)?;
                 self.artwork_subtype = subtype;
             }
+            // the GPU's ASTC: APPLE2/MTL2,2 stay in the fallbacks, MobileGestalt answers DeviceSupportsASTC
+            "astc" => self.astc = flag(value)?,
             "ios16-fixup" => self.ios16_fixup = flag(value)?,
             "text-fixup" => {
                 // FILE,OFFSET,ORIGINAL,REPLACEMENT in hex, as UniXNU's [payload] text_fixups (the kernel checks them again)
@@ -2358,6 +2367,7 @@ impl Config {
             ("encoder-10bit", self.encoder_10bit.as_str().to_string(), "main10"),
             ("encoder-warmup", on(self.encoder_warmup).to_string(), "1"),
             ("display-post", (if self.display_post_serial { "serial" } else { "apart" }).to_string(), "apart"),
+            ("astc", on(self.astc).to_string(), "0"),
             ("decoder", self.decoder.as_str().to_string(), "auto"),
             ("decoder-codecs", oneencoder::switches::codecs_text(self.decoder_codecs), "h264,hevc,vp9,av1"),
             ("oneios-wifi-rssi", arg("oneios-wifi-rssi", "1"), "1"),

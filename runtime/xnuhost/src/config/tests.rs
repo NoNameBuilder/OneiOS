@@ -1032,6 +1032,12 @@ fn display_mode() {
     assert!(r.set("artwork-subtype", "2868").is_ok() && r.artwork_subtype == 2868);
     assert!(r.set("artwork-subtype", "0").is_ok() && r.artwork_subtype == 0);
     assert!(r.set("artwork-subtype", "10001").is_err() && r.set("artwork-subtype", "-1").is_err());
+    // astc= (keep APPLE2/MTL2,2: MobileGestalt's DeviceSupportsASTC): off by default, 1/yes/true on
+    assert!(!c.astc);
+    let mut r = c.clone();
+    assert!(r.set("astc", "1").is_ok() && r.astc);
+    assert!(r.set("astc", "no").is_ok() && !r.astc);
+    assert!(r.set("astc", "2").is_err());
     assert_eq!(c.display_mode(Some(&pm(1440, 3120, 120))), pm(1320, 2868, 60));
     // the connector of the panel: not the Virtual (writeback, 5120x2560) ones of the S24 Ultra, not DisplayPort
     assert!(
@@ -1588,6 +1594,10 @@ fn the_switches() {
         .into();
     let line = c.switches_line();
     assert!(line.contains(" wifi-joined-scan=plain ") && line.contains(" gpu-blob-entries=16384 "), "{line}");
+    assert!(line.contains(" astc=0 "), "{line}");
+    let mut a = c.clone();
+    assert!(a.set("astc", "1").is_ok());
+    assert!(a.switches_line().contains(" astc=1 "), "{}", a.switches_line());
     assert!(line.contains(" decoder=off decoder-codecs=vp9,av1 "), "{line}");
     assert!(
         line.contains(
