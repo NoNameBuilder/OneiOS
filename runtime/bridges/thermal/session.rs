@@ -103,6 +103,9 @@ struct Run {
     /// The last clocks sample (the "thermal: N s clocks:" line, with the load line).
     clocks: Clocks,
     hal_failed: bool,
+    /// Where the case came from in the treble backend: "SKIN" from the HAL, or "lrp"/"ap thermistor"/"unknown" when
+    /// the HAL left SKIN out and the files answered (the open line says which).
+    case_from: &'static str,
 }
 
 struct Shared {
@@ -148,8 +151,17 @@ impl Shared {
                 run.hal_failed = false;
                 // The HAL does not always report every type: Samsung's may leave SKIN out. Keep the case and battery
                 // rules by reading the files for what the HAL left unknown (in this mode the sensors hold no zones,
-                // so this reads the board thermistor, the battery and lrp).
+                // so this reads the board thermistor, the battery and lrp). The open line says which answered.
                 let files = self.sensors.read();
+                run.case_from = if raw.skin != UNKNOWN {
+                    "SKIN"
+                } else if files.skin == UNKNOWN {
+                    "unknown"
+                } else if files.lrp != UNKNOWN {
+                    "lrp"
+                } else {
+                    "ap thermistor"
+                };
                 if raw.skin == UNKNOWN {
                     raw.skin = files.skin;
                 }
@@ -167,6 +179,7 @@ impl Shared {
                     );
                 }
                 run.hal_failed = true;
+                run.case_from = "unknown";
                 from_hal(&[])
             }
         }
@@ -330,15 +343,18 @@ impl Thermal {
         };
         let t = Thermal { shared, thread: Some(thread) };
         let s = &t.shared;
-        let level = level_name(lock(&s.run).now.level);
+        let (level, case_from) = {
+            let run = lock(&s.run);
+            (level_name(run.now.level), run.case_from)
+        };
         let zone = if raw.soc_zone.is_empty() { "-" } else { &raw.soc_zone };
         let cap_note =
             if cap_off { "; thermal-cap=0 (ONEIOS_THERMAL_CAP=0): xnuhost does not hold itself back" } else { "" };
         let (skin, soc, battery) = (deci_text(raw.skin), deci_text(raw.soc), deci_text(raw.battery));
         match &s.source {
             Source::Hal(h) => br_info!(
-                "thermal: on: the thermal HAL {} (version {}), {hal_temps} temperatures; case {skin} (SKIN), SoC {soc} \
-                 ({zone}), battery {battery}; {level}; read every {poll_ms} ms{cap_note}",
+                "thermal: on: the thermal HAL {} (version {}), {hal_temps} temperatures; case {skin} ({case_from}), SoC \
+                 {soc} ({zone}), battery {battery}; {level}; read every {poll_ms} ms{cap_note}",
                 hal::THERMAL_INSTANCE,
                 h.version()
             ),
@@ -414,6 +430,7 @@ fn empty_run() -> Run {
         load: HostLoad::default(),
         clocks: Clocks::default(),
         hal_failed: false,
+        case_from: "unknown",
     }
 }
 
