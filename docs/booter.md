@@ -1682,7 +1682,8 @@ phone's uplink — mobile data included — with no Wi-Fi network (it needs `/de
 open" and "OneiOS WPA2" (passphrase `password`), that the guest can scan and join, and no frames
 (`runtime/bridges/wifi/sim.rs`).
 A bridge whose Linux side is missing logs one line and is left out. At a stop the motor is stopped, the Wi-Fi
-bridge leaves its network and gives wlan0's settings back (`wlan::close`), and with `wifi=tap` or `wifi=cell`
+bridge leaves its network and gives wlan0's settings back (`wlan::close`), and with `wifi=tap` or `wifi=cell` (or
+`wifi=auto` while the phone had no Wi-Fi network joined, when it took the uplink)
 `bin/oneios-net.sh down` removes the tap's rules. Every virtio node carries its SPI as `interrupts` and as
 `droidvm,intid` (the name UniXNU-droidvm's transports read).
 
@@ -2014,8 +2015,8 @@ and any change that would break one goes on the board first:
 Two things outlive a killed session and are not xnuhost's files: `vm.max_map_count` stays raised until
 the phone reboots, and wlan0 keeps GRO off and `disable_ipv6` 1 if xnuhost is killed before `wlan::close`
 (neither breaks One UI's Wi-Fi: [hardware.md](hardware.md) section 3, "Return"; `bin/wifictl restore
-SESSION/wifi.state` puts them back). With `wifi=tap` or `wifi=cell`, the tap's routing rules and iptables chains
-stay until `oneios-net.sh down` (the tap itself goes with the process).
+SESSION/wifi.state` puts them back). With `wifi=tap` or `wifi=cell` (or an `auto` session that took the uplink), the
+tap's routing rules and iptables chains stay until `oneios-net.sh down` (the tap itself goes with the process).
 
 ### 2.9d The Android takeover: `session-mode=takeover` (port-opt-in-takeover-session, 2026-11-23)
 

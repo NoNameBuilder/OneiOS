@@ -118,10 +118,11 @@ Not switched, on purpose:
 - Older keys that already were switches: `map-defer`, `gpu-level`, `gpu-priority`, `cpu-pin`, `ram-*`, `pen`,
   `encoder`, `wifi` (docs/booter.md section 1).
 
-`wifi=cell` is a config value, not a switch: it replaces `wifi=auto` for a session and gives iOS a made-up, joined
-network over the phone's uplink (mobile data included), through the old tap and `oneios-net.sh` — no baseband, and
-iOS shows Wi-Fi. `wifi=tap` is the same route without the station, `wifi=sim` the made-up radio of a PC boot
-(docs/hardware.md 3.4b).
+`wifi=cell` is a config value, not a switch: it gives iOS a made-up, joined network over the phone's uplink (mobile
+data included), through the old tap and `oneios-net.sh` — no baseband, and iOS shows Wi-Fi. Since 2026-11-25
+`wifi=auto` takes that route by itself while the phone has no Wi-Fi network joined (`wlan0`'s carrier off), so the
+key is only needed to ask for the uplink even while Wi-Fi is up. `wifi=tap` is the same route without the station,
+`wifi=sim` the made-up radio of a PC boot (docs/hardware.md 3.4b).
 
 ## A sample `xnuhost.conf` fragment
 
