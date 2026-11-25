@@ -302,6 +302,25 @@ iOS's log (`phone pull-log`):
 If cameracaptured still crashes, boot with `sheng-exc-name=newfs_apfs,cameracaptured` in `xnuhost.conf`'s boot
 arguments: the kernel logs each exception's pc, lr, far and return addresses (give them to `oneios-tool sym`).
 
+## Builds (2026-11-25)
+
+The plug-in in every runtime drop from 0.1.24 to 0.1.31 was the one built on 2026-11-23 23:22 (CDHash `33247c78…`).
+It predates `e84a46e`'s stream notifications, so on those drops the notifications never ran and the graph had no
+StreamStarting to answer: the black preview was expected, whatever else the log said. The docs' hand-off builds
+(`out/handoff/...`) named a newer plug-in, `59c042c5…`, but none of those binaries is on this machine.
+
+`0.1.35-camera` is the first drop with a rebuilt plug-in: CDHash `174ef979…`, arm64e, 4 KiB signature pages,
+`com.oneios.H9ISP`, from this folder's sources at `e84a46e`. It was built on Linux without the iPhoneOS SDK: the
+plug-in's framework declarations were written out by hand, the objects compiled with the host's clang for
+`arm64e-apple-ios27.0`, and linked with cctools' `ld` against minimal `.tbd` stubs whose exports came from the
+objects' own undefined symbols (so the LC_LOAD_DYLIB set is the old binary's: CoreFoundation, CoreMedia, CoreVideo,
+IOKit, libSystem). `os_log` is reached through a two-line shim that formats the line and calls the real
+`_os_log_impl` with `%{public}s`; the plug-in's other log sinks (`/dev/console`, `/private/var/oneios/log/camera.log`)
+are untouched. `oneios-tool ios sign` and `oneios-tool ios addon` signed and packed it as usual.
+
+Not booted. The check that matters is the log: `ONEIOS CAMERA: ... stream: posted StreamStarting` and the lines in
+"Not done" above.
+
 ## Not done
 
 1. Run in iOS. Whether the 27 capture graph takes this device as it is, what it asks that is missing (the log
