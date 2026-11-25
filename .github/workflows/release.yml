@@ -6,7 +6,7 @@
 #          │                             phone and oneios-tool-VERSION-android-arm64 beside the package
 #          ├── apk        (ubuntu-24.04) app/ at the head of the fork's branch, JDK 21, tribalfs' packages,
 #          │                             ./gradlew test assembleFullDebug, the APK's assets checked
-#          ├── apk-macos  (macos-15)     ./gradlew test of the same checkout on a Mac (core:root's script tests)
+#          ├── apk-macos  (xcode-27)     ./gradlew test of the same checkout on a Mac (core:root's script tests)
 #          └──────────────── release     needs runtime and apk; a tag v* or a dispatch only
 #
 # Triggers: a pull request or a push to main builds both and releases nothing. A tag vN.N.N[-suffix] on main builds
@@ -171,13 +171,13 @@ jobs:
           d=$(mktemp -d); zstd -dc out/release/oneios-runtime-$VERSION-arm64.tar.zst | tar -x -C "$d"
           runtime/package/elf-check.sh "$d"
       - name: The package holds the runtime's own folders only
-        # runtime.json, NOTICE, LICENSE, bin/, lib/, scripts/, kernel/xnu.macho and its record: nothing of the
-        # fork's tree (app/) or any other part of the checkout.
+        # runtime.json, NOTICE, LICENSE, bin/, lib/, scripts/, kernel/xnu.macho and its record, kernel/gpuaddon and its
+        # CDHashes: nothing of the fork's tree (app/) or any other part of the checkout.
         run: |
           set -euo pipefail
           a=out/release/oneios-runtime-$VERSION-arm64.tar.zst
           ( cd out/release && sha256sum -c "$(basename "$a").sha256" )
-          zstd -dc "$a" | tar -t | tee members.txt | grep -Ev '^(runtime\.json|NOTICE|LICENSE|(bin|lib|scripts)/[^/].*|kernel/xnu\.macho(\.build\.json)?)$' && { echo "::error::the package has members outside the runtime's folders (above)"; exit 1; }
+          zstd -dc "$a" | tar -t | tee members.txt | grep -Ev '^(runtime\.json|NOTICE|LICENSE|(bin|lib|scripts)/[^/].*|kernel/xnu\.macho(\.build\.json)?|kernel/gpuaddon(\.cdhashes)?)$' && { echo "::error::the package has members outside the runtime's folders (above)"; exit 1; }
           [ "$(head -n 1 members.txt)" = runtime.json ] || { echo "::error::runtime.json is not the first member"; exit 1; }
           echo "$(wc -l < members.txt) members, runtime.json first"
       - name: The phone's oneios-tool is the package's bin/oneios-tool, stripped, with its .sha256
@@ -317,10 +317,14 @@ jobs:
   # macOS. Homebrew's folders are taken off PATH for the tests, so core:root's harness uses its own stand-ins for
   # GNU stat, sha256sum, timeout and tac over macOS's own tools (the fork's docs/oneios.md): the case of a Mac without
   # coreutils. Not a release gate: the release needs runtime and apk only.
+  #
+  # xcode-27, not macos-15: both are arm64 macOS images with the Android SDK and JDK 21, but the 3-core macos-15 pool
+  # was starved ("The job was not acquired by Runner of type hosted even after multiple attempts") and GitHub
+  # cancelled the job after ~15 minutes, turning every push red while plan/runtime/apk had passed.
   apk-macos:
     needs: plan
     if: needs.plan.outputs.apk == 'true'
-    runs-on: macos-15
+    runs-on: xcode-27
     timeout-minutes: 60
     permissions:
       contents: read
