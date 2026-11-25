@@ -99,10 +99,12 @@ suite() {
     results+=("boot: skipped (the qemu boot runs only with QEMU=1: the phone is the test, CLAUDE.md 2026-11-24)")
   elif [ "${PREBUILT:-0}" = 1 ]; then
     if [ -f "$PREBUILT_XNUHOST" ] && [ -f "$PREBUILT_IMAGE/kernel.kc" ]; then
-      part boot env XNUHOST="$PREBUILT_XNUHOST" IMAGE="$PREBUILT_IMAGE" runtime/xnuhost/check-arm64.sh check
+      # -u QEMU: QEMU=1 above is this script's "run the boot part", while check-arm64.sh reads QEMU as
+      # the qemu binary; leaving it in the environment makes it run `timeout 60 1`.
+      part boot env -u QEMU XNUHOST="$PREBUILT_XNUHOST" IMAGE="$PREBUILT_IMAGE" runtime/xnuhost/check-arm64.sh check
     else results+=("boot: FAIL: no $PREBUILT_XNUHOST or $PREBUILT_IMAGE: the Mac builds them before the container"); fi
   elif ndk_ok; then
-    part boot runtime/xnuhost/check-arm64.sh smoke check
+    part boot env -u QEMU runtime/xnuhost/check-arm64.sh smoke check
   else results+=("boot: skipped (no NDK here: the static xnuhost and the test kernel need it)"); fi
   part port sh scripts/port/test-verify-host.sh
   # METAL_AMD=1: the A56's guest Mesa and its Metal layer (Mesa builds of several minutes each and about 1.7 GB in

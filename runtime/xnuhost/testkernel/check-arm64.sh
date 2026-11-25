@@ -16,7 +16,9 @@ set -u
 xnuhost=$1 image=$2 work=$3
 case "$(uname -s)/$(uname -m)" in
   Linux/aarch64|Linux/arm64) run= ;;
-  *) run=${QEMU:-$(command -v qemu-aarch64 || true)}
+  # QEMU is a path here; a caller that only means "run the boot part" sets QEMU=1, which is
+  # not a binary, so fall back to the one on PATH.
+  *) if [ -n "${QEMU:-}" ] && [ -x "${QEMU}" ]; then run=$QEMU; else run=$(command -v qemu-aarch64 || true); fi
      [ -n "$run" ] || { echo "check-arm64: qemu-aarch64 not installed: skipped"; exit 0; } ;;
 esac
 mkdir -p "$work/testdata"

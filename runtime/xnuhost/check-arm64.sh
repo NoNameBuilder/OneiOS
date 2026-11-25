@@ -41,7 +41,9 @@ done
 
 case "$(uname -s)/$(uname -m)" in
   Linux/aarch64|Linux/arm64) run= ;;
-  *) run=${QEMU:-$(command -v qemu-aarch64 || true)}
+  # QEMU is a path here, but callers that only mean "run the boot part" set QEMU=1: an
+  # unexecutable value is not a qemu binary, so fall back to the one on PATH.
+  *) if [ -n "${QEMU:-}" ] && [ -x "${QEMU}" ]; then run=$QEMU; else run=$(command -v qemu-aarch64 || true); fi
      [ -n "$run" ] || { echo "check-arm64: qemu-aarch64 not installed: skipped"; exit 0; } ;;
 esac
 # One thread of each of the fastest cores: cpuinfo_max_freq within 10% of the top, the first CPU of its siblings.
