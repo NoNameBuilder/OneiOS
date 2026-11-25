@@ -330,9 +330,17 @@ the old route; xnuhost runs them only with `wifi=tap`.
    would stop One UI answering ARP on wlan0. `bin/wifictl restore /data/local/tmp/oneios/session/wifi.state` puts
    both settings back; the fork's return can run it after its SIGKILL step (`oneos/interface.md` section 6; not in
    the fork yet).
-4. **Wi-Fi off in One UI at the switch** [U]: then the chip is stopped and wlan0 does not exist. The bridge says
-   `wifi: off: no wlan0 (One UI's Wi-Fi was off at the switch?)` and iOS gets no network device. Starting the chip
-   itself (IWifi `start`, `createStaIface`) is not written.
+4. **Wi-Fi off in One UI at the switch** [U]. Then the chip is stopped and wlan0 does not exist. The bridge starts it
+   itself through the HAL the framework and wificond use, `android.hardware.wifi.IWifi/default` (stable AIDL version 1,
+   the phone's manifest; `wifi/chip.rs`): `isStarted`, and when false `start` (the HAL loads the driver and the
+   firmware), then the wait for the driver's station interface (wlan0), and `IWifiChip.createStaIface` when the chip
+   has none. At the return `IWifi.stop` goes only if this session started it: One UI's own Wi-Fi (the usual boot) is
+   left exactly as it was. Every step is a line in the log (`wifi: no wlan0: the Wi-Fi HAL is not started ...`,
+   `wifi: started the chip; wlan0 appeared after 2.1 s`, `wifi: the chip was started for the session ...: stopped
+   again`); a denial (the domain may not call `hal_wifi_default`) is logged and the session carries on as before.
+   The codes and parcels are host-tested against a fake HAL on a real binder driver, the calls' bytes in `wifi/chip.rs`
+   (`tests/test_aidl_binder.rs`); **not run on the phone**. `wifictl chip start`, `wifictl status`, `wifictl chip stop`
+   is the same path beside One UI, the rehearsal to run first.
 
 ### The guest's side (`kernel/patches/oneios-hosted/net`, in the hosted kernel since 2026-11-12)
 
@@ -435,6 +443,7 @@ networks on 24A446, so its join details are the ones used) and iOSPlus10's 20H39
 | `uplink.rs` | the guest's frames that find the AF_PACKET socket's send buffer full: they wait in order for `POLLOUT`, 20 ms at most (section "The uplink's full send buffer") |
 | `station.rs` | the station the guest's driver talks to: its messages become calls on a radio back end, the radio's reports become messages; while joined, a scan soon after the last one is answered from its networks |
 | `wlan.rs` | the back end on the phone: the AF_PACKET socket (a 4 MiB receive buffer, a 1 MiB send buffer; both doubled by the kernel), nl80211 (low-priority scans while joined), wlan0's settings kept and given back. Three threads: frames, nl80211 events, control. The guest's vCPU only sends a frame or queues a message; netlink, binder and the join's timeouts are the control thread's |
+| `chip.rs` | the Wi-Fi chip's HAL (`android.hardware.wifi.IWifi/default`, AIDL v1): when One UI's Wi-Fi was off at the switch there is no wlan0, so the session starts the chip itself (`isStarted`, `start`, the wait for wlan0, `createStaIface` when the chip has none) and stops it again at the return when it started it |
 | `sim.rs` | a made-up radio (`wifi=sim`) |
 | `p2p.rs`, `wonder.rs` | what the radio offers for a peer-to-peer link (interface types and combinations, action frames, NAN, vendor commands, every interface), for `wifictl p2p` (section 4a) |
 | `supplicant.rs` | the supplicant's client: the lookup, the interface, the callback object, the join's plan and its outcome |
@@ -461,11 +470,13 @@ absent: a reason not to run it on the phone as it is.
   SELECTING, INIT-REBOOT, RENEWING and REBINDING, iOS's and another station's, and the log line of each; a 4000-byte coalesced
   IPv4 frame and a 3000-byte IPv6 one cut into three with right lengths, sequence numbers and checksums; the station
   against a fake radio; the AIDL parcels byte for byte; the join's plan for WPA2, WPA3, transition, WPA with TKIP,
-  open, OWE and a network not seen; the supplicant's callbacks decoded); `test_aidl_binder` 35 checks: the client
+  open, OWE and a network not seen; the supplicant's callbacks decoded); `test_aidl_binder` 48 checks: the client
   against a fake service manager and supplicant in another process on a real binder driver (a lazy service found on
   the third lookup, the interface added and removed, the callback's descriptor and version asked for inside
   `registerCallback`, a join, a wrong key, a network not found, a rejection, a link that drops, a look without a
-  callback, a supplicant that dies). Both ends of that test use `hal::aidl`.
+  callback, a supplicant that dies), and the Wi-Fi chip's HAL client against a fake IWifi/IWifiChip (a lazy service,
+  `start`, the wait for the netdev, `createStaIface` when the chip has none, `getStaIfaceNames`, `stop`; an already
+  started chip left alone; an interface of another name not duplicated). Both ends of that test use `hal::aidl`.
 - **Third session (2026-11-12, about 14:00, with `04ab894`)**: the networks show in Settings (`scan done: 64
   networks`, `event 10 for en0, 0 bytes -> 0`, `wifid[41] gets 11: len 2280 -> 0` for each). The owner joined an
   open network: `join: layout 656, authentication lower 0x1 upper 0x0, key of 0 bytes of kind 0`, xnuhost `join:
