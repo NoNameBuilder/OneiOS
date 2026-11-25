@@ -709,6 +709,41 @@ for each of its four tiles. This lowers repeated mapping-table traversal and mak
 it still scans every guest row and does not remove the CPU copy. The next phone measurement is the existing
 `oneios-display: 10 s` read timing alongside xnuhost's `frame:` stages; no new timing-only instrumentation was added.
 
+### 2.5b The animation rate, ASTC and the pools' room (S24 local backport of e84a46e; 2026-11-25)
+
+From the gpumem session of 2026-11-24 (`docs/s24-fps-heat-camera.md`: free memory 1-36 MiB, 2-3 GiB of it GPU blobs,
+the pageout and the unmap storm on every core) and UniXNU-zizhan's measured changes. Each is one switch
+(docs/switches.md); not built or booted in this checkout.
+
+- **The animation rate.** The in-process animation manager (AnimationKit's in iOS 27, `oneios-tool sym cstr`) asks its
+  CADisplayLink for 20..120 a second, 30 preferred, and the guest's display offered 24..120 Hz: light animations ran
+  at 24-40 Hz on a panel that refreshes at 120 whatever is drawn. Two fixes: `userland/metal/DisplayLinks.inc` (in
+  every process that loads the Metal plug-in but backboardd) gives that manager's links the display's own rate, ported
+  from zizhan 42629e5 (their moving fps 56.7-58.4 -> 95.3), switch `oneios-dl-full=0`; and the kernel's display
+  reports a 60..120 Hz range (`sheng-vsync-min`, default 60, `kernel/patches/oneios-hosted/display/README.md`).
+- **ASTC.** xnuhost's `astc=1` (default) keeps APPLE2 and MTL2,2 in `/product graphics-featureset-fallbacks`, so
+  MobileGestalt answers DeviceSupportsASTC and CoreUI and Core Animation give ASTC images to the GPU instead of
+  decoding them with ImageIO on the CPU (zizhan 46.9 -> 88.6 moving fps). NativeMetal's frontend lays the blocks out
+  itself (`DVMLinearTextureLayout`, a watermark refuses another GPU's layout) and the Adreno samples ASTC LDR. Both
+  were dropped because SplashBoard then wrote app snapshots as ATX (blank app-switcher cards, and seconds of CPU per
+  snapshot); `userland/metal/SnapshotFormat.inc` (from ios-garnet) keeps SpringBoard's snapshots JPEG or PNG. Switches
+  `astc=0`, `oneios-snapshot-astc=1`. The A56 keeps `astc=0` (its host table entry).
+- **The pools' room.** metal2vulkan kept a free range of half a block (32 MiB) in each pool and made a new 64 MiB block
+  whenever no block had that range in one piece: backboardd's GM row `p 13/440M u 264M`, 176 MiB of wired guest RAM
+  unplaced. `userland/metal/KeepRoom.inc` sets `METAL2VULKAN_KEEP_ROOM_MIB` (Droid-VM patch 0027) to 8 in every
+  client; a placement past it makes its block when it is placed, as before. Switch `oneios-keep-room=MIB` (0: the half
+  block). 624bab3 add-on only. Proof: the GM rows' `p` nearer `u`, `oneios-mem: free` higher, fewer
+  `VM_pageout_scan` and `VM_compressor` us in `oneios-perf: kernel_task`.
+- **The compile deadline.** metal2vulkan's `Budget::standard` (20 s) failed cameracaptured's compute pipelines
+  (`Compile(Budget(Time))`) with every core busy. `userland/metal/m2v-compile-deadline.patch` reads
+  `METAL2VULKAN_COMPILE_DEADLINE_S` (1-600), which `CompileDeadline.inc` sets to 120 in every client but backboardd
+  (a frame of the render server waits for its compiles; another client waits at its pipeline's creation, off the frame
+  path). Switch `oneios-compile-s=0`. 624bab3 add-on only.
+
+Read and found right already: our guest display waits for the fence taken at the swap (`DroidVMVirtioGpuDisplay.cpp`
+reads `droidvm_virtgpu_submitted()` at the offer), the fix zizhan made in 49dee66. Not done: the CPU copy of the frame
+(2.5 item 2); the plan of a zero-copy panel pool is in `docs/s24-fps-heat-camera.md` "The zero-copy panel pool".
+
 ## 3. Tests on the PC
 
 `cd runtime && cargo test -p xnuhost -p drm2kgsl-sys` (also part of `runtime/host-tests.sh` and `runtime/build.sh

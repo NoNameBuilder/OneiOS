@@ -107,7 +107,11 @@ so those archives keep their own names.
   60 Hz the backend also reports the rate the way a ProMotion panel does: `getRefreshAttributes` answers a
   minimum refresh interval of 1/120 s and keeps the family's maximum of 1/24 s (a range of 24 to 120 Hz for
   the render server), and `setDisplayRefreshProperties` publishes that as `IOMFBDisplayRefresh` before any
-  client can find the display. `sheng-vsync-fixed=1` reports one fixed rate instead. With no boot argument at
+  client can find the display. Since 2026-11-25 (fix/s24-fps-heat-camera) the longest interval is 1/60 s: a 60..120 Hz range
+  (`sheng-vsync-min=HZ`, default 60 in `OneiOSDisplay.cpp`; 24 or 0 gives the family's 1/24 s back), staged into
+  `NativeLegacyDisplay.cpp` by `oneios-tool kernel build-oneios-display` (`staged/display.rs` LEGACY): with 24 Hz on
+  offer Core Animation ran light animations at 24-40 Hz (UniXNU-zizhan's reading of its frames). The kernel says
+  `oneios-display: refresh range 60..120 Hz` once. `sheng-vsync-fixed=1` reports one fixed rate instead. With no boot argument at
   all (a kernel started without xnuhost's) the tick is 60 Hz and the family's 1/60 s stays. The tick with a
   client, and what backboardd makes of the properties, have not run.
 - **Swaps.** A swap is accepted when it is one full-panel, untransformed surface in B,G,R,A (or Apple's `&BGA`

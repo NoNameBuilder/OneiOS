@@ -26,7 +26,8 @@
  * A frame: the kernel's newest (NV12, at most 1920x1080, BT.601 full range) is scaled into a buffer of the pool
  * the graph gave each output (VideoOutputConfigurations' BufferPool) and handed to that output's
  * PixelBufferHandler with the host time of its arrival. 420f, 420v, x420, x422 and BGRA buffers are filled
- * (oneios_camera_scale.c); others are said once and skipped. The camera is opened by the graph's Start only.
+ * (oneios_camera_scale.c); others are said once and skipped. The camera is opened by the graph's Start only. The
+ * stream posts StreamStarting, StreamStarted, StreamStopping and StreamStopped as H10ISP's does (from Jesvi-iOS).
  *
  * The stream formats are the plist's named formats and their companions with the keys CMCapture's resolver compares
  * (oneios_camera_formats.c), and each stream answers ModuleInfo with its sensor ID (CameraSetup.plist DefaultSensorIDs).
@@ -43,6 +44,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/sysctl.h>
 #include <unistd.h>
 #include "OneiOSCamera.h"
 #include "oneios_camera_formats.h"
@@ -1305,6 +1307,59 @@ worker(void *context)
 
 static OSStatus stream_stop(CMBaseObjRef o);
 
+/*
+ * The stream's own notifications, as H10ISP's stream posts them (CoreMedia's notification center, the stream as the
+ * object): "StreamStarting" and "StreamStarted" around a Start, "StreamStopping" and "StreamStopped" around a Stop.
+ * Ported from Jesvi-iOS userland/src/camera_device.c post() (a13e406; MIT, the HakiOS authors): there
+ * BWFigVideoCaptureDevice waited for StreamStopped (captureStreamWillStopStreaming:, _deviceDidStopStreaming), and
+ * without it every stop ended in "Timed out waiting for the capture graph to stop" and mediaserverd's SIGTRAP. Ours
+ * posted none (2026-11-25), and the 2026-11-24 boot's graph never reached a Start. Boot argument
+ * oneios-camera-notify=0 posts none (docs/switches.md). Each posted name is said once: "stream: posted StreamStarted".
+ */
+static bool
+notify_on(void)
+{
+	static int on = -1;
+
+	if (on < 0) {
+		char args[1024] = { 0 };
+		size_t size = sizeof(args) - 1;
+
+		on = sysctlbyname("kern.bootargs", args, &size, NULL, 0) != 0 || strstr(args, "oneios-camera-notify=0") == NULL;
+	}
+	return on != 0;
+}
+
+static void
+post(CMBaseObjRef o, CFStringRef name)
+{
+	static void *(*center)(void);
+	static OSStatus (*post_notification)(void *, CFStringRef, const void *, CFTypeRef, uint32_t);
+	static bool looked;
+	static unsigned said;
+
+	if (!notify_on()) {
+		return;
+	}
+	if (!looked) {
+		looked = true;
+		center = dlsym(RTLD_DEFAULT, "CMNotificationCenterGetDefaultLocalCenter");
+		post_notification = dlsym(RTLD_DEFAULT, "CMNotificationCenterPostNotification");
+		if (center == NULL || post_notification == NULL) {
+			oneios_camera_say("stream: no CMNotificationCenter: the stream's notifications are not posted");
+		}
+	}
+	if (center != NULL && post_notification != NULL) {
+		(void)post_notification(center(), name, o, NULL, 0);
+		if (said++ < 8) {
+			char text[32] = "";
+
+			(void)CFStringGetCString(name, text, sizeof(text), kCFStringEncodingUTF8);
+			oneios_camera_say("stream: posted %s", text);
+		}
+	}
+}
+
 /* Frames are read from the graph's Start on and given out while it runs (stream_stop ends both). */
 static OSStatus
 stream_begin(CMBaseObjRef o, bool graph)
@@ -1342,7 +1397,14 @@ stream_begin(CMBaseObjRef o, bool graph)
 static OSStatus
 stream_start(CMBaseObjRef o)
 {
-	return stream_begin(o, true);
+	OSStatus st;
+
+	post(o, CFSTR("StreamStarting"));
+	st = stream_begin(o, true);
+	if (st == 0) {
+		post(o, CFSTR("StreamStarted"));
+	}
+	return st;
 }
 
 static OSStatus
@@ -1350,6 +1412,7 @@ stream_stop(CMBaseObjRef o)
 {
 	struct stream *s = stream_of(o);
 
+	post(o, CFSTR("StreamStopping"));   /* every Stop, as Jesvi-iOS posts them: the graph waits for StreamStopped */
 	pthread_mutex_lock(&s->lock);
 	s->graph_running = false;
 	for (int i = 0; i < OUTPUTS; i++) {
@@ -1362,6 +1425,7 @@ stream_stop(CMBaseObjRef o)
 		s->worker_started = false;
 		oneios_camera_say("stream %s: stopped (%llu pictures given)", s->camera->name, (unsigned long long)s->out[0].delivered);
 	}
+	post(o, CFSTR("StreamStopped"));
 	return 0;
 }
 

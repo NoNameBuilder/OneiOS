@@ -187,6 +187,10 @@ pub struct Machine {
     pub target_type: Option<String>,
     /// /product artwork-display-gamut, default "P3" (with an identity) or "sRGB"
     pub display_gamut: Option<String>,
+    /// /product graphics-featureset-fallbacks keeps APPLE2 and MTL2,2 (false: both dropped, set_featuresets): MobileGestalt
+    /// then answers DeviceSupportsASTC, and CoreUI and Core Animation hand ASTC images to the GPU instead of decoding
+    /// them on the CPU. xnuhost's astc= (default 1) sets it; false here, the tree of the loader's own tests.
+    pub astc: bool,
     /// The guest's display (0 = say nothing): the mode in pixels, the UI scale (pixels per point, 2 or 3: /chosen
     /// display-scale, which MobileGestalt answers main-screen-scale from, and /product artwork-scale-factor) and the
     /// panel's refresh rate. /chosen/xnuhost carries all four for the hosted kernel's display driver.
@@ -273,6 +277,7 @@ impl Default for Machine {
             model: None,
             target_type: None,
             display_gamut: None,
+            astc: false,
             display_width: 0,
             display_height: 0,
             display_scale: 0,
@@ -332,10 +337,12 @@ fn product_dropped(name: &[u8]) -> bool {
     DROPPED.iter().any(|d| d.as_bytes() == name)
 }
 
-/// graphics-featureset-fallbacks without APPLE2 and MTL2,2 (a NUL-terminated, colon-separated list): with them
-/// MobileGestalt answers DeviceSupportsASTC and SplashBoard writes app snapshots in the AGX GPU's own ASTC layout,
-/// which no other GPU decodes.
-fn set_featuresets(product: &mut Node, name: &[u8], value: &[u8]) {
+/// graphics-featureset-fallbacks (a NUL-terminated, colon-separated list), without APPLE2 and MTL2,2 unless `astc`: with
+/// them MobileGestalt answers DeviceSupportsASTC. They were dropped because SplashBoard wrote app snapshots in the AGX
+/// GPU's own ASTC layout, which no other GPU decodes; NativeMetal's frontend now answers the layout itself (its
+/// DVMLinearTextureLayout, whose watermark refuses data laid out for another GPU), and with ASTC on UniXNU-zizhan
+/// measured 46.9 -> 88.6 moving fps (CA uploads ASTC images instead of ImageIO decoding them). xnuhost's astc=.
+fn set_featuresets(product: &mut Node, name: &[u8], value: &[u8], astc: bool) {
     const OUT: usize = 512; // the C buffer: an entry that would not fit is left out
     let mut length = value.len();
     while length > 0 && value[length - 1] == 0 {
@@ -344,7 +351,7 @@ fn set_featuresets(product: &mut Node, name: &[u8], value: &[u8]) {
     let mut out = Vec::with_capacity(OUT);
     if length > 0 {
         for item in value[..length].split(|b| *b == b':') {
-            let drop = item == b"APPLE2" || item == b"MTL2,2";
+            let drop = !astc && (item == b"APPLE2" || item == b"MTL2,2");
             if !drop && out.len() + item.len() + 2 < OUT {
                 if !out.is_empty() {
                     out.push(b':');
@@ -721,7 +728,7 @@ impl Machine {
         if let Some(idp) = id_product {
             for p in idp.props.iter().filter(|p| !product_dropped(&p.name)) {
                 if p.name == b"graphics-featureset-fallbacks" {
-                    set_featuresets(product, &p.name, &p.value);
+                    set_featuresets(product, &p.name, &p.value, self.astc);
                 } else {
                     product.set(&p.name, &p.value).expect("a parsed property name fits");
                 }
@@ -749,7 +756,7 @@ impl Machine {
             // second in Spotlight, Notes and WebSheet, 105% of a core, keys waiting for the main thread; the phone,
             // 2026-11-22). The values are 24A446's V54 device tree's /product, with this host's choices: the gamut is
             // the display's (sRGB unless display_gamut says so: the helper tags the frames sRGB), and the GPU
-            // fallbacks lose APPLE2 and MTL2,2 as with an identity (set_featuresets).
+            // fallbacks lose APPLE2 and MTL2,2 as with an identity unless astc (set_featuresets).
             product.put_str("artwork-device-idiom", "phone");
             product.put_u32("artwork-device-subtype", 2868);
             product.put_str("artwork-display-gamut", self.display_gamut.as_deref().unwrap_or("sRGB"));
@@ -759,6 +766,7 @@ impl Machine {
                 product,
                 b"graphics-featureset-fallbacks",
                 b"APPLE9:APPLE8:APPLE7:APPLE6:APPLE5:APPLE4:APPLE3:APPLE3v1:APPLE2:APPLE1:GLES2,0\0",
+                self.astc,
             );
         }
         // The artwork scale follows the UI scale (the identity tree's is the iPhone panel's 3). The artwork subtype

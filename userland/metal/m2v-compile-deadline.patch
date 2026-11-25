@@ -1,0 +1,40 @@
+OneiOS (fix/s24-fps-heat-camera, 2026-11-25): the compile deadline of Budget::standard per process
+(METAL2VULKAN_COMPILE_DEADLINE_S, 1-600 s; 20 s without it). Applied after m2v-idle-memory.patch.
+
+--- a/crates/metal2vulkan-air/src/budget/mod.rs
++++ b/crates/metal2vulkan-air/src/budget/mod.rs
+@@ -61,6 +61,21 @@
+ pub const CALL_STACK_BYTES: u64 = 261_728;
+ /// Wall-clock ceiling of one attempt (AGENTS.md).
+ pub const STANDARD_DEADLINE: Duration = Duration::from_secs(20);
++/// OneiOS: the ceiling [`Budget::standard`] gives in this process: [`STANDARD_DEADLINE`], or
++/// `METAL2VULKAN_COMPILE_DEADLINE_S` seconds (1 to 600) where the process sets it. On a phone
++/// guest every core of the host can be busy, and the translation of a capture graph's compute
++/// kernels (cameracaptured's noise-reduction kernels with their function constants) passed the
++/// 20 s and failed `Compile(Budget(Time))`: the graph never started its stream. The Metal plug-in
++/// sets a longer one for every client but the render server (userland/metal/CompileDeadline.inc).
++fn standard_deadline() -> Duration {
++    static DEADLINE: std::sync::OnceLock<Duration> = std::sync::OnceLock::new();
++    *DEADLINE.get_or_init(|| {
++        (std::env::var("METAL2VULKAN_COMPILE_DEADLINE_S").ok())
++            .and_then(|text| text.trim().parse::<u64>().ok())
++            .filter(|seconds| (1..=600).contains(seconds))
++            .map_or(STANDARD_DEADLINE, Duration::from_secs)
++    })
++}
+ /// The polls [`Meter::tick`] lets pass between two reads of the clock for its deadline, after the
+ /// first poll, which reads it. Reading the clock at every poll was 15% of a render state's
+ /// creation (an RTX 3080 host): a deadline passed is seen at most this many polls
+@@ -200,9 +215,10 @@
+ }
+ 
+ impl Budget {
+-    /// The standard budget: a 20 s deadline from now, no cancellation.
++    /// The standard budget: a 20 s deadline from now (OneiOS: [`standard_deadline`]), no
++    /// cancellation.
+     pub fn standard() -> Budget {
+-        Budget::with_deadline(Instant::now().checked_add(STANDARD_DEADLINE))
++        Budget::with_deadline(Instant::now().checked_add(standard_deadline()))
+     }
+ 
+     /// A budget with `deadline` (none: unbounded) and no cancellation.

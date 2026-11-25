@@ -246,7 +246,9 @@ The loader (`runtime/loader/src/machine.rs`, `Machine::tree`; `machine.c`'s `xl_
 V54 device tree (`out/kernel-inputs/24A446/devicetree.bin`, read with `xnuloader-inspect adt`): `artwork-device-idiom`
 "phone", `artwork-device-subtype` 2868, `artwork-dynamic-displaymode` "0", `graphics-featureset-class` "APPLE10",
 `graphics-featureset-fallbacks` "APPLE9:APPLE8:APPLE7:APPLE6:APPLE5:APPLE4:APPLE3:APPLE3v1:APPLE1:GLES2,0" (APPLE2
-taken out, as with an identity), and `artwork-display-gamut` "sRGB" (the device tree has P3; the display helper tags the
+taken out, as with an identity; since 2026-11-25 only with xnuhost's `astc=0`: at the default `astc=1` APPLE2 and MTL2,2 stay, MobileGestalt
+answers DeviceSupportsASTC, and SpringBoard's snapshots are kept JPEG or PNG by the Metal plug-in's `SnapshotFormat.inc`, which
+is what the blank app-switcher cards below came from; docs/switches.md `astc`), and `artwork-display-gamut` "sRGB" (the device tree has P3; the display helper tags the
 frames sRGB). Test: `runtime/loader/tests/test_loader.c` (177 checks, the C loader; its cases are in `runtime/loader/tests/loader.rs` since the Rust port). On the phone (2026-11-22 21:28, a fresh Data store from the seed): 0 `couldn't get 'kMGArtwork...'` lines in iOS's log (117 the session before). MobileGestalt's cache
 (`containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache/Library/Caches/com.apple.MobileGestalt.plist`,
 `CacheVersion` 24A446) pulled at 21:22, before that boot, held `ArtworkTraits = {ArtworkDeviceScaleFactor = 3}` (key
@@ -357,7 +359,9 @@ scale (3.27 would give 440 points) is not something UIKit has. So 3 stays the de
 - `adt.root`, `adt.chosen`, `adt.product`, `adt.buttons`: values to set. The rest of `/product` is copied
   from the IPSW's v54ap tree, less `name`, `AAPL,phandle`, `exclaves-enabled`, `has-exclaves`,
   `artwork-display-gamut`, and with `APPLE2` and `MTL2,2` taken out of `graphics-featureset-fallbacks`
-  (droidvm `make-droidvm-adt.py`: otherwise the app switcher's cards are blank).
+  (droidvm `make-droidvm-adt.py`: otherwise the app switcher's cards are blank: SplashBoard wrote them as ATX). xnuhost's
+  loader keeps both at `astc=1` (2026-11-25), with SpringBoard's snapshot format held to JPEG or PNG instead
+  (`userland/metal/SnapshotFormat.inc`, `oneios-snapshot-astc`).
 - `adt.required`: properties that need a value or the guest stalls: `unique-chip-id`, the three MAC
   addresses (MobileGestalt waits 5 s per answer without them), `manifest-properties` (cryptexd), a `wlan`
   node, `/bluetooth` transport-encoding 10, `/defaults/vmm-present`.

@@ -22,6 +22,10 @@ usage: oneios-tool sym [--slide HEX] [--stdin | -] [--dsc DIR] [--index DIR] [--
        oneios-tool sym index [--force] [--dsc DIR] [--index DIR]
        oneios-tool sym find [--slide HEX] NAME...
        oneios-tool sym callers [--slide HEX] ADDR...
+       oneios-tool sym refs [--slide HEX] ADDR...
+       oneios-tool sym dis [--slide HEX] ADDR LEN
+       oneios-tool sym cstr [--slide HEX] TEXT...
+       oneios-tool sym ptrs [--slide HEX] ADDR...
 
 Name user addresses of a boot log (the kernel's sheng-exc / sheng-ubt / oneios-ubt lines) in the image set's dyld
 shared cache: image + nearest symbol (local symbols from the .symbols file, else the image's own symbol table) for
@@ -42,6 +46,13 @@ ONEIOS_DSC_DIR the index built last is used.
                 by --slide): which image defines a function, or has an objc_msgSend$SELECTOR stub (calls SELECTOR)
   callers ADDR  every b and bl in the cache whose target is ADDR (slid by --slide, else unslid), named; needs the
                 cache itself (ONEIOS_DSC_DIR), not only the index
+  refs ADDR     every adrp + add/ldr/str pair in the cache that forms ADDR (a string, a selector reference, a
+                global), named; needs the cache
+  dis ADDR LEN  LEN (hex) bytes of code at ADDR disassembled (llvm-objcopy and llvm-objdump, or LLVM_OBJCOPY and
+                LLVM_OBJDUMP), each branch target, adrp page use and the string or pointer there named; needs the cache
+  ptrs ADDR     every 8-byte word of the cache that points at ADDR (its low 36 bits): a selector's references
+                (__objc_selrefs), a class's, a string's; needs the cache
+  cstr TEXT     every address where TEXT stands as a whole C string (a selector name, a class name); needs the cache
 
 Kernel addresses (a panic's caller, pc, lr and frame lines) are `oneios-tool sym kernel`'s: its own --help.";
 
@@ -187,6 +198,10 @@ enum Mode {
     Name,
     Find,
     Callers,
+    Refs,
+    Dis,
+    Cstr,
+    Ptrs,
 }
 
 /// `oneios-tool sym`'s command line (clap). `index` as the first word builds the index; `-` reads the addresses
@@ -244,6 +259,10 @@ fn options(cli: Cli, loc: &mut Locate) -> Result<Options> {
             "index" if i == 0 => o.build = true,
             "find" if i == 0 => o.mode = Mode::Find,
             "callers" if i == 0 => o.mode = Mode::Callers,
+            "refs" if i == 0 => o.mode = Mode::Refs,
+            "dis" if i == 0 => o.mode = Mode::Dis,
+            "cstr" if i == 0 => o.mode = Mode::Cstr,
+            "ptrs" if i == 0 => o.mode = Mode::Ptrs,
             "-" | "--stdin" => o.stdin = true,
             "--no-index" => o.no_index = true,
             "--force" => o.force = true,
@@ -251,7 +270,7 @@ fn options(cli: Cli, loc: &mut Locate) -> Result<Options> {
             "--dsc" => loc.dsc = Some(PathBuf::from(value()?)),
             "--index" => loc.index_parent = Some(PathBuf::from(value()?)),
             other if other.starts_with("--") => bail!("unknown option {other}"),
-            other if o.mode == Mode::Find => o.names.push(other.to_string()),
+            other if o.mode == Mode::Find || o.mode == Mode::Cstr => o.names.push(other.to_string()),
             other => o.addrs.push(address(other)?),
         }
     }
@@ -314,6 +333,9 @@ fn run_inner(cli: Cli, mut loc: Locate, input: &mut dyn Read, out: &mut dyn Writ
     }
     if o.mode == Mode::Callers {
         return callers_command(&o, &loc, out, err);
+    }
+    if matches!(o.mode, Mode::Refs | Mode::Dis | Mode::Cstr | Mode::Ptrs) {
+        return read_command(&o, &loc, out, err);
     }
     if o.stdin {
         let mut text = String::new();
@@ -560,4 +582,164 @@ fn callers_command(o: &Options, loc: &Locate, out: &mut dyn Write, err: &mut dyn
         )?;
     }
     Ok(0)
+}
+
+/// `sym refs`, `sym dis`, `sym cstr`: the commands that read the cache itself (with the index for the names).
+fn read_command(o: &Options, loc: &Locate, out: &mut dyn Write, err: &mut dyn Write) -> Result<i32> {
+    let word = match o.mode {
+        Mode::Refs => "refs",
+        Mode::Dis => "dis",
+        Mode::Ptrs => "ptrs",
+        _ => "cstr",
+    };
+    let Some(dsc) = &loc.dsc else {
+        bail!("{word}: set ONEIOS_DSC_DIR (or --dsc DIR) to the folder that holds {}: the cache is read", cache::MAIN_NAME);
+    };
+    let index = open_index(loc, err)?;
+    let cache = Cache::open(dsc)?;
+    if cache.uuid != index.uuid {
+        bail!("{}: not the cache of the index {}", cache.dir.display(), index.dir.display());
+    }
+    let slide = o.slide.unwrap_or(0);
+    let named = |a: u64| match index.name(a) {
+        Some(Name { image, symbol: Some((symbol, offset)) }) => format!("{image}  {symbol} + {offset:#x}"),
+        Some(Name { image, symbol: None }) => format!("{image}  ?"),
+        None => "(not in a cache image's __TEXT)".to_string(),
+    };
+    match o.mode {
+        Mode::Cstr => {
+            if o.names.is_empty() {
+                bail!("cstr: give the text to look for");
+            }
+            let mut status = 0;
+            for text in &o.names {
+                let found = cache.cstr(text.as_bytes());
+                if found.is_empty() {
+                    writeln!(out, "{text}: not in the cache as a C string")?;
+                    status = 1;
+                }
+                for a in found {
+                    writeln!(out, "{}  {}  {text:?}", hex(a as i128 + slide), named(a))?;
+                }
+            }
+            Ok(status)
+        }
+        Mode::Ptrs => {
+            if o.addrs.is_empty() {
+                bail!("ptrs: give the address(es) pointed at");
+            }
+            let targets: Vec<u64> = o.addrs.iter().filter_map(|&a| u64::try_from(a - slide).ok()).collect();
+            let found = cache.ptrs(&targets);
+            for &t in &targets {
+                if !found.iter().any(|f| f.1 == t) {
+                    writeln!(out, "{}: no pointer of the cache holds it", hex(t as i128 + slide))?;
+                }
+            }
+            for (at, t) in found {
+                let image = index.image_of(at).map(|i| index.image_name(i).to_string()).unwrap_or_else(|| "?".into());
+                writeln!(out, "{}  {image}  -> {}", hex(at as i128 + slide), hex(t as i128 + slide))?;
+            }
+            Ok(0)
+        }
+        Mode::Refs => {
+            if o.addrs.is_empty() {
+                bail!("refs: give the address(es) referred to");
+            }
+            let targets: Vec<u64> = o.addrs.iter().filter_map(|&a| u64::try_from(a - slide).ok()).collect();
+            let found = cache.refs(&targets)?;
+            for &t in &targets {
+                if !found.iter().any(|f| f.2 == t) {
+                    writeln!(out, "{}: no adrp pair forms it", hex(t as i128 + slide))?;
+                }
+            }
+            for (adrp, at, target) in found {
+                writeln!(out, "{}  {}  -> {} (adrp at {})", hex(at as i128 + slide), named(at), hex(target as i128 + slide), hex(adrp as i128 + slide))?;
+            }
+            Ok(0)
+        }
+        _ => {
+            let [start, len] = o.addrs[..] else { bail!("dis: give ADDR and LEN (hex)") };
+            let start = u64::try_from(start - slide).map_err(|_| anyhow!("dis: the address is below the slide"))? & !3;
+            let len = usize::try_from(len).ok().filter(|&n| n > 0 && n <= 1 << 20).ok_or_else(|| anyhow!("dis: LEN 4..0x100000"))?;
+            let bytes = cache.read(start, len).ok_or_else(|| anyhow!("dis: nothing of the cache maps {}", hex(start as i128)))?;
+            let lines = objdump(bytes)?;
+            let mut pages: [Option<u64>; 32] = [None; 32];
+            for (k, w) in bytes.chunks_exact(4).enumerate() {
+                let site = start + 4 * k as u64;
+                let word = u32::from_le_bytes([w[0], w[1], w[2], w[3]]);
+                let text = lines.get(&(4 * k as u64)).map(String::as_str).unwrap_or("?");
+                let mut note = String::new();
+                if let Some((t, _)) = cache::branch_target(word, site) {
+                    note = format!("-> {}  {}", hex(t as i128 + slide), named(t));
+                } else if let Some((rd, page)) = cache::adrp_page(word, site) {
+                    pages[rd as usize] = Some(page);
+                } else if let Some((rn, addr)) = pages[((word >> 5) & 31) as usize].and_then(|p| cache::page_use(word, p)) {
+                    note = format!("= {}", hex(addr as i128 + slide));
+                    if let Some(s) = cache.string_at(addr) {
+                        note.push_str(&format!(" {s:?}"));
+                    } else if let Some(p) = cache.read(addr, 8).and_then(|b| cache::u64_at(b, 0)) {
+                        let p = cache::pointer_target(p);
+                        match cache.string_at(p) {
+                            Some(s) => note.push_str(&format!(" -> {} {s:?}", hex(p as i128 + slide))),
+                            None if index.name(p).is_some() => note.push_str(&format!(" -> {}  {}", hex(p as i128 + slide), named(p))),
+                            None => {}
+                        }
+                    }
+                    let _ = rn;
+                }
+                if note.is_empty() {
+                    writeln!(out, "{}  {word:08x}  {text}", hex(site as i128 + slide))?;
+                } else {
+                    writeln!(out, "{}  {word:08x}  {text:<40} ; {note}", hex(site as i128 + slide))?;
+                }
+            }
+            Ok(0)
+        }
+    }
+}
+
+/// The instructions of `bytes` as llvm-objdump prints them (offset -> text), through a scratch file wrapped by
+/// llvm-objcopy as an AArch64 object (LLVM_OBJCOPY, LLVM_OBJDUMP name other binaries).
+fn objdump(bytes: &[u8]) -> Result<HashMap<u64, String>> {
+    let dir = std::env::temp_dir().join(format!("oneios-sym-dis-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).with_context(|| format!("{}", dir.display()))?;
+    let raw = dir.join("code.bin");
+    let obj = dir.join("code.o");
+    std::fs::write(&raw, bytes)?;
+    let objcopy = std::env::var("LLVM_OBJCOPY").unwrap_or_else(|_| "llvm-objcopy".into());
+    let objdump = std::env::var("LLVM_OBJDUMP").unwrap_or_else(|_| "llvm-objdump".into());
+    let ran = std::process::Command::new(&objcopy)
+        .args(["-I", "binary", "-O", "elf64-littleaarch64", "--rename-section", ".data=.text,code"])
+        .arg(&raw)
+        .arg(&obj)
+        .status()
+        .with_context(|| format!("dis: {objcopy}"))?;
+    if !ran.success() {
+        bail!("dis: {objcopy} failed ({ran})");
+    }
+    let o = std::process::Command::new(&objdump)
+        .args(["-d", "--no-show-raw-insn", "--mattr=+v8.5a,+pauth"])
+        .arg(&obj)
+        .output()
+        .with_context(|| format!("dis: {objdump}"))?;
+    let _ = std::fs::remove_dir_all(&dir);
+    if !o.status.success() {
+        bail!("dis: {objdump} failed: {}", String::from_utf8_lossy(&o.stderr).trim());
+    }
+    Ok(parse_objdump(&String::from_utf8_lossy(&o.stdout)))
+}
+
+/// llvm-objdump's instruction lines (`      1c: \tmov\tw9, #0x2`) by offset, the text with its tabs made spaces.
+pub fn parse_objdump(text: &str) -> HashMap<u64, String> {
+    let mut out = HashMap::new();
+    for line in text.lines() {
+        let Some((off, rest)) = line.split_once(':') else { continue };
+        let Ok(off) = u64::from_str_radix(off.trim(), 16) else { continue };
+        if !line.starts_with(' ') {
+            continue;
+        }
+        let rest = rest.split("//").next().unwrap_or("").trim();
+        out.insert(off, rest.split_whitespace().collect::<Vec<_>>().join(" "));
+    }
+    out
 }

@@ -1680,6 +1680,25 @@ a branch). With `--slide` the addresses are given and printed slid. Used on 20F6
 the shared region's slide 0x2db08000) to follow SpringBoard's pc-0 crash from `CI::GLContext::init` back to
 `+[CIContext internalGLContextWithOptions:]` (docs/gpu.md 5.2). Tests: `tests/synthetic.rs` `find_names_and_callers`.
 
+**`sym cstr`, `sym ptrs`, `sym refs`, `sym dis` (2026-11-25, fix/s24-fps-heat-camera):** reading the cache's data and
+code, for answering "does iOS 27 still have this name, and who uses it" without IDA. All four read the cache itself
+(`ONEIOS_DSC_DIR`) and name addresses from the index.
+
+```sh
+oneios-tool sym cstr TEXT...                     # every address where TEXT stands as a whole C string (a selector, a class, a key)
+oneios-tool sym ptrs [--slide HEX] ADDR...       # every 8-byte word that points at ADDR (its low 36 bits): selrefs, class refs, CFStrings
+oneios-tool sym refs [--slide HEX] ADDR...       # every adrp + add/ldr/str pair in an image's __TEXT that forms ADDR, named
+oneios-tool sym dis [--slide HEX] ADDR LEN       # LEN (hex) bytes of code disassembled (llvm-objcopy, llvm-objdump; LLVM_OBJCOPY,
+                                                 # LLVM_OBJDUMP name others), each branch, adrp page use and the string there named
+```
+
+A TEXT `cstr` does not find is said (status 1); `ptrs` and `refs` say each address nothing points at or forms. The
+scans run on every core (`cstr` over 24A446's 7.3 GB cache: 12 s). Used on 24A446 (`ONEIOS_DSC_DIR=out/ios27-cache`)
+to find that the capture stream's output names (`PrimaryScaler`, `SecondaryScaler`, `StillImage`, `VideoOutputHandlers`,
+`PixelBufferHandler`, `BufferPool`) are iOS 27's too (CMCaptureCore), that the in-process animation manager is
+AnimationKit's (`docs/s24-fps-heat-camera.md`), and that `+[XBApplicationSnapshotManifestImpl _outputFormatForSnapshot:]`
+is still a class method. Tests: `tests/synthetic.rs` `strings_pointers_and_page_pairs`.
+
 ```sh
 ONEIOS_DSC_DIR=<cache folder> tools/oneios-tool/tests/sym/compare-golden.sh
 ```

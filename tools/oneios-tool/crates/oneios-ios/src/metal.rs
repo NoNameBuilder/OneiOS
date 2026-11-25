@@ -105,8 +105,8 @@ pub fn stage_edit(root: &Path, hooks: &Path, jobs: &str, knows: bool, rt: bool) 
             ("timeout=1800)", "timeout=10800)".into(), "a longer limit for the fat-LTO Rust build"),
             (
                 "\n\ndef git_tree(*steps):",
-                "\n\nPATCHES.append(ROOT / 'patches/metal2vulkan/trace-metal-vulkan-init.patch')\nPATCHES.append(ROOT / 'patches/metal2vulkan/m2v-spare-command-pools.patch')\nPATCHES.append(ROOT / 'patches/metal2vulkan/m2v-idle-memory.patch')\nPATCHES.append(ROOT / 'patches/metal2vulkan/90101-large-indexed-constants-to-blob.patch')\nPATCHES.append(ROOT / 'patches/metal2vulkan/90102-blob-constant-gep-pointers.patch')\n\n\ndef git_tree(*steps):".into(),
-                "record Vulkan initialization diagnostics; reuse command pools and trim idle GPU memory; apply Adreno shader fixes for large indexed constants and constant GEP pointers (0101/0102)",
+                "\n\nPATCHES.append(ROOT / 'patches/metal2vulkan/trace-metal-vulkan-init.patch')\nPATCHES.append(ROOT / 'patches/metal2vulkan/m2v-spare-command-pools.patch')\nPATCHES.append(ROOT / 'patches/metal2vulkan/m2v-idle-memory.patch')\nPATCHES.append(ROOT / 'patches/metal2vulkan/m2v-compile-deadline.patch')\nPATCHES.append(ROOT / 'patches/metal2vulkan/90101-large-indexed-constants-to-blob.patch')\nPATCHES.append(ROOT / 'patches/metal2vulkan/90102-blob-constant-gep-pointers.patch')\n\n\ndef git_tree(*steps):".into(),
+                "record Vulkan initialization diagnostics; reuse command pools and trim idle GPU memory; extend pipeline compile deadlines for non-render-server clients; retain this branch's Adreno shader fixes (0101/0102)",
             ),
         ],
     )?;

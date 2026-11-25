@@ -75,7 +75,7 @@ const NONE: &[&str] = &[];
 // ---- the table ------------------------------------------------------------------------------------------------------
 // The one place that says what differs per host phone. Rules (docs/hardware.md, "The host device"):
 //   - an entry holds only settings that already exist as options: an xnuhost setting that the config merges as a device
-//     default (gpu, panel-fallback, hz, width/height/scale (one frame), return-graceful-ms, hw-backend*), or an
+//     default (gpu, panel-fallback, hz, width/height/scale (one frame), return-graceful-ms, astc, hw-backend*), or an
 //     environment variable a bridge reads;
 //   - the home device (the S24 Ultra) has none: its behaviour is today's, byte for byte;
 //   - takeover: true allows session-mode=takeover there (the opt-in Android takeover, docs/booter.md 2.9d): only on a
@@ -178,7 +178,8 @@ static TABLE: [HostDevice; 5] = [
     // 2026-11-24 (port/a56-full, the fork Musicalista/OneiOS-A56 to c83b9ca): the guest frame 720x1560 @2x at 60 Hz [F]
     // (c83b9ca, e8747cc: the same 360x780 points as 1080x2340 @3x, 2.25x fewer pixels for its CPU compositor; the display
     // helper scales it to the panel); return-graceful-ms=4000 [F] (e8747cc: kernel 0106 sends logd SIGTERM in that window,
-    // so iOS's log reaches the Data store); haptics on the AIDL vibrator HAL [I] (the A56 has no FF_PERIODIC/FF_SINE
+    // so iOS's log reaches the Data store); astc=0 (2026-11-25): ASTC on was measured on an Adreno phone only (UniXNU-zizhan, docs/switches.md), the
+    // A56 keeps its device tree as before; haptics on the AIDL vibrator HAL [I] (the A56 has no FF_PERIODIC/FF_SINE
     // evdev device: "haptics: off: no force-feedback device ..." in issue 73's log; the fork found none either), back to
     // the evdev search if the HAL is not registered (hw-backend-fallback=1: haptics is the row's only treble bridge).
     HostDevice {
@@ -196,6 +197,7 @@ static TABLE: [HostDevice; 5] = [
             "scale=2",
             "hz=60",
             "return-graceful-ms=4000",
+            "astc=0",
             "hw-backend-haptics=treble",
             "hw-backend-fallback=1",
         ],

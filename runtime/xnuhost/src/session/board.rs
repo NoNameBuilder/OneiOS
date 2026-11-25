@@ -640,6 +640,18 @@ impl Session {
         machine.display_height = fb_height;
         machine.display_scale = config.scale;
         machine.display_hz = self.fb.2;
+        // astc= (docs/switches.md): /product graphics-featureset-fallbacks keeps APPLE2 and MTL2,2, so MobileGestalt answers
+        // DeviceSupportsASTC and CoreUI and Core Animation hand ASTC images to the GPU.
+        machine.astc = config.astc;
+        logi!(
+            "gpu: astc={}: /product graphics-featureset-fallbacks {}",
+            u8::from(config.astc),
+            if config.astc {
+                "keeps APPLE2 and MTL2,2 (DeviceSupportsASTC)"
+            } else {
+                "without APPLE2 and MTL2,2 (no ASTC)"
+            }
+        );
         // Signed text the kernel changes at page-in (/chosen text-fixups): the configured ones, and what the UI scale
         // needs.
         if config.scale_fixup {

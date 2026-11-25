@@ -40,7 +40,7 @@
 
 use crate::gen::{self, fail, Compile, Ctx, Stubs};
 use crate::macho_object::Object;
-use crate::staged::{display::{DISPLAY, SCANOUT}, display_header};
+use crate::staged::{display::{DISPLAY, LEGACY, SCANOUT}, display_header};
 use anyhow::{anyhow, Result};
 use oneios_common::json::Value;
 use siphasher::sip::SipHasher24;
@@ -283,6 +283,11 @@ pub fn staged_text(text: String) -> Result<String> {
     gen::replace_once(text, DISPLAY, |anchor| format!("build-oneios-display: LegacyDisplayProbe.cpp no longer has exactly one {}", anchor.trim()))
 }
 
+/// NativeLegacyDisplay.cpp with the lines of staged/display.rs's LEGACY: the slowest refresh rate reported (sheng-vsync-min).
+pub fn staged_legacy(text: String) -> Result<String> {
+    gen::replace_once(text, LEGACY, |anchor| format!("build-oneios-display: NativeLegacyDisplay.cpp no longer has exactly one {}", anchor.trim()))
+}
+
 /// DroidVMVirtioGpuDisplay.cpp with the lines of staged/display.rs's SCANOUT: half-float surfaces scanned out as such.
 pub fn staged_scanout(text: String) -> Result<String> {
     gen::replace_once(text, SCANOUT, |anchor| {
@@ -331,7 +336,10 @@ pub fn main() -> Result<()> {
     let flags = |items: &[&str]| -> Vec<String> { items.iter().map(|item| item.to_string()).collect() };
     let (out_s, display_s, package_s) = (gen::s(&out), gen::s(&display), gen::s(&package));
 
-    let native = compile_cpp(&display.join("NativeLegacyDisplay.cpp"),
+    // Staged with the slowest refresh rate reported (staged/display.rs LEGACY); its headers stay in the reference.
+    let legacy = out.join("NativeLegacyDisplay.cpp");
+    gen::write_text(&legacy, &staged_legacy(gen::read_text(&display.join("NativeLegacyDisplay.cpp"))?)?)?;
+    let native = compile_cpp(&legacy,
                              &flags(&["-I", &out_s, "-I", &display_s, "-DPE_parse_boot_argn=oneios_display_boot_arg"]))?;
     let bound = bind(&gen::read_bytes(&native)?, &abi)?;
     let staged = out.join("LegacyDisplayProbe.cpp");

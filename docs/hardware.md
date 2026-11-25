@@ -3274,6 +3274,30 @@ their streams. The S24 Ultra defaults are unchanged (the nodes follow the camera
 Host test: `runtime/loader/tests/loader.rs` `machine_cameras_and_identity` (no nodes without the device; both, rear only, front only with an
 identity; the identity's own `unique-model` kept unless `camera-model=` names one; `camera-model=V54AP` and its other identity; the identity hash).
 
+### The stream that never started (S24 local backport of e84a46e; not built or booted here)
+
+In the gpumem session of 2026-11-24 (`docs/s24-fps-heat-camera.md`) the Camera app opened and the preview stayed
+black: `camera#0 q0` moved only at the device's creation, so the graph never called the stream's Start. Its Metal
+compute pipelines failed meanwhile, `oneios-gpu-text: cameracaptured[62] problem compute pipeline ...:
+Compile(Budget(Time))` (the noise-reduction kernels, `kMotionThreshold`, `kIIRUpdateCoefficient`): metal2vulkan's 20 s
+compile deadline on a phone with every core at its top clock. What changed:
+
+- The compile deadline of every Metal client but backboardd is 120 s (`oneios-compile-s`, docs/gpu.md 2.5b).
+- The stream posts StreamStarting and StreamStarted around a Start and StreamStopping and StreamStopped around a Stop
+  (CoreMedia's notification center, the stream as the object), as H10ISP's does; ported from Jesvi-iOS
+  `userland/src/camera_device.c` `post()` (a13e406, MIT), where BWFigVideoCaptureDevice waited for StreamStopped and
+  every stop otherwise timed out. Switch `oneios-camera-notify=0`.
+- Checked, no change needed: the names the plug-in takes (`VideoOutputConfigurations`, `VideoOutputsEnabled`,
+  `VideoOutputHandlers`, `PixelBufferHandler`, `BufferPool`, the outputs `PrimaryScaler`, `SecondaryScaler`,
+  `StillImage`) are in 24A446's CMCaptureCore as they were in iOS 16 (`oneios-tool sym cstr`); iOS 27 adds outputs
+  (`IntermediateTap`, `FrontEndPyramidScale0`, `StillImageRaw`, ...), which the plug-in names once as `stream: an output
+  not here:`.
+
+Proof lines (`phone pull-log`, iOS's log, with the Camera app open): no `Compile(Budget(Time))` for cameracaptured;
+`ONEIOS CAMERA: ios: cameracaptured[N]: stream: posted StreamStarting`, `stream Back Camera: the graph starts the
+stream (format N)`, `stream: posted StreamStarted`, `stream Back Camera: the first frame: ...`, `Back Camera
+PrimaryScaler: the first picture given ...`; xnuhost's `virtio: 60 s` with `camera#0 q0 +N` while the app is open.
+
 ### Missing, unknown
 
 - **The first session with the sensor IDs, the resolved formats and the two Metal fixes** (the phone check:

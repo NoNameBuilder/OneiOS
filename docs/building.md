@@ -1445,6 +1445,10 @@ boot's `oneios-srprot: ... vm_protect A-B` lines (A less the unslid start of the
 ONEIOS_DSC_DIR=out/ios16-cache oneios-tool sym --slide 0x2db08000 0x1c261c58c     # SpringBoard's lr: CI::GLContext::init + 0xcc
 ONEIOS_DSC_DIR=out/ios16-cache oneios-tool sym find EAGLContext:                 # the images that send ...EAGLContext: selectors
 ONEIOS_DSC_DIR=out/ios16-cache oneios-tool sym callers 0x194c99a00               # the branches to that stub (unslid)
+ONEIOS_DSC_DIR=out/ios27-cache oneios-tool sym cstr PrimaryScaler                 # where a name stands as a C string (2026-11-25)
+ONEIOS_DSC_DIR=out/ios27-cache oneios-tool sym ptrs 0x1f5fdcb7c                    # the words that point at it (selrefs, CFStrings)
+ONEIOS_DSC_DIR=out/ios27-cache oneios-tool sym refs 0x256d8f92e                    # the adrp pairs that form it, named
+ONEIOS_DSC_DIR=out/ios27-cache oneios-tool sym dis 0x2ad2b51e4 40                   # code, with branches, pages and strings named
 ```
 
 A kernel panic of a session (`panic(cpu N caller 0x...)`, also when the console lost its first letters: `anic(cpu 0 caller 0x...)`, the fault's pc and lr, the `frame 0x...` lines), named in

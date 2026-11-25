@@ -484,6 +484,7 @@ const GIVEN_KEYS: &[&str] = &[
     "display-post",
     "decoder",
     "decoder-codecs",
+    "astc",
     "gpu-blob-entries",
     "gpu-down",
     "stop-loop",
@@ -690,6 +691,10 @@ pub struct Config {
     /// encoder-10bit (main10), encoder-warmup (1): the video encoder
     pub encoder_10bit: Encoder10,
     pub encoder_warmup: bool,
+    /// astc (1): the device tree's GPU feature sets keep APPLE2 and MTL2,2, so MobileGestalt answers DeviceSupportsASTC
+    /// and CoreUI and Core Animation hand ASTC images to the GPU (NativeMetal's frontend lays them out, DVMLinearTextureLayout)
+    /// instead of decoding them on the CPU; 0: both dropped, as before 2026-11-25 (runtime/loader machine.rs set_featuresets)
+    pub astc: bool,
     /// display-post (apart): the display helper reads and answers each frame while it waits for a buffer and posts
     /// the last (fix/frame-path); serial: it reads no frame until the last is posted (before 2026-11-24)
     pub display_post_serial: bool,
@@ -937,6 +942,7 @@ impl Config {
             wifi_joined_scan: WifiJoinedScan::Cache,
             encoder_10bit: Encoder10::Main10,
             encoder_warmup: true,
+            astc: true,
             display_post_serial: false,
             decoder: Decoder::Auto,
             decoder_codecs: oneencoder::switches::ALL_CODECS,
@@ -1140,6 +1146,7 @@ impl Config {
             "wifi-joined-scan" => self.wifi_joined_scan = named(WifiJoinedScan::parse(value))?,
             "encoder-10bit" => self.encoder_10bit = named(Encoder10::parse(value))?,
             "encoder-warmup" => self.encoder_warmup = flag(value)?,
+            "astc" => self.astc = flag(value)?,
             "display-post" => {
                 self.display_post_serial = named(match value {
                     "apart" => Some(false),
@@ -1390,6 +1397,7 @@ impl Config {
         take!(self, image, "display-post", display_post_serial);
         take!(self, image, "decoder", decoder);
         take!(self, image, "decoder-codecs", decoder_codecs);
+        take!(self, image, "astc", astc);
         take!(self, image, "gpu-blob-entries", gpu_blob_entries);
         take!(self, image, "gpu-down", gpu_down);
         take!(self, image, "stop-loop", stop_loop);
@@ -1441,6 +1449,11 @@ impl Config {
         if !self.given("return-graceful-ms") && !image.given("return-graceful-ms") && device.given("return-graceful-ms")
         {
             self.return_graceful_ms = device.return_graceful_ms;
+        }
+        // astc: the command line's, else the image set's (the take below), else the host phone's (galaxy-a56: 0, its GPU
+        // is not the Adreno this was measured on).
+        if !self.given("astc") && !image.given("astc") && device.given("astc") {
+            self.astc = device.astc;
         }
         if self.width == 0 && self.height == 0 && device.width != 0 && device.height != 0 {
             self.width = device.width;
@@ -1809,7 +1822,7 @@ impl Config {
                     || image.height != 0
                     || (key == "scale" && self.given("scale"))
             }
-            "return-graceful-ms" => self.given(key) || image.given(key),
+            "return-graceful-ms" | "astc" => self.given(key) || image.given(key),
             _ => {
                 let mut one = HwSettings::default();
                 if one.setting(key, value).is_err() {
@@ -1864,7 +1877,7 @@ sched_preemption_disable_debug_mode=0 wdt=-1 native-source-storage=1 vgpu-3d=1 d
 
 /// The keys a host table entry may give as device defaults.
 fn device_key(key: &str) -> bool {
-    matches!(key, "gpu" | "panel-fallback" | "hz" | "width" | "height" | "scale" | "return-graceful-ms")
+    matches!(key, "gpu" | "panel-fallback" | "hz" | "width" | "height" | "scale" | "return-graceful-ms" | "astc")
         || key.starts_with("hw-backend")
 }
 
@@ -2294,6 +2307,7 @@ impl Config {
             ("display-post", (if self.display_post_serial { "serial" } else { "apart" }).to_string(), "apart"),
             ("decoder", self.decoder.as_str().to_string(), "auto"),
             ("decoder-codecs", oneencoder::switches::codecs_text(self.decoder_codecs), "h264,hevc,vp9,av1"),
+            ("astc", on(self.astc).to_string(), "1"),
             ("oneios-wifi-rssi", arg("oneios-wifi-rssi", "1"), "1"),
             ("oneios-telemetry-jobs", arg("oneios-telemetry-jobs", "0"), "0"),
             ("oneios-pool-cut", arg("oneios-pool-cut", "1"), "1"),
@@ -2304,6 +2318,16 @@ impl Config {
             ("oneios-fill-fast-fault", arg("oneios-fill-fast-fault", "1"), "1"),
             ("oneios-idle-spares", arg("oneios-idle-spares", "1"), "1"),
             ("oneios-bo-cache-idle", arg("oneios-bo-cache-idle", "1"), "1"),
+            // fix/s24-fps-heat-camera: the Metal add-on's room kept ahead (KeepRoom.inc), UIKit's animation links
+            // (DisplayLinks.inc), the slowest refresh rate the guest's display reports (staged/display.rs LEGACY).
+            ("oneios-keep-room", arg("oneios-keep-room", "8"), "8"),
+            ("oneios-dl-full", arg("oneios-dl-full", "1"), "1"),
+            ("sheng-vsync-min", arg("sheng-vsync-min", "60"), "60"),
+            // The compile deadline of the Metal clients but backboardd (CompileDeadline.inc), SpringBoard's snapshot format
+            // (SnapshotFormat.inc), the capture plug-in's stream notifications (userland/camera).
+            ("oneios-compile-s", arg("oneios-compile-s", "120"), "120"),
+            ("oneios-snapshot-astc", arg("oneios-snapshot-astc", "0"), "0"),
+            ("oneios-camera-notify", arg("oneios-camera-notify", "1"), "1"),
             // The rt Metal add-on's (userland/metal/rt/RtSwitches.inc); the 624bab3 add-on reads neither.
             ("oneios-dont-care", arg("oneios-dont-care", "1"), "1"),
             ("oneios-queue-priority", arg("oneios-queue-priority", "1"), "1"),

@@ -99,6 +99,7 @@ boolean_t oneios_display_boot_arg(const char *name, void *value, int size)
         {"offline-legacy-cpu-present", 1},  // a frame the virtio scanout did not take is copied and still retires
         {"offline-legacy-unit-scale", 3},   // /chosen display-scale: @3x unless xnuhost says 2
         {"sheng-vsync", 60},                // the refresh tick (work-loop timer) while a client asks for vsync
+        {"sheng-vsync-min", 60},            // above 60 Hz the slowest rate reported (staged/display.rs LEGACY; 24: the family's)
     };
     if (size != (int)sizeof(uint32_t) || !displayEnabled()) return FALSE;
     for (const auto &entry : defaults) {
