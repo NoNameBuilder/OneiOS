@@ -55,7 +55,11 @@ Output in `OUT` (the hook puts it in the image set's `overlay/userland/`):
 
 The build is not root, so owners are recorded, not set; the hook writes them to `$ONEIOS_OWNERS`.
 A second run over the same trees changes nothing. A preference file that is not a property list stops the
-run instead of being written over. A root that is not iOS 27.0.1 is refused (`--any-version`), except iOS 16.5
+run instead of being written over. A root of a build the device profile lists in `[builds]` (`userland/config/device-iphone18,2.toml`:
+`"24A446" = "27.0.1"`, `"24B156" = "27.2.1"`, 2026-11-25) with that ProductVersion is taken as the profile's ("kept",
+a line that says which); [device] version stays the first one's. Its IPSW device tree for v54ap differs from 24A446's
+in four values none of which this profile states [F: `xnuloader-inspect adt` of both]; no 24B156 root has been read
+here (its OS volume was not fetched) [U]. Any other root that is not iOS 27.0.1 is refused (`--any-version`), except iOS 16.5
 (20F66), the Galaxy A56's userland (docs/a56.md, 2026-11-23): its tweaks apply with a line that says so, and its
 `xnuhost.conf` carries the 16.5 boot arguments (the 16.5 shims, `oneios-gpu-metal=0`, and since 2026-11-23
 `oneios-mac-exec-skip=mediaserverd,TVRemoteConnectionService`, kernel 0073), the keybagd fixup (only for 20F66's own
@@ -199,7 +203,7 @@ xnuhost ... --set scale=2                              # one run, over the image
 | `identity.expect` on the Data seed: `main-screen-scale`, `main-screen-width`, `main-screen-height` | roottweak | `oneios-mg` in the guest |
 | `overlay/userland/xnuhost.conf` `scale=N` | roottweak | xnuhost |
 | `/chosen display-scale`, `/product artwork-scale-factor`, `/chosen/xnuhost display-*`, boot argument `offline-legacy-unit-scale=N` | xnuhost (`docs/booter.md` 2.8) | MobileGestalt, the framebuffer driver |
-| `/chosen text-fixups` (scale 3, build 24A446) | xnuhost | the kernel, for QuartzCore |
+| `/chosen text-fixups` (scale 3, build 24A446 or 24B156) | xnuhost | the kernel, for QuartzCore |
 
 Width and height are not a setting: xnuhost takes them from the panel, and the profile's `[display]` (1440x3120,
 120 Hz) is what it finds on this phone. An image built before this change has `main-screen-width=1320` in its
@@ -219,7 +223,7 @@ not been rebuilt.
   mode's native-scale field when that is more; else 2 for a mode taller than 1080 pixels and 1 otherwise.
   `display-scale` is not read. This framebuffer's modes carry no preferred scale, so **the unchanged answer is
   2**. For 3, xnuhost adds two fixups (`mov w9, #2` -> `#3` at 0x40b17a8; `mov w8, #1; cinc` -> `mov w8, #3;
-  nop` at 0x40b17bc). Which of the two paths this guest takes ([U]: the byte tested is a global set once, taken
+  nop` at 0x40b17bc). iOS 27.2.1 (24B156) has the same function, the same 32 instructions, at 0x3f9d6f4 (found by its bytes, one match in .01, and checked by its selector, entry 11 of the same method list): its two fixups are at 0x3f9d744 and 0x3f9d758 with the same bytes (`runtime/xnuhost/src/config.rs` `SCALE_FIXUPS_3X`, per build; a build not there gets none). Which of the two paths this guest takes ([U]: the byte tested is a global set once, taken
   to be "virtual device") does not matter, both are changed.
 - The refresh rate: the framebuffer's refresh attributes and `IOMFBDisplayRefresh` (minimum interval 1/120 s,
   maximum 1/24 s), as a ProMotion panel reports them (`kernel/patches/oneios-hosted/display/README.md`). No
@@ -247,7 +251,9 @@ V54 device tree (`out/kernel-inputs/24A446/devicetree.bin`, read with `xnuloader
 "phone", `artwork-device-subtype` the panel's (2340 on a 1080x2340 panel, the iPhone 12/13 mini's 360x780 grid; 2868,
 the iPhone18,2's Pro Max, on any other panel; `--set artwork-subtype=N` overrides both), `artwork-dynamic-displaymode` "0", `graphics-featureset-class` "APPLE10",
 `graphics-featureset-fallbacks` "APPLE9:APPLE8:APPLE7:APPLE6:APPLE5:APPLE4:APPLE3:APPLE3v1:APPLE1:GLES2,0" (APPLE2
-taken out, as with an identity), and `artwork-display-gamut` "sRGB" (the device tree has P3; the display helper tags the
+taken out, as with an identity; since 2026-11-25 only with xnuhost's `astc=0`: at the default `astc=1` APPLE2 and MTL2,2 stay, MobileGestalt
+answers DeviceSupportsASTC, and SpringBoard's snapshots are kept JPEG or PNG by the Metal plug-in's `SnapshotFormat.inc`, which
+is what the blank app-switcher cards below came from; docs/switches.md `astc`), and `artwork-display-gamut` "sRGB" (the device tree has P3; the display helper tags the
 frames sRGB). Test: `runtime/loader/tests/test_loader.c` (177 checks, the C loader; its cases are in `runtime/loader/tests/loader.rs` since the Rust port). On the phone (2026-11-22 21:28, a fresh Data store from the seed): 0 `couldn't get 'kMGArtwork...'` lines in iOS's log (117 the session before). MobileGestalt's cache
 (`containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache/Library/Caches/com.apple.MobileGestalt.plist`,
 `CacheVersion` 24A446) pulled at 21:22, before that boot, held `ArtworkTraits = {ArtworkDeviceScaleFactor = 3}` (key
@@ -329,7 +335,7 @@ Both scales:
 
 Only at 3:
 
-- It depends on the two text fixups, which exist for build 24A446 only and have not been seen applied. Without
+- It depends on the two text fixups, which exist for builds 24A446 and 24B156 only and have not been seen applied. Without
   them QuartzCore runs the display at 2.
 - The least risk to layouts: iPhone assets, fonts and metrics are all made for 3; only the point size is new.
 
@@ -358,7 +364,9 @@ scale (3.27 would give 440 points) is not something UIKit has. So 3 stays the de
 - `adt.root`, `adt.chosen`, `adt.product`, `adt.buttons`: values to set. The rest of `/product` is copied
   from the IPSW's v54ap tree, less `name`, `AAPL,phandle`, `exclaves-enabled`, `has-exclaves`,
   `artwork-display-gamut`, and with `APPLE2` and `MTL2,2` taken out of `graphics-featureset-fallbacks`
-  (droidvm `make-droidvm-adt.py`: otherwise the app switcher's cards are blank).
+  (droidvm `make-droidvm-adt.py`: otherwise the app switcher's cards are blank: SplashBoard wrote them as ATX). xnuhost's
+  loader keeps both at `astc=1` (2026-11-25), with SpringBoard's snapshot format held to JPEG or PNG instead
+  (`userland/metal/SnapshotFormat.inc`, `oneios-snapshot-astc`).
 - `adt.required`: properties that need a value or the guest stalls: `unique-chip-id`, the three MAC
   addresses (MobileGestalt waits 5 s per answer without them), `manifest-properties` (cryptexd), a `wlan`
   node, `/bluetooth` transport-encoding 10, `/defaults/vmm-present`.

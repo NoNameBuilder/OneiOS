@@ -170,7 +170,7 @@ tests (stored, fixed and dynamic blocks; every refusal).
 
 **The A56 log lines that prove it** (xnuhost.log; `oneios-tool log` / `phone log --grep gpu`):
 ```
-host: galaxy-a56 (Galaxy A56 (SM-A566, Exynos 1580)), matched by ro.product.model=SM-A566E; read: ...; defaults: gpu=auto, panel-fallback=1080x2340@120, width=720, height=1560, scale=2, hz=60, return-graceful-ms=4000, hw-backend-haptics=treble, hw-backend-fallback=1
+host: galaxy-a56 (Galaxy A56 (SM-A566, Exynos 1580)), matched by ro.product.model=SM-A566E; read: ...; defaults: gpu=auto, panel-fallback=1080x2340@120, width=720, height=1560, scale=2, hz=60, return-graceful-ms=4000, astc=0, hw-backend-haptics=treble, hw-backend-fallback=1
 sidecar <kernel>.gpuaddon: N bytes
 gpu: self-test: PASS raw: guest memory (a udmabuf of a sealed memfd) imported into /dev/dri/renderD128 and mapped at GPU address 0x...
 gpu: self-test: PASS raw: an IB of 8 GFX NOPs submitted (context N, sequence N)

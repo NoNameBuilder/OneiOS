@@ -68,6 +68,15 @@ grep -q '"path": "lib/profiles/ios-27.0.1-iPhone18-2.toml"' "$T/x/runtime.json" 
 # the Galaxy A56's iOS 16.5 profile (docs/a56.md): the OneOS fork's Make iOS image sends it on an A56
 cmp -s "$T/x/lib/profiles/ios-16.5-a56.toml" "$ROOT/profiles/ios-16.5-a56.toml" || fail "lib/profiles/ has no A56 profile"
 ok "lib/profiles/: the IPSW profiles for the phone's fetch"
+# The switch catalog (package.sh step 1d): there, in runtime.json, version 1, and read back by `switches --runtime`
+# (what the OneOS app runs on the phone) as this tree's catalog.
+grep -q '"path": "lib/switches.json"' "$T/x/runtime.json" || fail "lib/switches.json is not in runtime.json"
+[ "$("${J[@]}" get "$T/x/lib/switches.json" version)" = 1 ] || fail "lib/switches.json is not a catalog of version 1"
+N=$("${J[@]}" len "$T/x/lib/switches.json" switches)
+[ "$N" -gt 40 ] || fail "lib/switches.json has $N switches"
+"$ONEIOS_TOOL" switches --json --runtime "$T/x" > "$T/switches.json" || fail "switches --runtime does not read lib/switches.json"
+"$ONEIOS_TOOL" switches --json | cmp -s - "$T/switches.json" || fail "lib/switches.json is not this tree's catalog"
+ok "lib/switches.json: the switch catalog ($N switches)"
 # Its dynamic ELF files were checked against the NDK's API 30 stubs (elf-check.sh), twice: runtime/build.sh on its
 # stage, then package.sh on the package's content.
 [ "$(grep -c '^elf-check: .* 0 failures$' "$T/log")" = 2 ] || { cat "$T/log"; fail "package.sh did not run elf-check.sh twice"; }
@@ -148,6 +157,22 @@ zstd -dc "$P" | tar -xO runtime.json > "$T/m.json"
 [ "$("${J[@]}" get "$T/m.json" kernel.build_id)/$("${J[@]}" get "$T/m.json" kernel.path)" = test-1/kernel/xnu.macho ] || fail "kernel not in the manifest"
 zstd -dc "$P" | tar -xO NOTICE | grep -q 'Apple Public Source License' || fail "no APSL notice"
 ok "own kernel accepted, APSL notice present"
+# 4b. Another iOS build's kernel (KERNEL_MORE_DIRS): kernel/<build>/, both in runtime.json "kernels", "kernel" the default's
+rm -rf "$T/extra" "$OUT_DIR" "$T/k2"; mkdir -p "$T/k2" "$T/extra/kernel"
+macho kernel/xnu.macho 2; record kernel/xnu.macho profile='"ios-27.2.1-24B156"' build_id='"test-2"' releasable=true
+mv "$T/extra/kernel/xnu.macho" "$T/extra/kernel/xnu.macho.build.json" "$T/k2/"
+"${J[@]}" set "$T/k/xnu.macho.build.json" profile '"ios-27.0.1-24A446"'
+KERNEL_DIR=$T/k KERNEL_MORE_DIRS=$T/k2 "$ROOT/runtime/package.sh" $V > "$T/log" 2>&1 || { cat "$T/log"; fail "package with two kernels"; }
+zstd -dc "$P" | tar -xO runtime.json > "$T/m.json"
+[ "$("${J[@]}" get "$T/m.json" kernel.path)|$("${J[@]}" len "$T/m.json" kernels)|$("${J[@]}" get "$T/m.json" kernels.0.build)|$("${J[@]}" get "$T/m.json" kernels.1.build)|$("${J[@]}" get "$T/m.json" kernels.1.path)|$("${J[@]}" get "$T/m.json" kernels.1.build_id)" = \
+  "kernel/xnu.macho|2|24A446|24B156|kernel/24B156/xnu.macho|test-2" ] || { cat "$T/m.json"; fail "runtime.json's kernels"; }
+grep -q '^package: kernel for 24B156 test-2 (kernel/24B156/)$' "$T/log" || { cat "$T/log"; fail "no line for the second kernel"; }
+rc=0; KERNEL_MORE_DIRS=$T/k2 "$ROOT/runtime/package.sh" $V > "$T/log" 2>&1 || rc=$?
+[ "$rc" = 1 ] && grep -q 'KERNEL_MORE_DIRS without a default kernel' "$T/log" || { cat "$T/log"; fail "KERNEL_MORE_DIRS alone: exit $rc"; }
+"${J[@]}" set "$T/k2/xnu.macho.build.json" releasable false
+rc=0; KERNEL_DIR=$T/k KERNEL_MORE_DIRS=$T/k2 "$ROOT/runtime/package.sh" $V > "$T/log" 2>&1 || rc=$?
+[ "$rc" = 1 ] && grep -q 'is not releasable' "$T/log" || { cat "$T/log"; fail "a second kernel not releasable: exit $rc"; }
+ok "two kernels: kernel/24B156/ beside kernel/, runtime.json \"kernels\" lists both; refused alone or not releasable"
 
 # 5. The guest's plug-ins (METAL_DIR, CAMERA_DIR: lib/guest/): made-up signed Mach-Os (`debug fixture`), taken and named
 # in runtime.json; Apple's code or an executable there refused. lib/guest/NOTICE takes licence texts from
@@ -185,6 +210,26 @@ if [ -f "$METAL_LICENSES_DIR/metal2vulkan/LICENSE-GPL-2.0" ] && [ -f "$METAL_LIC
   grep -q 'lib/guest/NOTICE' "$T/notice" || fail "NOTICE does not name lib/guest/NOTICE"
   grep -q '^package: Metal plug-in for iPhone18,2 24A446 from ' "$T/log" || fail "no Metal line"
   ok "the guest plug-ins: lib/guest/ in runtime.json (metal: 2 CDHashes, camera), lib/guest/NOTICE with the licences"
+  # another iOS build of the device (METAL_MORE_DIRS): lib/guest/<build>/, listed in "metals" and "cameras" after the
+  # default's, which "metal" and "camera" still name
+  rm -rf "$T/g3"; guest_dir "$T/g3" "iPhone18,2 24B156"
+  METAL_DIR=$T/g CAMERA_DIR=$T/g/camera METAL_MORE_DIRS=$T/g3 "$ROOT/runtime/package.sh" $V > "$T/log" 2>&1 || { cat "$T/log"; fail "package with two targets"; }
+  zstd -dc "$P" | tar -xO runtime.json > "$T/m.json"
+  [ "$("${J[@]}" get "$T/m.json" metal.target)|$("${J[@]}" get "$T/m.json" camera.path)|$("${J[@]}" len "$T/m.json" metals)|$("${J[@]}" get "$T/m.json" metals.0.target)|$("${J[@]}" get "$T/m.json" metals.1.target)|$("${J[@]}" get "$T/m.json" metals.1.bundle)|$("${J[@]}" get "$T/m.json" cameras.1.path)|$("${J[@]}" get "$T/m.json" cameras.1.target)" = \
+    "iPhone18,2 24A446|lib/guest/camera|2|iPhone18,2 24A446|iPhone18,2 24B156|lib/guest/24B156/NativeAdrenoMetal.bundle|lib/guest/24B156/camera|iPhone18,2 24B156" ] || { cat "$T/m.json"; fail "runtime.json's metals and cameras"; }
+  for f in NativeAdrenoMetal.bundle/NativeAdrenoMetal NativeAdrenoMetal.bundle/oneios-target NativeAdrenoMetal.build.json camera/H9ISP.mediacapture; do
+    grep -q "\"path\": \"lib/guest/24B156/$f\"" "$T/m.json" || fail "lib/guest/24B156/$f is not in runtime.json"
+  done
+  grep -q '^package: Metal plug-in for iPhone18,2 24B156 from .* (lib/guest/24B156/)$' "$T/log" || { cat "$T/log"; fail "no line for the second target"; }
+  ok "two targets: lib/guest/24B156/ beside lib/guest/, runtime.json \"metals\" and \"cameras\" list both, \"metal\" stays 24A446's"
+  rc=0; METAL_MORE_DIRS=$T/g3 "$ROOT/runtime/package.sh" $V > "$T/log" 2>&1 || rc=$?
+  [ "$rc" = 1 ] && grep -q 'METAL_MORE_DIRS without METAL_DIR' "$T/log" || { cat "$T/log"; fail "METAL_MORE_DIRS alone: exit $rc"; }
+  rc=0; METAL_DIR=$T/g METAL_MORE_DIRS="$T/g3 $T/g3" "$ROOT/runtime/package.sh" $V > "$T/log" 2>&1 || rc=$?
+  [ "$rc" = 1 ] && grep -q 'a second bundle for build 24B156' "$T/log" || { cat "$T/log"; fail "one build twice: exit $rc"; }
+  "${J[@]}" set "$T/g3/NativeAdrenoMetal.build.json" sources.NativeMetal '"0000000000000000000000000000000000000000"'
+  rc=0; METAL_DIR=$T/g METAL_MORE_DIRS=$T/g3 "$ROOT/runtime/package.sh" $V > "$T/log" 2>&1 || rc=$?
+  [ "$rc" = 1 ] && grep -q 'is built from another NativeMetal than' "$T/log" || { cat "$T/log"; fail "another target of other sources: exit $rc"; }
+  ok "stopped: METAL_MORE_DIRS without METAL_DIR, one build twice, a second target built from other sources"
   apple_dylib() { mkdir -p "$T/extra/lib/guest/x"; "$ONEIOS_TOOL" debug fixture apple-dylib "$T/extra/lib/guest/x/lib.dylib"; }
   refuse "Apple's code under lib/guest/ (not ad hoc, com.apple.*)" apple_dylib
   grep -q 'not signed ad hoc (com.apple.test.dylib)' "$T/log" || { cat "$T/log"; fail "the refusal does not say why"; }

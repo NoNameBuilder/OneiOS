@@ -66,17 +66,19 @@ xnuhost --selftest            # on the phone: page size, address bits, PAC keys 
 | `--image DIR` | required | the image set (`docs/image-format.md`) |
 | `--kernel FILE` | `DIR/kernel.kc`, else `DIR/kernel.macho` | the kernel collection: `MH_FILESET`, or an `MH_EXECUTE` kernel |
 | `FILE.trustcache`, `.vroot`, `.gpuaddon`, `.ramdisk`, `.adt` | optional | DarwinBoot's sidecars beside the kernel, same formats and checks. `.gpuaddon` is the boot addon the kernel writes into the Data store: the Metal plug-in (`addons/`) and, since hosted 0090, the capture plug-in (`camera/`); `oneios-tool ios addon` makes it, `phone addon` stages it (the manifest need not list it). A runtime package may carry one too (`kernel/gpuaddon` and `kernel/gpuaddon.cdhashes`); it is used when the image set has no sidecar of its own, and its CDHashes join that boot's trust cache (`runtime/xnuhost/src/addon.rs`, [gpu.md](gpu.md)) |
-| `DIR/identity.adt` | optional | the device's own decoded device tree: model, target-type, board name and `/product` are taken from it. Without it the root has model iPhone18,2 and target-type V54 (since fix-ios-compressor: iOS names its jetsam properties by it, section 2.2). No script writes one (2026-11-13: `scripts/image/build.sh` does not, and the PC's set `out/image-pc/24A446` has none), so `/product` is only `product-name`, `artwork-scale-factor` and `model`: none of the iPhone's own `/product` (`artwork-display-gamut P3`, `oled-display`, `graphics-featureset-class APPLE10`, `ui-background-quality 100`, ...), which MobileGestalt answers from. Since 2026-11-22 (fix-artwork-traits) the no-identity `/product` also has the artwork and GPU feature-set values CoreUI needs (`artwork-device-idiom` phone, `artwork-device-subtype` 2868, `artwork-display-gamut` sRGB, `artwork-dynamic-displaymode` 0, `graphics-featureset-class` APPLE10 and its fallbacks without APPLE2; [userland.md](userland.md) "The artwork answers"). `--set identity=out/kernel-inputs/24A446/devicetree.bin` (the decoded tree as it is) gives them for one run (`kernel/patches/oneios-hosted/display/README.md`, "What iOS reads about the panel") |
+| `DIR/identity.adt` | optional | the device's own decoded device tree: model, target-type, board name and `/product` are taken from it. Without it the root has model iPhone18,2 and target-type V54 (since fix-ios-compressor: iOS names its jetsam properties by it, section 2.2). No script writes one (2026-11-13: `scripts/image/build.sh` does not, and the PC's set `out/image-pc/24A446` has none), so `/product` is only `product-name`, `artwork-scale-factor` and `model`: none of the iPhone's own `/product` (`artwork-display-gamut P3`, `oled-display`, `graphics-featureset-class APPLE10`, `ui-background-quality 100`, ...), which MobileGestalt answers from. Since 2026-11-22 (fix-artwork-traits) the no-identity `/product` also has the artwork and GPU feature-set values CoreUI needs (`artwork-device-idiom` phone, `artwork-device-subtype` 2868, `artwork-display-gamut` sRGB, `artwork-dynamic-displaymode` 0, `graphics-featureset-class` APPLE10 and its fallbacks without APPLE2 and MTL2,2 when xnuhost's `astc=0`, with them at its default `astc=1` since 2026-11-25 (`Machine::astc`, `set_featuresets`; MobileGestalt then answers DeviceSupportsASTC); [userland.md](userland.md) "The artwork answers"). `--set identity=out/kernel-inputs/24A446/devicetree.bin` (the decoded tree as it is) gives them for one run (`kernel/patches/oneios-hosted/display/README.md`, "What iOS reads about the panel") |
 | `--display-format bgrx\|rgba16f` (`display-format=`) | `bgrx` | the frame's pixels (section 2.8): 8-bit sRGB, or half floats that keep wide colour and EDR |
 | `DIR/xnuhost.conf` | optional | `key=value` lines: `boot-args`, `boot-args-add`, `disk`, `disk-rw`, `data-store`, `scale`, `scale-fixup`, `ios16-fixup`, `text-fixup`, `ram`, `ram-percent`, `ram-host-floor`, `host-mem-log`, `ram-giveback`, `ram-ondemand`, `ram-prefault`, `ram-lock`, `ram-session-reserve`, `ram-unlock-below`, `ram-huge`, `ram-gpu-reserve`, `ram-pagetable-percent`, `ram-hold-percent`, `ram-tasks`, `ram-task-cost`, `ram-tasks-awake`, `ram-task-idle-cost`, `task-trim`, `task-trim-idle`, `ram-fit-terms`, the switches of docs/switches.md (`uclamp-rule`, `gpu-down`, `gpu-blob-entries`, `wifi-ring-wait`, `wifi-send-wait`, `wifi-buffers`, `wifi-joined-scan`, `encoder-10bit`, `encoder-warmup`, `decoder`, `decoder-codecs`, `display-post`, `stop-loop`, `takeover-reclaim`, `takeover-swappiness`, `thermal-cap`), `ready-content-wait`, `bridges`, `wifi`, `bluetooth`, `haptics`, `pen`, `encoder` (and the others of this table that say so); the command line wins. Until 2026-11-21 `bridges=`, `wifi=`, `bluetooth=` and `haptics=` here were read and then ignored (only the command line's applied); no image this tree makes sets them |
 | `boot-args-add=WORDS` (`--set`, or the image set's `xnuhost.conf`; 2026-11-22) | none | boot arguments added to the guest's, whichever gave those (`--boot-args`, the image set's `boot-args`, or the built-in default), each unless they name it already (`NAME` or `NAME=...`): what `boot-args` says wins, and a profile adds one argument (`oneios-disable-jobs=...`, a debugging switch such as `oneios-ubt=`) without repeating the defaults. A `boot-args=` line that replaced the defaults was the cause of logo-only stalls in the S25 Ultra forks ([s25.md](s25.md)). The command line's `boot-args-add` wins over the image set's; a result over 1023 bytes is refused (exit 2). Ported from `YumikoHayamato/OneiOS` (440abb2). A runtime older than this key refuses it as a bad setting and does not start: stage the runtime before an image set that has it |
 | `DIR/overlay/userland/xnuhost.conf` | optional | the same, written by the userland hook: `scale=3` or `scale=2`, the UI scale the image's Data seed was made for (`docs/userland.md` "The screen") |
+| (checked and changed by `oneios-tool conf`, 2026-11-25) | | `oneios-tool conf show\|check\|set\|unset\|write\|restore FILE` reads an `xnuhost.conf` as `Config::file` does (C blanks trimmed, `#` comments, `KEY=VALUE`; a line without `=`, a key xnuhost does not read or a value it refuses makes it refuse the whole file and the session does not start) and changes one switch at a time with every other line kept, a kernel switch as a word of the one `boot-args-add=` line; every value is checked against the switch catalog `runtime/switches` (crate `oneios-switches`), which also makes the `switches:` line and which `config::tests::the_catalog` checks against this parser. The OneOS app's Switches screen uses it ([tools/oneios-tool/README.md](../tools/oneios-tool/README.md) "switches and conf") |
 | `--width W --height H`, `--hz N` (or `width=`, `height=`, `hz=` in the image set's `xnuhost.conf`) | the display helper's report of the panel | the guest's display mode (section 2.8); for a PC run or another panel |
 | `--set panel-fallback=WxH[@HZ]` (or `panel-fallback=` in `xnuhost.conf`) | 1440x3120@120 | the mode assumed only where the panel cannot be read (no helper report in time, no DRM panel; a bench run): section 2.8 step 4. For a phone whose panel is not the S24 Ultra's: the Galaxy S25 and A56 are 1080x2340@120 (`docs/s25.md`, `docs/a56.md`). A read panel still wins |
 | `--set corner-radius=N` (or `corner-radius=` in `xnuhost.conf`; a device default in the host table) | 0 (say nothing) | the panel's rounded corners in points, written to `/product display-corner-radius` as two little-endian u32s (N, 1; the iPhone18,2 tree has 62, 1). iOS insets its status bar and masks the screen by it; without it the guest lays out for square corners and the phone's own cut clips the picture. The Galaxy S25's row gives 34 (its stock ROM's `rounded_corner_radius_top`/`_bottom`, 102 px at the UI scale of 3); 0 leaves an identity tree's own value alone |
 | `--set artwork-subtype=N` (or `artwork-subtype=` in `xnuhost.conf`) | 0 (from the panel) | `/product artwork-device-subtype`, the artwork and layout-metric set CoreUI, SpringBoard and UIKit look up by it. 0 follows the panel: 2340 on a 1080x2340 panel (at @3x the iPhone 12/13 mini's 360x780 grid) and 2868 (the iPhone18,2's Pro Max) on any other. The Pro Max's metrics on a 360x780 canvas lay out for a screen 80 points wider and 176 taller than the panel, which is the "iPad with humongous spacing" of the S25 session (2026-11-24); 2868 here is the A/B back. An identity tree's own value is used as it is. `docs/userland.md`, "The artwork answers" |
 | `--set display-direct=0` (or `display-direct=0` in `xnuhost.conf`) | 1 | 0: xnuhost copies every frame into the memfd, even for a helper that can copy from guest RAM (section 2.8, direct frames) |
 | `--set display-post=apart\|serial` (or in `xnuhost.conf`) | apart | serial: the display helper reads no frame until it has posted the last, the one loop before 2026-11-24 (section 2.8, docs/switches.md) |
+| `--set display-present=ahb\|window` (or in `xnuhost.conf`) | ahb | ahb: the display helper posts into write-only AHardwareBuffers on a child of its layer (no CPU cache maintenance of the whole buffer at each lock and post; it falls back to the window by itself when they cannot be had); window: it locks and posts the layer's window as before 2026-11-25 (section 2.8, docs/switches.md) |
 | `--scale 2\|3` (`--set scale=2`) | the image set's, else 3 | the UI scale: pixels per point |
 | `DIR/os.img`, `systemos.img`, `app.img` | as present | read-only disks, in this order |
 | `--data DIR` | none | `data.img`: the Data store, sparse, created on the first start; `unique-chip-id` |
@@ -259,8 +261,8 @@ A port of DarwinBoot with no firmware under it (C until 2026-11-23, now the crat
   `/defaults` (with the iPhone18,2's I/O throttle since 2026-11-22: `kern.io_throttle_period_tier1` 5,
   `_tier2` 15, `_tier3` 20 and `kern.io_throttle_window_tier3` 100 ms; the hosted disks answer DKIOCISSOLIDSTATE 0, so
   XNU had used its rotating-disk table, 40/85/200 ms periods in 25/100/500 ms windows, `docs/userland.md` 11),
-  `/options`, `/product` (copied from the identity tree, minus exclaves and the AGX-only feature
-  sets; `artwork-scale-factor` is the UI scale), `/buttons`, `/bluetooth`, `/arm-io` with the GICv3, `wlan`, `uart0` and one node per virtio window
+  `/options`, `/product` (copied from the identity tree, minus exclaves; APPLE2 and MTL2,2 of `graphics-featureset-fallbacks`
+  only with `astc=0`, `Machine::astc`, 2026-11-25; `artwork-scale-factor` is the UI scale), `/buttons`, `/bluetooth`, `/arm-io` with the GICv3, `wlan`, `uart0` and one node per virtio window
   under the names and `compatible` strings UniXNU's drivers match; `/chosen/xnuhost` for a hosted kernel.
   **The cameras (2026-11-22, `Machine::cameras`, only with an `oneios,camera` device):** `/arm-io/isp` with
   `camera-rear` = 1 when the camera helper lists a back camera (wide, ultra-wide or a telephoto) and `camera-front` = 1
@@ -1578,11 +1580,24 @@ and feature handshake) at `0x0a000000 + n * 0x1000`, SPI `32 + n`, in this order
 | --- | --- | --- | --- |
 | Block, read-only (`F_RO`) | `src/virtio_blk.rs`, `src/blk.rs` | `os.img`, `systemos.img`, `app.img`, a tar `data.seed` | UniXNU `NativeVirtioBlock` (node `virtio-mmio-N`, `compatible` `virtio,mmio`) |
 | Block, writable | same | `<data>/data.img`, sparse, 32 GiB logical, flush = `fdatasync`, on the disk's flush thread ("Disks" below), timed (`disk NAME: 30 s: reads .., writes .., flushes N in T ms (max X ms)` every 30 s per busy disk, `since the start` at the stop, `disk NAME: a flush took N ms` for the first 16 of 500 ms or more: a flush holds every other request of the guest to that disk) | the Data store window (node `data-store`) |
-| Input | `src/virtio_input.rs`, `src/input.rs` | `/dev/input/event*`: the multitouch events of the one device that is the screen (`INPUT_PROP_DIRECT`; a multitouch pointer device such as the S24 Ultra's `sec_touchpad` is not taken; the log line gives the screen's x and y ranges) and the three side keys, unchanged evdev codes, the panel's own axis ranges | UniXNU-droidvm `DroidVMVirtioInput.c` |
+| Input (and, with `sensors=auto\|ssc`, the motion device: "Sensors" in 2.8) | `src/virtio_input.rs`, `src/input.rs`, `src/motion.rs` | `/dev/input/event*`: the multitouch events of the one device that is the screen (`INPUT_PROP_DIRECT`; a multitouch pointer device such as the S24 Ultra's `sec_touchpad` is not taken; the log line gives the screen's x and y ranges) and the three side keys, unchanged evdev codes, the panel's own axis ranges | UniXNU-droidvm `DroidVMVirtioInput.c` |
 | GPU, 2D scanout | `src/virtio_gpu.rs`, `src/display.rs` | the display back end | UniXNU-droidvm `DroidVMVirtioGpuDisplay.cpp` under IOMobileFramebufferLegacy: `kernel/patches/oneios-hosted/display/` (a 2D resource per surface, up to 16384 backing entries each) |
 | Console | `src/uart.rs` | the log | XNU's PL011 console (`uart0`) |
 | Bridge channel, network, sound | `runtime/bridges` (the bridges agent's; `docs/hardware.md`) | haptics and Bluetooth HCI; a tap with built-in DHCP; an AAudio helper process | `drivers/bridge`, `DroidVMVirtioNet.c`, `DroidVMVirtioSnd.c` |
 | CPU frequency | `runtime/bridges` | a plain MMIO window per vCPU at `0x09000000` (`/arm-io/cpufreq`) | `DroidVMCpufreq.c` |
+
+Interrupts: a chain returned on the used ring sets the interrupt status (0x60) and raises the device's SPI, whatever the
+driver's `VIRTQ_AVAIL_F_NO_INTERRUPT`; the driver's acknowledgement (0x64) lowers it. A device model may name queues
+whose flag the transport honours (`Device::quiet_queues`, 2026-11-25; none by default): a return there with the flag
+set raises nothing. Only the media device names any (both its queues): the codec's transport polls the command queue,
+which xnuhost answers inside the guest's notify, and waits on the event queue's interrupt
+(`kernel/patches/oneios-hosted/codec/README.md`, "The transport on the interrupt"). The media device's own worker thread
+(the event queue's producer, `runtime/bridges/encoder/media_device.rs`) sleeps on a condition variable until a command,
+a kick of the event queue, a decoder's result or an encoder's coded unit wakes it (the helper backend's socket receive
+thread wakes it with each unit, `Session::wakes`, since 2026-11-25; before, it looked every 1 ms for 2 s after each
+command), 50 ms at most while an encoder session is open or an event waits for a guest buffer; it says its wake-ups in
+`media: 30 s: worker woken N: by data ..., by the timeout N; 1 ms looks N` (`runtime/bridges/encoder/README.md`, "The
+worker waits for the encoder").
 
 A task trap that no page-in can resolve is logged by xnuhost itself with the registers (`tasks: pid N (tid T):
 trap kind K signal S far ... esr ... insn ...; pc ... lr ... sp ... fp ... x0 ...`): a fault address outside what an
@@ -1652,8 +1667,9 @@ mediacodec-helper backend, media pool 48 MiB at 0x... (4 sessions)`, then `decod
 the runtime (the MediaCodec helper)` when the runtime has none). With the bridges off (a PC boot) it is the stand-in
 encoder inside xnuhost (`encoder: on: stand-in backend, ...`, then `encoder: the stand-in encoder (encoder=auto with
 the bridges off: no phone): no MediaCodec; every frame is coded as it is (I_PCM), no compression`); `sim` is the
-stand-in always, also in a session. `encoder: session N: HEVC WxH on <backend>` at each encoder session
-([hardware.md](hardware.md) section 7g, `runtime/bridges/encoder/README.md`).
+stand-in always, also in a session. `encoder: session N: HEVC WxH on <backend>` at each encoder session, and every
+30 s while the device's worker wakes `media: 30 s: worker woken N: ...; 1 ms looks N` (2026-11-25; `log summary`'s
+encoder part) ([hardware.md](hardware.md) section 7g, `runtime/bridges/encoder/README.md`).
 The network (`wifi=` in `xnuhost.conf`, `--set wifi=...`): `auto`, the default, makes the phone's wlan0 the guest's
 en0 (`wlan::prepare` of `runtime/bridges/wifi/wlan.rs`, [hardware.md](hardware.md) section 3): the `net` window's virtio-net device carries wlan0's
 address in its configuration, its frames go to and from wlan0 by AF_PACKET, and the guest driver's station messages
@@ -1746,7 +1762,10 @@ The `blk.rs` flush counts and times count every `fdatasync`, whichever side (vCP
   read the next frame only after the post (its start 5.5 ms late on the phone, 2026-11-23). `display-post=serial`
   (docs/switches.md) gives the old timing back: xnuhost sends `options {"XHDO", flags, 0, 0, 0}` after the hello with
   bit 0 set, and the reader reads nothing more until the last change is posted; a helper older than the message
-  ignores it. `XHDS`'s fifth word is xnuhost's send time (the low 32
+  ignores it. Bit 1 (`OPTION_PRESENT_AHB`, `display-present=ahb`, the default since 2026-11-25, so the message now goes at
+  every start unless `display-present=window` and `display-post=apart`): the poster posts into three write-only
+  AHardwareBuffers on a child of its layer instead of locking the layer's window (`runtime/display/src/xhd/present.rs`,
+  `runtime/display/README.md` "Write-only buffers"); a helper older than that bit keeps the window. `XHDS`'s fifth word is xnuhost's send time (the low 32
   bits of `CLOCK_MONOTONIC` in us), and the helper's 10 s line says how long after it the read began. The guest does
   not draw into a surface while the helper reads it: the guest's display driver completes the swap for the
   compositor once the flush is posted (`DroidVMVirtioGpuDisplay.cpp` `droidvm_virtio_complete_on_post`), but it
@@ -1814,7 +1833,7 @@ The `blk.rs` flush counts and times count every `fdatasync`, whichever side (vCP
   | `/product artwork-scale-factor` | the artwork scale (the identity tree's 3 is replaced) |
   | `/chosen/xnuhost display-width`, `display-height`, `display-scale`, `display-hz` | the mode as xnuhost has it, for the hosted kernel |
   | boot arguments `offline-legacy-unit-scale=N`, `sheng-vsync=HZ`, `sheng-vsync-fixed=1` (above 60 Hz) | the display driver: its scale policy; the vsync tick and the refresh properties; and above 60 Hz one fixed rate instead of the family's 24..120 Hz range, so CoreAnimation asks for the panel's rate rather than choosing 30 inside the range (`docs/gpu.md`, "The refresh range"). Added unless the command line has them (`sheng-vsync-fixed=0` keeps the range) |
-  | `/chosen text-fixups` | for 3 only, and only for build 24A446: two fixups of QuartzCore's `-[CADisplayMode preferredScale]`, which answers 2 on its own (`kernel/patches/oneios-hosted/display/README.md` "Scale"). `--set scale-fixup=0` leaves them out; `--text-fixup FILE,OFFSET,ORIGINAL,REPLACEMENT` (repeatable) adds others |
+  | `/chosen text-fixups` | for 3 only, and only for builds 24A446 and 24B156 (`config::SCALE_FIXUPS_3X`, the same function at each build's offset): two fixups of QuartzCore's `-[CADisplayMode preferredScale]`, which answers 2 on its own (`kernel/patches/oneios-hosted/display/README.md` "Scale"). `--set scale-fixup=0` leaves them out; `--text-fixup FILE,OFFSET,ORIGINAL,REPLACEMENT` (repeatable) adds others |
 
   `/product artwork-device-subtype` stays the identity's (2868), or the panel's without one (2340 on a 1080x2340
   panel, `artwork-subtype=N` overrides; the row in 2.6). The Data seed's `identity.expect` holds the
@@ -1943,6 +1962,34 @@ The `blk.rs` flush counts and times count every `fdatasync`, whichever side (vCP
   (`pen-abs`, `pen-ev`, `pen-syn`, `pen-hover`, `pen-stroke`, `pen-button`, `pen-out`: the head of `input_script.rs`) go
   through the same filter; `tools/input-demo.script` has a hover, two strokes (a pressure ramp; a tilted even one) and
   the side button. Host tests: `src/pen/tests.rs` (`test_pen` of `tests/test_xnuhost.c` in the C).
+- **Sensors** (`src/motion.rs`, `runtime/bridges/sensors`, fix/sensors-als 2026-11-25; `docs/hardware.md` 7i). Settings:
+  `off` (no socket opened, as before), **`sensors=auto`** (the default since 2026-11-25, the owner: every new fix on; with no hub it is the old path) or `ssc`; `sensors-hz=5..200` (50: the
+  accelerometer's and gyroscope's rate; the magnetometer's at most 25); `sensors-light=auto|0..7` (which of the hub's
+  light sensors). From the command line, else the image set's `xnuhost.conf` (`overlay/userland/xnuhost.conf` on the
+  phone). With the bridges on and sensors not off, after the pen and before the GPU, the board opens the phone's sensor
+  hub (`sensors::Hub::open`: QRTR's name server for QMI service 400, then each sensor's SUID and attributes, at most
+  1.5 s per answer; nothing streams yet). With an accelerometer, and a kernel collection that has no
+  `com.apple.driver.AppleSPU` member (`motion_allowed`, `session/board.rs`: with it in the collection v0.1.29 panicked
+  at kernel start, "class AppleSPUHIDDevice is a duplicate"; `prelink roots` leaves it out since 2026-11-25, and v0.1.30
+  gave no motion device at all; the line `sensors: motion: the kernel's AppleSPUHIDDevice (...)` or `sensors: motion:
+  not given to the guest: KERNEL has com.apple.driver.AppleSPU, ...` says which), the board gets a **virtio-input device after the touch
+  screen and the pen, `/arm-io/input-N`**, "OneiOS motion sensors" (`INPUT_PROP_ACCELEROMETER`, no keys; `ABS_X/Y/Z` the
+  gravity vector, 256 per g, +-16 g; `ABS_RX/RY/RZ` 16 per degree per second, +-2000; `ABS_HAT0X/HAT0Y/HAT1X` 16 per
+  microtesla with a magnetometer), and `oneios-motion=7` (15 with a magnetometer) is added to the guest's command line
+  unless it has an `oneios-motion=`; with a light sensor `oneios-als-spu=1` likewise. The bridges then start the hub's
+  thread: one frame per accelerometer sample to that device (none while more than 60 events wait for the guest's
+  buffers: counted as dropped), each light reading to the brightness bridge (`Bright::als_feed`; the evdev `als_rear` is
+  then not opened); the streams stop while iOS's display is off (the bridge device's `OB_BRIGHT_POWER`) and at the stop
+  (`Bridges::close`, first). No hub (no QRTR, no service 400, no answer): `sensors=auto` boots as with `off` (one line);
+  `sensors=ssc` too, but with no light sensor at all (the rear one gives 0 lux on the S24). Log lines: `sensors: on: ssc
+  (sensors=auto): service 400 version V at node N port P; accelerometer SUID "name" (vendor), streaming ...; motion device
+  /arm-io/input-N at 50 Hz, the light for the brightness bridge, on change; oneios-motion=15 oneios-als-spu=1`, or
+  `sensors: off: source old (sensors=auto): WHY: no motion device, the rear light sensor as before`; `sensors: light N:
+  ...: used`; `sensors: streaming: ...`; `sensors: paused: ...` / `sensors: resumed: ...`; every 60 s `sensors: 60 s:
+  accelerometer N, gyroscope N, magnetometer N samples; N motion frames to the guest, N dropped (the guest had no
+  buffers); light N readings, last N.NNN lux; paused N s`. The guest's side: `kernel/patches/oneios-hosted/hid/README.md`.
+  Host tests: `src/motion.rs`, `config/tests.rs` (the settings, the image set's, the switches line), `session::board::tests::motion_only_without_the_spu_kext`,
+  `cargo test -p onebridges sensors::`. **Not booted.**
 - `session/ready` is created at the guest's first presented frame (or by the `ready` host call). The guest's
   display driver also presents the boot framebuffer (the console, and later a blank or CPU-copied frame drawn
   there): a flush of a resource whose backing starts at `boot_args.Video`'s address is shown but is not that

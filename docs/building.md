@@ -195,6 +195,15 @@ scripts/bg.sh prelink-release env KERNEL=out/kernel/current-hosted-release/xnu.m
 kernel/publish.sh --hosted release      # the archive for a release and its line for kernel/release-kernel.txt
 ```
 
+iOS 27.2.1 (24B156) has its own kernel (the board archives bind each build's original classes: kernel/prelink/README.md
+"Another build"). `ONEIOS_OS_PROFILE` picks the OS profile (default `ios-27.0.1-24A446`), `BUILD` the prelink's
+kernelcache and records:
+
+```sh
+scripts/bg.sh k272 env HOSTED_OUT=ios272 ONEIOS_OS_PROFILE=ios-27.2.1-24B156 ONEIOS_CRYPTO=original kernel/build-hosted.sh
+scripts/bg.sh p272 env BUILD=24B156 KERNEL=out/kernel/current-hosted-ios272/xnu.macho OUT=out/kernel/24B156-ios272 kernel/prelink/build.sh
+```
+
 The kernel then uses the kernel collection's own `com.apple.kec.corecrypto` (which the source-mode bootstrap already
 starts early) and has no source fallback (`kernel/patches/oneios-hosted/optional/original-corecrypto-only.patch`,
 added to this build's series only). Nothing is sealed (`kernel/patches/unixnu/0003-skip-source-seal.patch`), and the
@@ -251,7 +260,7 @@ with `wc -c`, CPUs with `getconf _NPROCESSORS_ONLN`, checksums with `sha256sum` 
 ```sh
 runtime/build.sh STAGE            # -> STAGE/bin/xnuhost (static, the task stub inside it), the bridges' helpers, the
                                   #    display helper, and the phone checks (gpuctl, bridgectl, wifictl, brightctl,
-                                  #    batteryctl, thermalctl, displayctl, camctl, encctl: its `encctl decode FILE` tests the decoder, 2026-11-24); then the NEEDED and symbol
+                                  #    batteryctl, thermalctl, sensorctl: `sensorctl qrtr` is read only, 2026-11-25, displayctl, camctl, encctl: its `encctl decode FILE` tests the decoder, 2026-11-24); then the NEEDED and symbol
                                   #    check of the stage (runtime/package/elf-check.sh, below)
 runtime/package.sh 0.1.0-dev      # -> out/release/oneios-runtime-0.1.0-dev-arm64.tar.zst + .sha256 + runtime.json,
                                   #    with bin/oneios-tool (below), and oneios-tool-0.1.0-dev-android-arm64 + .sha256;
@@ -273,7 +282,7 @@ and `runtime/package/test.sh` checks the packing and the refusals. Without it th
 
 `runtime/build.sh STAGE` runs `cargo build --release --locked --target aarch64-linux-android` twice: the static programs
 (`crt-static`; target dir `runtime/target/android-static`: `xnuhost` and `gpuctl` of the `xnuhost` crate; `bridgectl`,
-`wifictl`, `brightctl`, `batteryctl`, `thermalctl` of `onebridges`) and the dynamic ones that call Android's libraries
+`wifictl`, `brightctl`, `batteryctl`, `thermalctl`, `sensorctl` of `onebridges`) and the dynamic ones that call Android's libraries
 (`runtime/target/android`: `oneios-audio` of `onebridges`, `oneios-camera` and `camctl` of `onecamera`,
 `oneios-encoder` and `encctl` of `oneencoder`), then `runtime/display/build-android.sh` (`oneios-display`,
 `displayctl`, `liboneios-display.so`, `oneios-display.dex`) and copies `runtime/bridges/net/oneios-net.sh`; every
@@ -770,6 +779,10 @@ $T phone wifi p2p                  # the staged wifictl p2p as root (read only):
                                    #   AirDrop verdicts, Wonder's files; then a summary of those lines (--save FILE keeps the report)
 $T phone wifi wonder --seconds 30 --freq 5745   # wifictl wonder: a monitor interface on Wonder's radio beside wlan0,
                                    #   AWDL's frames counted, everything closed after, wlan0's link checked (docs/hardware.md 4a)
+$T phone qrtr                      # read only: whether a root process reaches the sensor hub (SSC) over QRTR (the staged
+                                   #   sensorctl qrtr: QRTR's nodes and services, service 400 and one lookup); --sensors: each
+                                   #   SUID with its attributes; --binary STAGE/bin/sensorctl before the runtime is staged (pushed,
+                                   #   run, removed); --save FILE. Decides sensors=auto (runtime/bridges/sensors/README.md)
 $T phone procs                     # every process with its CPU share and RAM (read only, with or without a session):
                                    #   what of One UI still runs beside iOS and what it costs (docs/plan-ios-first-session.md)
 $T phone procs --seconds 30 --raw > procs.raw; $T phone procs --from procs.raw --sort mem   # keep a capture; its report by RAM
@@ -1004,6 +1017,7 @@ $T app build             # cd app-android && ./gradlew test assembleFullDebug (-
 $T app install           # adb install -r of that APK; refuses another signing certificate (never uninstall: that wipes the app's data)
 $T app install --release 0.4.86      # the CI prerelease oneios-0.4.86 instead, through gh
 $T app stage-scripts     # the fork's oneios_switch.sh, oneios_return.sh, oneios_root.sh into the stage, sha256 before and after
+$T app kb 24B156         # iOS 27.2.1's pairing files into the fork's assets/kb-24B156/ from this checkout (--check: compare only)
 ```
 
 The checkout is the first of: `--oneos DIR`; `ONEOS_DIR`; the current folder when it is a checkout; `app/` of the
@@ -1110,6 +1124,10 @@ A tag `vN.N.N` on `main` (or a dispatch with a version) runs `.github/workflows/
 S24 Ultra Metal and camera plug-ins with Xcode 27.2, then packages them into the runtime alongside the pinned kernel;
 the fork's APK (submodule `app/`, the head of `oneios`) builds in parallel. No image or package set is released. See
 [releases.md](releases.md).
+Since 2026-11-25 a release takes each plug-in build (the Metal plug-in of 27.0.1 and of 27.2.1, the capture plug-in, the
+A56's) from `out/release-cache/NAME/KEY/` when its inputs (the git trees it reads, the reference checkouts' commits, the
+toolchain) are those of an earlier build, and builds only what changed: a runtime-only release no longer rebuilds them
+(10-20 minutes before).
 `scripts/release/release.sh VERSION [--build-only]` (run under `scripts/bg.sh`) builds the same files on the build
 machine, runs CI's checks and the host tests in parallel, and publishes the release without waiting for the
 runners. Its runtime carries the Metal plug-in and the capture plug-in, built from HEAD in the runtime lane
@@ -1244,6 +1262,8 @@ rustup toolchain install 1.98.0 && rustup +1.98.0 component add rust-src
 # macOS: brew install ninja glslang shaderc spirv-tools bison llvm; uv pip install --python "$(command -v python3)" meson mako pyyaml
 scripts/bg.sh metal userland/metal/build.sh
 # -> out/userland/NativeAdrenoMetal.bundle, NativeAdrenoMetal.build.json, NativeAdrenoMetal.check.txt, NativeAdrenoMetal.gpuaddon
+# iOS 27.2.1 (24B156; userland/metal/hooks/iPhone18,2-24B156.json): the same into out/userland-24B156 (METAL_OUT for another)
+scripts/bg.sh metal272 env ONEIOS_METAL_TARGET="iPhone18,2 24B156" userland/metal/build.sh
 # The bridge on metal2vulkan-rt instead (userland/metal/rt/README.md), in out/metal-rt and out/userland-rt:
 rustup toolchain install nightly-2026-11-03 && rustup component add rust-src --toolchain nightly-2026-11-03
 scripts/bg.sh metal-rt env METAL_RUNTIME=rt userland/metal/build.sh    # bg.sh passes no METAL_RUNTIME of its own
@@ -1375,7 +1395,7 @@ Apple-file check, manifest and archive) and `debug` (the tests' helpers). `image
 (the key from Apple's key service, every byte authenticated), on the PC and, as `serve`'s `aea`, on the phone. Since the third Linux round also `phone` (the adb
 workflow of section 6: status, stage, sums, switch, return, log, the Data store's copy, and in a session the display
 helper's restart, the touch IC's wake and the panel's level; since 2026-11-23 `phone procs`, the process list with CPU
-and RAM), `app` (the fork's app of
+and RAM; since 2026-11-25 `phone qrtr`, whether the sensor hub answers over QRTR, read only), `app` (the fork's app of
 section 7: version, doctor, build, install, stage-scripts) and `cycle` (one test cycle: build, tests, stage, switch, watch, hold, return, collect). Since 2026-11-21 also
 `image tweaks` (the root tweaks and the image build's userland hook: the port of `userland/roottweak` and
 `userland/image-hook`, `apply`, `hook`, `daemons`, `cdhash`, `boot-check`; compared with the Python by
@@ -1389,6 +1409,29 @@ scripts and adb lines that were run. Commands, crates, and each tool's compariso
 cargo build --release --manifest-path tools/oneios-tool/Cargo.toml     # -> tools/oneios-tool/target/release/oneios-tool
 cargo test  --release --manifest-path tools/oneios-tool/Cargo.toml     # unit tests, no Apple file
 ```
+
+Since 2026-11-25 also `switches` and `conf`, which the OneOS app's Switches screen runs as root from the staged
+runtime's `bin/oneios-tool` (the app parses no conf file and keeps no switch list of its own). The catalog is one
+list, `runtime/switches` (crate `oneios-switches`), from which xnuhost's own `switches:` line is made; xnuhost's
+`config::tests::the_catalog` fails when the two disagree. The runtime package carries it as `lib/switches.json`
+(`runtime/package.sh` step 1d). The JSON of each command, the checks and the write rules:
+[tools/oneios-tool/README.md](../tools/oneios-tool/README.md) "switches and conf".
+
+```sh
+oneios-tool switches --json [--runtime DIR]          # every switch: where, kind, values, default, off, group, title, help, phone, warning
+oneios-tool conf show FILE --json                    # text, set, boot_args_add, unknown, errors, warnings (a missing FILE is empty)
+oneios-tool conf check FILE --json                   # errors (what xnuhost would refuse) and unknown keys; exit 1 with an error
+oneios-tool conf set FILE NAME=VALUE... [--json]     # a boot-arg switch into boot-args-add=, a conf one as its own line; all or none
+oneios-tool conf unset FILE NAME... [--json]         # back to the default (the line or word removed)
+oneios-tool conf write FILE [--force] --json < TEXT  # the whole text, written only without errors (--force: anyway)
+oneios-tool conf restore FILE                        # FILE.bak back (the replaced text becomes FILE.bak)
+# e.g. the image's overlay on the phone (as root):
+#   $STAGE/runtime/bin/oneios-tool conf set $IMAGE/overlay/userland/xnuhost.conf gpu-down=bottom oneios-pool-cut=0 --json
+```
+
+Every write is atomic (a temporary file in the folder, the file's mode, owner and SELinux label kept, renamed over
+it) and keeps one backup, `FILE.bak`. Exit status: 0, 1 refused (`{"error": "..."}` with `--json`, the file
+untouched), 2 a wrong command line.
 
 Optional on Linux: **apfs-fuse** (github.com/sgan81/apfs-fuse, with `fusermount3`), a second APFS reader that
 `oneios-tool image apfs-ls`, `apfs-copy` and `ioslog` use with `--apfs fuse`, or by themselves when our own reader
@@ -1494,6 +1537,12 @@ boot's `oneios-srprot: ... vm_protect A-B` lines (A less the unslid start of the
 ONEIOS_DSC_DIR=out/ios16-cache oneios-tool sym --slide 0x2db08000 0x1c261c58c     # SpringBoard's lr: CI::GLContext::init + 0xcc
 ONEIOS_DSC_DIR=out/ios16-cache oneios-tool sym find EAGLContext:                 # the images that send ...EAGLContext: selectors
 ONEIOS_DSC_DIR=out/ios16-cache oneios-tool sym callers 0x194c99a00               # the branches to that stub (unslid)
+ONEIOS_DSC_DIR=out/ios272-cache oneios-tool sym dis 0x18434cff4 0x60          # 24B156's framebuffer_pixel_format, with the addresses it reads
+ONEIOS_DSC_DIR=out/ios272-cache oneios-tool sym find --no-index _ca_debug_options   # a data symbol (the index keeps code only)
+ONEIOS_DSC_DIR=out/ios27-cache oneios-tool sym cstr PrimaryScaler                 # where a name stands as a C string (2026-11-25)
+ONEIOS_DSC_DIR=out/ios27-cache oneios-tool sym ptrs 0x1f5fdcb7c                    # the words that point at it (selrefs, CFStrings)
+ONEIOS_DSC_DIR=out/ios27-cache oneios-tool sym refs 0x256d8f92e                    # the adrp pairs that form it, named
+ONEIOS_DSC_DIR=out/ios27-cache oneios-tool sym dis 0x2ad2b51e4 0x10                 # 16 instructions, with branches, pages and strings named
 ```
 
 A kernel panic of a session (`panic(cpu N caller 0x...)`, also when the console lost its first letters: `anic(cpu 0 caller 0x...)`, the fault's pc and lr, the `frame 0x...` lines), named in

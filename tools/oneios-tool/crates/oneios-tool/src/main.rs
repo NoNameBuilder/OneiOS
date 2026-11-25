@@ -85,6 +85,14 @@ enum Tool {
         #[command(subcommand)]
         command: oneios_ios::Command,
     },
+    /// xnuhost's switch catalog (docs/switches.md) for the OneOS app's Switches screen; --json, --runtime DIR
+    /// (README "switches")
+    Switches(oneios_conf::SwitchesCli),
+    /// An image's xnuhost.conf: show, check, set, unset, write, restore (README "conf")
+    Conf {
+        #[command(subcommand)]
+        command: oneios_conf::Command,
+    },
 }
 
 /// `oneios-tool [--jobs N] [--nice N] TOOL ...`: the two options every command that runs alone takes, before the
@@ -164,6 +172,8 @@ fn main() {
             Tool::Debug { command } => oneios_testkit::main(command),
             Tool::Json { command } => oneios_json::main(command),
             Tool::Ios { command } => oneios_ios::main(command),
+            Tool::Switches(cli) => oneios_conf::switches_main(cli),
+            Tool::Conf { command } => oneios_conf::main(command),
         },
         Err(e) if !e.use_stderr() => {
             let _ = e.print();

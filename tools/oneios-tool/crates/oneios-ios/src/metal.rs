@@ -78,6 +78,9 @@ pub fn stage_edit(root: &Path, hooks: &Path, jobs: &str, knows: bool, rt: bool) 
                 a.push(Value::String("patches/mesa/trace-turnip-init.patch".into()));
                 // userland/metal/turnip-idle-bo-cache.patch: the idle trim of Turnip's BO cache, applied after the trace patch.
                 a.push(Value::String("patches/mesa/turnip-idle-bo-cache.patch".into()));
+                // userland/metal/turnip-submit-split.patch (Droid-VM/UniXNU fb9fb47): a kernel submission ends only where a
+                // command buffer begins, after the idle one.
+                a.push(Value::String("patches/mesa/turnip-submit-split.patch".into()));
             }
             _ => bail!("{}: no list \"patches\"", pins.display()),
         },
@@ -105,8 +108,8 @@ pub fn stage_edit(root: &Path, hooks: &Path, jobs: &str, knows: bool, rt: bool) 
             ("timeout=1800)", "timeout=10800)".into(), "a longer limit for the fat-LTO Rust build"),
             (
                 "\n\ndef git_tree(*steps):",
-                "\n\nPATCHES.append(ROOT / 'patches/metal2vulkan/trace-metal-vulkan-init.patch')\nPATCHES.append(ROOT / 'patches/metal2vulkan/m2v-spare-command-pools.patch')\nPATCHES.append(ROOT / 'patches/metal2vulkan/m2v-idle-memory.patch')\nPATCHES.append(ROOT / 'patches/metal2vulkan/90101-large-indexed-constants-to-blob.patch')\nPATCHES.append(ROOT / 'patches/metal2vulkan/90102-blob-constant-gep-pointers.patch')\n\n\ndef git_tree(*steps):".into(),
-                "record Vulkan initialization diagnostics; reuse command pools and trim idle GPU memory; apply Adreno shader fixes for large indexed constants and constant GEP pointers (0101/0102)",
+                "\n\nPATCHES.append(ROOT / 'patches/metal2vulkan/trace-metal-vulkan-init.patch')\nPATCHES.append(ROOT / 'patches/metal2vulkan/m2v-spare-command-pools.patch')\nPATCHES.append(ROOT / 'patches/metal2vulkan/m2v-idle-memory.patch')\nPATCHES.append(ROOT / 'patches/metal2vulkan/90101-large-indexed-constants-to-blob.patch')\nPATCHES.append(ROOT / 'patches/metal2vulkan/90102-blob-constant-gep-pointers.patch')\nPATCHES.append(ROOT / 'patches/metal2vulkan/90110-shader-fix-switch.patch')\nPATCHES.append(ROOT / 'patches/metal2vulkan/m2v-compile-deadline.patch')\n\n\ndef git_tree(*steps):".into(),
+                "record Vulkan initialization diagnostics in the translator patch stack; spare command pools follow their recent use (m2v-spare-command-pools.patch); the idle trim ages the spare image blocks, the memory census (m2v-idle-memory.patch); the Adreno shader fixes 0101 and 0102 behind their switch, on unless oneios-m2v-shader-fix=0 (90110-shader-fix-switch.patch); the compile deadline per process (m2v-compile-deadline.patch)",
             ),
         ],
     )?;
@@ -155,7 +158,12 @@ pub fn stage_edit(root: &Path, hooks: &Path, jobs: &str, knows: bool, rt: bool) 
 
     // The plug-in's shared cache addresses: upstream's are the iPad17,3 24A446 cache's.
     let plugin = root.join("drivers/AdrenoMetal/NativeAdrenoMetalPlugin.mm");
-    let mut text = std::fs::read_to_string(&plugin).with_context(|| plugin.display().to_string())?;
+    let text = std::fs::read_to_string(&plugin).with_context(|| plugin.display().to_string())?;
+    // the bool debug options' numbers first: they follow the upstream address, which the list below then replaces
+    let (mut text, said) = hook_options(&text, &hooks)?;
+    for line in said {
+        println!("metal: staged NativeAdrenoMetalPlugin.mm: {line}");
+    }
     let anchor = hooks.get("anchor").ok_or_else(|| anyhow!("the hooks file has no anchor"))?;
     let branch = hooks.get("branch").ok_or_else(|| anyhow!("the hooks file has no branch"))?;
     let list = |k: &str| hooks.get(k).and_then(|v| v.as_array()).cloned().unwrap_or_default();
@@ -198,8 +206,92 @@ pub fn stage_edit(root: &Path, hooks: &Path, jobs: &str, knows: bool, rt: bool) 
     if !unknown.is_empty() {
         bail!("shared cache addresses in the arm64e code that the hooks file does not name: {}", unknown.into_iter().collect::<Vec<_>>().join(", "));
     }
+    // at the top, so that the plug-in's own code and the OneiOS files appended to it (DisplayWide.inc) both see them
+    let defines = hook_defines(&hooks)?;
+    let text = format!("{defines}{text}");
+    println!(
+        "metal: staged NativeAdrenoMetalPlugin.mm: this target's QuartzCore constants at the top, for the OneiOS files appended after it ({} defines)",
+        defines.matches("#define").count()
+    );
     std::fs::write(&plugin, text)?;
     Ok(())
+}
+
+/// The hooks file's QuartzCore bool debug options (`"options"`: `base`, the upstream address of `_ca_debug_options`,
+/// and `bool`, a list of `name`, `upstream`, `value`): init_debug stores option N at `_ca_debug_options + N`, and the
+/// numbers move between builds (24A446: CA_FORCE_FP16_FRAMEBUFFER 128, CA_ALLOW_EDR_MIRRORING 156; 24B156: 129 and
+/// 159; read in each build's init_debug table, docs/gpu.md section 7). Every `BASE + N` of the plug-in's text gets the
+/// target's number in one pass; an N the file does not name, or a named one the text never has, is refused. The
+/// address itself is the `replace` list's (`stage_edit` replaces it after this). A hooks file with no `options`
+/// leaves the text as it is. The text, and a line for each number that changed.
+pub fn hook_options(text: &str, hooks: &serde_json::Value) -> Result<(String, Vec<String>)> {
+    let Some(options) = hooks.get("options") else { return Ok((text.to_string(), Vec::new())) };
+    let base = s(options, "base")?;
+    let mut map: Vec<(u64, u64, String)> = Vec::new();
+    let list = options.get("bool").and_then(|v| v.as_array()).ok_or_else(|| anyhow!("the hooks file: \"options\" has no list \"bool\""))?;
+    for o in list {
+        let n = |k: &str| o.get(k).and_then(|v| v.as_u64()).ok_or_else(|| anyhow!("the hooks file: option {o} has no number {k:?}"));
+        map.push((n("upstream")?, n("value")?, s(o, "name")?.to_string()));
+    }
+    let lead = format!("{base} + ");
+    let (mut out, mut rest) = (String::with_capacity(text.len()), text);
+    let mut seen = vec![0usize; map.len()];
+    while let Some(i) = rest.find(&lead) {
+        let after = &rest[i + lead.len()..];
+        let digits = after.chars().take_while(char::is_ascii_digit).count();
+        out.push_str(&rest[..i + lead.len()]);
+        let number: u64 = after[..digits].parse().map_err(|_| anyhow!("NativeAdrenoMetalPlugin.mm: {lead}is not followed by a number"))?;
+        let k = map
+            .iter()
+            .position(|(up, _, _)| *up == number)
+            .ok_or_else(|| anyhow!("NativeAdrenoMetalPlugin.mm has {lead}{number}, an option the hooks file does not name"))?;
+        seen[k] += 1;
+        out.push_str(&map[k].1.to_string());
+        rest = &after[digits..];
+    }
+    out.push_str(rest);
+    let mut said = Vec::new();
+    for (k, (up, value, name)) in map.iter().enumerate() {
+        if seen[k] == 0 {
+            bail!("NativeAdrenoMetalPlugin.mm has no {lead}{up} ({name}): the hooks file is for another revision");
+        }
+        if up != value {
+            said.push(format!("{lead}{up} -> {lead}{value} ({} places): {name}, this build's number", seen[k]));
+        }
+    }
+    Ok((out, said))
+}
+
+/// The C defines of this target's QuartzCore constants that the OneiOS files appended to the plug-in use
+/// (userland/metal/DisplayWide.inc), from the hooks file: `ONEIOS_HOOKS_TARGET`, `ONEIOS_CA_RENDER_SERVER_START` (the
+/// anchor), `ONEIOS_CA_DEBUG_OPTIONS` (the `replace` value of `options.base`) and `ONEIOS_CA_OPTION_<NAME>` for each
+/// bool option. Without `options` only the first two.
+pub fn hook_defines(hooks: &serde_json::Value) -> Result<String> {
+    let anchor = hooks.get("anchor").ok_or_else(|| anyhow!("the hooks file has no anchor"))?;
+    let mut out = format!(
+        "// OneiOS (oneios-tool ios metal-stage-edit): this target's QuartzCore constants (userland/metal/hooks), for the\n// OneiOS files appended to this one.\n#define ONEIOS_HOOKS_TARGET \"{}\"\n#define ONEIOS_CA_RENDER_SERVER_START {}ull\n",
+        s(hooks, "target")?,
+        s(anchor, "value")?
+    );
+    if let Some(options) = hooks.get("options") {
+        let base = s(options, "base")?;
+        let replace = hooks.get("replace").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+        let item = replace
+            .iter()
+            .find(|i| i.get("upstream").and_then(|u| u.as_str()) == Some(base))
+            .ok_or_else(|| anyhow!("the hooks file: options.base {base} is not in \"replace\""))?;
+        out.push_str(&format!("#define ONEIOS_CA_DEBUG_OPTIONS {}ull\n", s(item, "value")?));
+        for o in options.get("bool").and_then(|v| v.as_array()).cloned().unwrap_or_default() {
+            let name = s(&o, "name")?;
+            if name.is_empty() || !name.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_') {
+                bail!("the hooks file: option name {name:?} is not a C name");
+            }
+            let value = o.get("value").and_then(|v| v.as_u64()).ok_or_else(|| anyhow!("the hooks file: option {name} has no number \"value\""))?;
+            out.push_str(&format!("#define ONEIOS_CA_OPTION_{name} {value}\n"));
+        }
+    }
+    out.push('\n');
+    Ok(out)
 }
 
 /// What the camera's pipeline (cameracaptured: CMCapture, CMImaging) needs of the frontend at b0d6a07, as text edits of
@@ -295,6 +387,25 @@ fn frontend_camera_edits() -> Vec<(&'static str, String, &'static str)> {
             )
             .into(),
             "NBLibrary answers newFunctionWithName:constantValues:pipelineLibrary:error: (CMImaging's FigMetalContext)",
+        ),
+        (
+            concat!(
+                " // Metal builds a kernel that reads a constant nobody set; the runtime refuses it: once more with those constants zero.\n",
+                " if(!handle) {\n",
+                "  NBFunction *rebuilt=zeroRestFunction((NBFunction *)d.computeFunction);\n"
+            ),
+            concat!(
+                " // Metal builds a kernel that reads a constant nobody set; the runtime refuses it: once more with those constants zero.\n",
+                " // OneiOS (oneios-tool ios metal-stage-edit; Droid-VM/NativeMetal 3c46b5e, MIT): the rebuilt function lives to the end of\n",
+                " // the call, as the reflection below reads its handle: held in the block alone, ARC freed it with the block and the\n",
+                " // reflection read a released function (cameracaptured's CCPortrait kernels: SIGSEGV at 0 in\n",
+                " // nmb_compute_pipeline_reflection during its precompilation, every boot).\n",
+                " NBFunction *rebuilt=nil;\n",
+                " if(!handle) {\n",
+                "  rebuilt=zeroRestFunction((NBFunction *)d.computeFunction);\n"
+            )
+            .into(),
+            "a compute pipeline rebuilt with its unset constants zero keeps its function until the reflection is read (NativeMetal 3c46b5e: cameracaptured's crash)",
         ),
     ]
 }
@@ -683,6 +794,75 @@ pub fn read_gpuaddon(blob: &[u8]) -> Result<Vec<(String, u32, Vec<u8>)>> {
 mod tests {
     use super::*;
 
+    fn hooks_file(target: &str) -> serde_json::Value {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../../userland/metal/hooks").join(format!("{}.json", target.replace(' ', "-")));
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn each_build_gets_its_own_option_numbers() {
+        let text = "a(0x1e702116c + 156 + slide); b(0x1e702116c + 128 + gSlide); c(0x1e702116c + 156 + gSlide); 0x1e702116c + 128)\n";
+        // 24A446: the numbers are upstream's, nothing said
+        let (same, said) = hook_options(text, &hooks_file("iPhone18,2 24A446")).unwrap();
+        assert!(same == text && said.is_empty());
+        // 24B156: 128 -> 129, 156 -> 159, in one pass (no number is changed twice)
+        let (b, said) = hook_options(text, &hooks_file("iPhone18,2 24B156")).unwrap();
+        assert_eq!(b, "a(0x1e702116c + 159 + slide); b(0x1e702116c + 129 + gSlide); c(0x1e702116c + 159 + gSlide); 0x1e702116c + 129)\n");
+        assert_eq!(said.len(), 2);
+        assert!(said[0].contains("+ 128 -> 0x1e702116c + 129 (2 places): CA_FORCE_FP16_FRAMEBUFFER"), "{said:?}");
+        // an option the file does not name, or a named one not in the text: refused
+        assert!(hook_options("x(0x1e702116c + 140)", &hooks_file("iPhone18,2 24B156")).unwrap_err().to_string().contains("+ 140, an option the hooks file does not name"));
+        assert!(hook_options("x(0x1e702116c + 128)", &hooks_file("iPhone18,2 24B156")).unwrap_err().to_string().contains("no 0x1e702116c + 156 (CA_ALLOW_EDR_MIRRORING)"));
+        // no "options": the text as it was
+        assert_eq!(hook_options("0x1e702116c + 140", &serde_json::json!({})).unwrap().0, "0x1e702116c + 140");
+    }
+
+    #[test]
+    fn the_defines_are_the_targets() {
+        let a = hook_defines(&hooks_file("iPhone18,2 24A446")).unwrap();
+        for line in ["#define ONEIOS_HOOKS_TARGET \"iPhone18,2 24A446\"", "#define ONEIOS_CA_RENDER_SERVER_START 0x1846dce88ull", "#define ONEIOS_CA_DEBUG_OPTIONS 0x1e702516cull", "#define ONEIOS_CA_OPTION_CA_FORCE_FP16_FRAMEBUFFER 128"] {
+            assert!(a.contains(&format!("{line}\n")), "{a}");
+        }
+        let b = hook_defines(&hooks_file("iPhone18,2 24B156")).unwrap();
+        for line in ["#define ONEIOS_HOOKS_TARGET \"iPhone18,2 24B156\"", "#define ONEIOS_CA_RENDER_SERVER_START 0x1845ce544ull", "#define ONEIOS_CA_DEBUG_OPTIONS 0x1edf3e5ccull", "#define ONEIOS_CA_OPTION_CA_FORCE_FP16_FRAMEBUFFER 129", "#define ONEIOS_CA_OPTION_CA_ALLOW_EDR_MIRRORING 159"] {
+            assert!(b.contains(&format!("{line}\n")), "{b}");
+        }
+        // DisplayWide.inc uses the defines, and no build's numbers of its own
+        let inc = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../../userland/metal/DisplayWide.inc")).unwrap();
+        let code: String = inc.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
+        assert!(code.contains("ONEIOS_CA_DEBUG_OPTIONS + ONEIOS_CA_OPTION_CA_FORCE_FP16_FRAMEBUFFER + slide") && code.contains("- ONEIOS_CA_RENDER_SERVER_START;"));
+        assert!(regex::Regex::new(r"0x1[0-9a-f]{8}").unwrap().find(&code).is_none(), "an address in DisplayWide.inc's code");
+    }
+
+    /// Both hooks files against the plug-in of the pinned NativeMetal (when external/ has it): every address and option
+    /// the arm64e code uses is named, and what stage_edit makes of it holds only the target's.
+    #[test]
+    fn both_hooks_files_fit_the_pinned_plugin() {
+        let upstream = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../../external/NativeMetal/NativeAdrenoMetalPlugin.mm");
+        let Ok(text) = std::fs::read_to_string(&upstream) else {
+            eprintln!("skipped: no {} (scripts/setup/get-references.sh NativeMetal)", upstream.display());
+            return;
+        };
+        for target in ["iPhone18,2 24A446", "iPhone18,2 24B156"] {
+            let hooks = hooks_file(target);
+            let (mut t, _) = hook_options(&text, &hooks).unwrap();
+            let mut items = vec![hooks["anchor"].clone()];
+            items.extend(hooks["replace"].as_array().unwrap().iter().cloned());
+            for item in &items {
+                let (new, n) = replace_address(&t, item["upstream"].as_str().unwrap(), item["value"].as_str().unwrap());
+                assert!(n > 0, "{target}: no {}", item["upstream"]);
+                t = new;
+            }
+            assert!(t.contains(&format!("{} + slide", hooks["branch"]["address"].as_str().unwrap())), "{target}");
+            if target.ends_with("24B156") {
+                for gone in ["0x1846dce88", "0x184461928", "0x184461838", "0x1e7021014", "0x1e7021104", "0x1e702116c", "0x1e701bdd9", "0x1e7020780", "0x1e9021680"] {
+                    assert!(!t.contains(gone), "{target}: {gone} is still there");
+                }
+                assert!(t.contains("0x1edf3e5cc + 159 + slide") && t.contains("0x1edf3e5cc + 129 + gSlide"));
+            }
+        }
+    }
+
     #[test]
     fn addresses_not_followed_by_a_hex_digit() {
         let (t, n) = replace_address("a 0x1e7021014; b 0x1e70210145 c 0x1e7021014)", "0x1e7021014", "0x1e7025014");
@@ -810,6 +990,9 @@ mod tests {
         assert_eq!(text.matches("nbKnownOptions(").count(), 8);
         assert!(text.contains("pipelineLibrary:(id)library\n                                 error:(NSError **)error {"));
         assert!(text.contains("heap.options=(MTLResourceOptions)heapOptions;"));
+        // NativeMetal 3c46b5e: the rebuilt function is declared before the retry's block, not inside it
+        assert!(text.contains(" NBFunction *rebuilt=nil;\n if(!handle) {\n  rebuilt=zeroRestFunction((NBFunction *)d.computeFunction);\n"));
+        assert!(!text.contains("  NBFunction *rebuilt=zeroRestFunction((NBFunction *)d.computeFunction);"));
         // a frontend that no longer has an anchor is refused, not built without the fix
         std::fs::write(dir.join("d/F.mm"), "nothing").unwrap();
         assert!(edit(&dir, "d/F.mm", &edits).is_err());

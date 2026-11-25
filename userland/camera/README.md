@@ -198,7 +198,9 @@ formats) fails 41 of 49, the three devices with their bases none.
 | `tests/host.sh` | CI: the reader against stand-ins (26 checks), the formats and scalers (`tests/test_formats.c`, 101 checks: V54's named formats resolve each to its own format, the 2026-11-23 formats do not, each compare of the rule; each companion of the table on V54's Back Camera numbers, the three that failed on the phone made the old way do not resolve and made CMCapture's way do; the three front devices' formats on one stream, each name to its own, and the 8 ProRes RAW formats alone resolve none of them; the white balance gain of 1), then `host-mac.sh` |
 | `tests/host-mac.sh`, `test_device_mac.m` | on a Mac, our create function under macOS 27's own CMCapture: the device is of `FigCaptureDeviceGetClassID`'s class; the stream answers (port, formats from a stand-in plist, pixel size, clock, supported properties); **macOS's `BWFigCaptureDeviceVendor` makes a `BWFigCaptureDevice` over ours with our function**; a frame from a stand-in node reaches the PrimaryScaler's handler, scaled into the test's pool (35 checks; since 2026-11-23 also a `deviceInfoBase` stand-in, an FES companion and `WhiteBalanceGain`, 40 checks: written on Linux, **not run**, it needs the Mac) |
 
-What the property names are worth: they are HakiOS's (iOS 16). Every property iOS 27 asks for that is not answered,
+What the property names are worth: they are HakiOS's (iOS 16). (2026-11-25: the stream's output and handler names are iOS 27's
+too, in 24A446's CMCaptureCore; the stream now posts its Start and Stop notifications, `oneios-camera-notify`;
+`docs/hardware.md` 7, "The stream that never started".) Every property iOS 27 asks for that is not answered,
 and every one it sets that is not used, is logged once by name. That list, from the first session with the
 plug-in, is the next step.
 

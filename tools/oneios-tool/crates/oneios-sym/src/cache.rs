@@ -92,6 +92,48 @@ pub struct Cache {
     /// (address, path) of every image.
     pub images: Vec<(u64, String)>,
     symbols_file: Option<Map>,
+    /// The subcache files the header names that are not in the folder (a partial copy: `apfs-copy` of only the
+    /// files a question needs, tools/oneios-tool/README.md "sym"). Empty for a whole cache.
+    pub missing: Vec<String>,
+}
+
+/// The subcache file names the main file's header lists, in its order (the main file not included).
+fn subcache_names(main: &[u8], main_name: &str, what: &Path) -> Result<Vec<String>> {
+    let bad = || anyhow!("{}: the header is cut", what.display());
+    let sub_off = u32_at(main, 0x188).ok_or_else(bad)? as usize;
+    let sub_count = u32_at(main, 0x18C).ok_or_else(bad)? as usize;
+    let mut names = Vec::with_capacity(sub_count);
+    for i in 0..sub_count {
+        let entry = main.get(sub_off + 56 * i..sub_off + 56 * (i + 1)).ok_or_else(bad)?;
+        names.push(format!("{main_name}{}", String::from_utf8_lossy(cstr_at(&entry[24..], 0))));
+    }
+    Ok(names)
+}
+
+/// The index folder's name: the cache's UUID in hex; for a partial copy, `<uuid>.partial-<8 hex digits>` (FNV-1a of
+/// the missing files' names), so that an index of a partial copy is never taken for the whole cache's, nor for a
+/// copy with other files.
+fn index_name_of(uuid: &[u8; 16], missing: &[String]) -> String {
+    let name = oneios_common::hex(uuid);
+    if missing.is_empty() {
+        return name;
+    }
+    let mut h: u32 = 0x811c_9dc5;
+    for b in missing.iter().flat_map(|m| m.bytes().chain([0])) {
+        h = (h ^ b as u32).wrapping_mul(0x0100_0193);
+    }
+    format!("{name}.partial-{h:08x}")
+}
+
+/// The index folder's name of the cache in `dir`, read from the main file's header and the folder's files only:
+/// the UUID in hex, or `<uuid>.partial-XXXXXXXX` when subcache files are missing ([`Cache::missing`]).
+pub fn index_name(dir: &Path) -> Result<String> {
+    let uuid = read_uuid(dir)?;
+    let main_name = main_name(dir);
+    let path = dir.join(main_name);
+    let main = Map::open(&path)?;
+    let missing: Vec<String> = subcache_names(&main, main_name, &path)?.into_iter().filter(|n| !dir.join(n).exists()).collect();
+    Ok(index_name_of(&uuid, &missing))
 }
 
 impl Cache {
@@ -108,17 +150,11 @@ impl Cache {
         let base = u64_at(&main, 0xE0).ok_or_else(bad)?;
         let size = u64_at(&main, 0xE8).ok_or_else(bad)?;
         let max_slide = u64_at(&main, 0xF0).ok_or_else(bad)?;
-        let sub_off = u32_at(&main, 0x188).ok_or_else(bad)? as usize;
-        let sub_count = u32_at(&main, 0x18C).ok_or_else(bad)? as usize;
         let img_off = u32_at(&main, 0x1C0).ok_or_else(bad)? as usize;
         let img_count = u32_at(&main, 0x1C4).ok_or_else(bad)? as usize;
 
         let mut names = vec![main_name.to_string()];
-        for i in 0..sub_count {
-            let entry = main.get(sub_off + 56 * i..sub_off + 56 * (i + 1)).ok_or_else(bad)?;
-            let suffix = String::from_utf8_lossy(cstr_at(&entry[24..], 0)).into_owned();
-            names.push(format!("{main_name}{suffix}"));
-        }
+        names.extend(subcache_names(&main, main_name, &main_path)?);
         let mut images = Vec::with_capacity(img_count);
         for i in 0..img_count {
             let at = img_off + 32 * i;
@@ -127,11 +163,22 @@ impl Cache {
             images.push((addr, String::from_utf8_lossy(cstr_at(&main, path_off)).into_owned()));
         }
         let mut files = vec![main];
+        let mut missing = Vec::new();
         for name in &names[1..] {
-            files.push(Map::open(dir.join(name))?);
+            let path = dir.join(name);
+            if path.exists() {
+                files.push(Map::open(path)?);
+            } else {
+                // A partial copy (only the subcaches a question needs): no mappings, its images are left out.
+                missing.push(name.clone());
+                files.push(Map::empty());
+            }
         }
         let mut maps = Vec::new();
         for (index, file) in files.iter().enumerate() {
+            if missing.contains(&names[index]) {
+                continue;
+            }
             let cut = || anyhow!("{}: the mappings are cut", names[index]);
             let off = u32_at(file, 0x10).ok_or_else(cut)? as usize;
             let count = u32_at(file, 0x14).ok_or_else(cut)? as usize;
@@ -150,7 +197,12 @@ impl Cache {
         maps.sort_by_key(|m| m.addr);
         let symbols_path = dir.join(format!("{main_name}.symbols"));
         let symbols_file = if symbols_path.exists() { Some(Map::open(&symbols_path)?) } else { None };
-        Ok(Cache { dir: dir.to_path_buf(), main_name, files, file_names: names, uuid, base, size, max_slide, maps, images, symbols_file })
+        Ok(Cache { dir: dir.to_path_buf(), main_name, files, file_names: names, uuid, base, size, max_slide, maps, images, symbols_file, missing })
+    }
+
+    /// The name of this cache's index folder ([`index_name`]).
+    pub fn index_name(&self) -> String {
+        index_name_of(&self.uuid, &self.missing)
     }
 
     /// dsc.py's `where`: the last mapping that starts at or below `va`, when `va` is inside it.
@@ -222,6 +274,9 @@ impl Cache {
             .into_par_iter()
             .map(|index| {
                 let mut out = Vec::new();
+                if !self.missing.is_empty() && self.read(self.images[index].0, 32).is_none_or(|h| h.len() < 32) {
+                    return Ok(out); // a partial copy: this image's header is in a subcache that is not here
+                }
                 for (cmd, data) in self.commands(self.images[index].0)? {
                     if cmd == 0x19 && data.len() >= 40 && cstr_at(&data[8..24], 0) == b"__TEXT" {
                         let vmaddr = u64_at(data, 24).unwrap_or(0);
@@ -354,5 +409,173 @@ impl Cache {
         out.sort();
         out.dedup();
         Ok(out)
+    }
+}
+
+/// adrp at `va`: (its register, the page it forms).
+pub fn adrp_page(word: u32, va: u64) -> Option<(u32, u64)> {
+    if word & 0x9f00_0000 != 0x9000_0000 {
+        return None;
+    }
+    let lo = u64::from((word >> 29) & 3);
+    let hi = u64::from((word >> 5) & 0x7_ffff);
+    let imm = (((hi << 2 | lo) << 43) as i64) >> 43; // sign-extended 21 bits
+    Some((word & 31, (va & !0xfff).wrapping_add_signed(imm << 12)))
+}
+
+/// What an instruction after an adrp makes of its page: an `add Xd, Xn, #imm` (64-bit, either shift) or a load or
+/// store of a general register with an unsigned immediate (ldr, str, ldrb, ldrh, ...: the offset scaled by the size).
+/// (the base register Xn, the address).
+pub fn page_use(word: u32, page: u64) -> Option<(u32, u64)> {
+    let rn = (word >> 5) & 31;
+    let imm12 = u64::from((word >> 10) & 0xfff);
+    if word & 0xff80_0000 == 0x9100_0000 {
+        let shift = if word & (1 << 22) != 0 { 12 } else { 0 };
+        return Some((rn, page.wrapping_add(imm12 << shift)));
+    }
+    if word & 0x3f00_0000 == 0x3900_0000 {
+        return Some((rn, page.wrapping_add(imm12 << (word >> 30))));
+    }
+    None
+}
+
+/// How far after an adrp `refs` and `dis` look for the instruction that uses its page.
+pub const PAGE_USE_WINDOW: usize = 8;
+
+impl Cache {
+    /// Every adrp + add/ldr/str pair in an image's `__TEXT` that forms one of `targets` (unslid): (the adrp, the
+    /// instruction that uses its page, the target), sorted. The use is looked for in the next PAGE_USE_WINDOW
+    /// instructions (the compilers keep the pair close). `sym refs`.
+    pub fn refs(&self, targets: &[u64]) -> Result<Vec<(u64, u64, u64)>> {
+        use rayon::prelude::*;
+        let want: std::collections::HashSet<u64> = targets.iter().copied().collect();
+        let pages: std::collections::HashSet<u64> = targets.iter().map(|t| t & !0xfff).collect();
+        let ranges = self.text_ranges()?;
+        let mut out: Vec<(u64, u64, u64)> = ranges
+            .par_iter()
+            .flat_map_iter(|r| {
+                let mut found = Vec::new();
+                let start = r.start & !3;
+                let Some(bytes) = self.read(start, (r.end - start) as usize) else { return found };
+                let words: Vec<u32> =
+                    bytes.chunks_exact(4).map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]])).collect();
+                for (k, &w) in words.iter().enumerate() {
+                    let site = start + 4 * k as u64;
+                    let Some((rd, page)) = adrp_page(w, site) else { continue };
+                    if !pages.contains(&page) {
+                        continue;
+                    }
+                    for (j, &u) in words.iter().enumerate().skip(k + 1).take(PAGE_USE_WINDOW) {
+                        if let Some((rn, addr)) = page_use(u, page) {
+                            if rn == rd && want.contains(&addr) {
+                                found.push((site, start + 4 * j as u64, addr));
+                            }
+                        }
+                    }
+                }
+                found
+            })
+            .collect();
+        out.sort();
+        out.dedup();
+        Ok(out)
+    }
+
+    /// Every address of the cache where `text` stands as a whole C string (a NUL, or a mapping's start, before it, a
+    /// NUL after it). `sym cstr`. Sorted.
+    pub fn cstr(&self, text: &[u8]) -> Vec<u64> {
+        use rayon::prelude::*;
+        let mut needle = text.to_vec();
+        needle.push(0);
+        let n = needle.len();
+        const CHUNK: usize = 64 << 20;
+        let mut out: Vec<u64> = self
+            .effective_maps()
+            .par_iter()
+            .flat_map_iter(|m| {
+                let data: &[u8] = &self.files[m.file];
+                let start = (m.foff as usize).min(data.len());
+                let end = start.saturating_add(m.size as usize).min(data.len());
+                let piece = &data[start..end];
+                let mut found = Vec::new();
+                let mut at = 0;
+                while at < piece.len() {
+                    let stop = (at + CHUNK + n).min(piece.len());
+                    for (k, w) in piece[at..stop].windows(n).enumerate() {
+                        let i = at + k;
+                        if i >= at + CHUNK {
+                            break;
+                        }
+                        if w[0] == needle[0] && w == needle.as_slice() && (i == 0 || piece[i - 1] == 0) {
+                            found.push(m.addr + i as u64);
+                        }
+                    }
+                    at += CHUNK;
+                }
+                found
+            })
+            .collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// The C string at `va` when it is one: printable ASCII up to a NUL, 1 to 120 bytes.
+    pub fn string_at(&self, va: u64) -> Option<String> {
+        let bytes = self.read(va, 121)?;
+        let len = bytes.iter().position(|&b| b == 0)?;
+        let s = &bytes[..len];
+        (len > 0 && s.iter().all(|&b| (0x20..0x7f).contains(&b))).then(|| String::from_utf8_lossy(s).into_owned())
+    }
+}
+
+/// The address a pointer word of the cache holds: its low 36 bits (the rest are a chained fixup's or PAC's bits).
+pub fn pointer_target(word: u64) -> u64 {
+    word & 0x0000_000f_ffff_ffff
+}
+
+/// The address a pointer word holds in an arm64e cache whose pointers are offsets from the cache's base
+/// (DYLD_CHAINED_PTR_ARM64E_SHARED_CACHE, iOS 27's: 34 bits of runtime offset; the rest are PAC's and the chain's).
+/// None when the offset is past the cache.
+pub fn pointer_offset_target(word: u64, base: u64, size: u64) -> Option<u64> {
+    let offset = word & 0x0000_0003_ffff_ffff;
+    (offset < size).then(|| base + offset)
+}
+
+impl Cache {
+    /// Every 8-byte aligned word of the cache's mappings that points at one of `targets` (pointer_target, or
+    /// pointer_offset_target: a word may hold either form): (where, target), sorted. `sym ptrs`: a
+    /// selector's references (__objc_selrefs), a class's, a string's.
+    pub fn ptrs(&self, targets: &[u64]) -> Vec<(u64, u64)> {
+        use rayon::prelude::*;
+        let want: std::collections::HashSet<u64> = targets.iter().copied().collect();
+        let mut out: Vec<(u64, u64)> = self
+            .effective_maps()
+            .par_iter()
+            .flat_map_iter(|m| {
+                let data: &[u8] = &self.files[m.file];
+                let start = (m.foff as usize).min(data.len());
+                let end = start.saturating_add(m.size as usize).min(data.len());
+                let skip = (8 - (m.addr % 8) as usize) % 8;
+                let piece = &data[(start + skip).min(end)..end];
+                piece
+                    .chunks_exact(8)
+                    .enumerate()
+                    .filter_map(|(k, w)| {
+                        let word = u64::from_le_bytes(w.try_into().unwrap());
+                        let t = pointer_target(word);
+                        let t = if want.contains(&t) {
+                            Some(t)
+                        } else {
+                            pointer_offset_target(word, self.base, self.size).filter(|o| want.contains(o))
+                        };
+                        t.map(|t| (m.addr + skip as u64 + 8 * k as u64, t))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        out.sort();
+        out.dedup();
+        out
     }
 }

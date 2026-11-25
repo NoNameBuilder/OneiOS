@@ -187,6 +187,10 @@ pub struct Machine {
     pub target_type: Option<String>,
     /// /product artwork-display-gamut, default "P3" (with an identity) or "sRGB"
     pub display_gamut: Option<String>,
+    /// /product graphics-featureset-fallbacks keeps APPLE2 and MTL2,2 (false: both dropped, set_featuresets): MobileGestalt
+    /// then answers DeviceSupportsASTC, and CoreUI and Core Animation hand ASTC images to the GPU instead of decoding
+    /// them on the CPU. xnuhost's astc= (default 0) sets it; false here, the tree of the loader's own tests.
+    pub astc: bool,
     /// The guest's display (0 = say nothing): the mode in pixels, the UI scale (pixels per point, 2 or 3: /chosen
     /// display-scale, which MobileGestalt answers main-screen-scale from, and /product artwork-scale-factor) and the
     /// panel's refresh rate. /chosen/xnuhost carries all four for the hosted kernel's display driver.
@@ -213,10 +217,6 @@ pub struct Machine {
     /// (MobileGestalt's HWModelDescriptionForCamera: CMCapture reads its per-model tables from
     /// CMCapture.framework/<it less "AP">). docs/hardware.md section 7.
     pub cameras: u32,
-    /// Keep APPLE2 and MTL2,2 in /product graphics-featureset-fallbacks (xnuhost's astc=1): MobileGestalt then
-    /// answers DeviceSupportsASTC and UIKit compresses with ASTC. Off: they are dropped, because SplashBoard writes
-    /// app snapshots in the AGX GPU's own ASTC layout, which Adreno does not decode (docs/gpu.md).
-    pub astc: bool,
     /// /product product-id when there is no identity tree: the 20 bytes iOS 16's MobileGestalt finds its product by
     /// (libMobileGestalt 20F66 copies IODeviceTree:/product product-id and looks it up in its table of 363 products; with
     /// none, MGGetProductType is -1, every MGIsDeviceOneOfType is false and bluetoothd's chip factory finds no chip).
@@ -290,6 +290,7 @@ impl Default for Machine {
             model: None,
             target_type: None,
             display_gamut: None,
+            astc: false,
             display_width: 0,
             display_height: 0,
             display_scale: 0,
@@ -297,7 +298,6 @@ impl Default for Machine {
             corner_radius: 0,
             artwork_subtype: 0,
             cameras: 0,
-            astc: false,
             unique_model: None,
             product_id: None,
             serial_number: None,
@@ -352,10 +352,12 @@ fn product_dropped(name: &[u8]) -> bool {
     DROPPED.iter().any(|d| d.as_bytes() == name)
 }
 
-/// graphics-featureset-fallbacks without APPLE2 and MTL2,2 (a NUL-terminated, colon-separated list): with them
-/// MobileGestalt answers DeviceSupportsASTC and SplashBoard writes app snapshots in the AGX GPU's own ASTC layout,
-/// which no other GPU decodes. astc=1 keeps them (Machine::astc).
-fn set_featuresets(product: &mut Node, name: &[u8], value: &[u8], keep_astc: bool) {
+/// graphics-featureset-fallbacks (a NUL-terminated, colon-separated list), without APPLE2 and MTL2,2 unless `astc`: with
+/// them MobileGestalt answers DeviceSupportsASTC. They were dropped because SplashBoard wrote app snapshots in the AGX
+/// GPU's own ASTC layout, which no other GPU decodes; NativeMetal's frontend now answers the layout itself (its
+/// DVMLinearTextureLayout, whose watermark refuses data laid out for another GPU), and with ASTC on UniXNU-zizhan
+/// measured 46.9 -> 88.6 moving fps (CA uploads ASTC images instead of ImageIO decoding them). xnuhost's astc=.
+fn set_featuresets(product: &mut Node, name: &[u8], value: &[u8], astc: bool) {
     const OUT: usize = 512; // the C buffer: an entry that would not fit is left out
     let mut length = value.len();
     while length > 0 && value[length - 1] == 0 {
@@ -364,7 +366,7 @@ fn set_featuresets(product: &mut Node, name: &[u8], value: &[u8], keep_astc: boo
     let mut out = Vec::with_capacity(OUT);
     if length > 0 {
         for item in value[..length].split(|b| *b == b':') {
-            let drop = !keep_astc && (item == b"APPLE2" || item == b"MTL2,2");
+            let drop = !astc && (item == b"APPLE2" || item == b"MTL2,2");
             if !drop && out.len() + item.len() + 2 < OUT {
                 if !out.is_empty() {
                     out.push(b':');
@@ -769,7 +771,7 @@ impl Machine {
             // second in Spotlight, Notes and WebSheet, 105% of a core, keys waiting for the main thread; the phone,
             // 2026-11-22). The values are 24A446's V54 device tree's /product, with this host's choices: the gamut is
             // the display's (sRGB unless display_gamut says so: the helper tags the frames sRGB), and the GPU
-            // fallbacks lose APPLE2 and MTL2,2 as with an identity (set_featuresets), unless astc=1 keeps them.
+            // fallbacks lose APPLE2 and MTL2,2 as with an identity unless astc (set_featuresets).
             product.put_str("artwork-device-idiom", "phone");
             // The subtype names the artwork and the layout metrics: the panel's own (2340 for a 1080x2340 panel, the
             // iPhone 12/13 mini's grid) unless the host says otherwise; 2868 (the iPhone18,2's Pro Max) for every

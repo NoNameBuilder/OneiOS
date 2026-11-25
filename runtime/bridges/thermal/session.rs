@@ -322,7 +322,8 @@ impl Thermal {
         let s = &t.shared;
         let level = level_name(lock(&s.run).now.level);
         let zone = if raw.soc_zone.is_empty() { "-" } else { &raw.soc_zone };
-        let cap_note = if cap_off { "; thermal-cap=0 (ONEIOS_THERMAL_CAP=0): xnuhost does not hold itself back" } else { "" };
+        let cap_note =
+            if cap_off { "; thermal-cap=0 (ONEIOS_THERMAL_CAP=0): xnuhost does not hold itself back" } else { "" };
         let (skin, soc, battery) = (deci_text(raw.skin), deci_text(raw.soc), deci_text(raw.battery));
         match &s.source {
             Source::Hal(h) => br_info!(

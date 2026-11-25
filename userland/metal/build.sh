@@ -3,6 +3,8 @@
 #
 #   scripts/bg.sh metal userland/metal/build.sh            everything (about 25 minutes the first time)
 #   userland/metal/build.sh stage|turnip|plugin|finish|addon   one step
+#   ONEIOS_METAL_TARGET="iPhone18,2 24B156" userland/metal/build.sh   for iOS 27.2.1 (hooks/iPhone18,2-24B156.json), in
+#                               out/userland-24B156 (the default target, iPhone18,2 24A446, is out/userland's)
 #   METAL_RUNTIME=rt userland/metal/build.sh ...            the same with the bridge on metal2vulkan-rt (userland/metal/rt: the
 #                               pin development 6462199fa and its patches, the bridge rewritten on its API), in out/metal-rt and
 #                               out/userland-rt unless METAL_WORK and METAL_OUT say otherwise; the default stays 624bab3
@@ -10,9 +12,10 @@
 # What is built (docs/gpu.md section 7, docs/userland.md 7.1):
 #   libvulkan_freedreno.dylib   Mesa's Turnip (external/mesa-droidvm cecc0e9 + Droid-VM-UniXNU patches/mesa, the list of
 #                               scripts/data/adreno-compiler-inputs.json, + this folder's trace-turnip-init.patch and
-#                               turnip-idle-bo-cache.patch) with the darwin virtio-gpu backend, a Mach-O dylib
+#                               turnip-idle-bo-cache.patch and turnip-submit-split.patch) with the darwin virtio-gpu backend, a Mach-O dylib
 #   libadreno_metal_bridge.a    metal2vulkan (external/metal2vulkan 624bab3 + NativeMetal bridge/patches + Droid-VM-UniXNU
-#                               patches/metal2vulkan + this folder's m2v-spare-command-pools.patch and m2v-idle-memory.patch) behind NativeMetal's C ABI; Rust, arm64e-apple-ios, std from source
+#                               patches/metal2vulkan + this folder's m2v-spare-command-pools.patch, m2v-idle-memory.patch and m2v-compile-deadline.patch) behind
+#                               NativeMetal's C ABI; Rust, arm64e-apple-ios, std from source
 #   NativeAdrenoMetal           external/NativeMetal b0d6a07: the plug-in and the Metal frontend, linked with the bridge
 #                               (GpuScanoutPresenter.h includes the wire header of external/NativeMobileDisplay)
 #   -> out/userland/NativeAdrenoMetal.bundle (Info.plist, NativeAdrenoMetal, libvulkan_freedreno.dylib, oneios-target)
@@ -25,8 +28,11 @@
 # is `oneios-tool ios codesign` over `ios sign` (byte for byte Apple's codesign for a thin file; no bundle seal), strip and nm the linker's
 # siblings. On macOS ios-clang is Xcode's clang and ld, and xcrun's other answers are Xcode's; on Linux the cross toolchain.
 # The staged copies differ from upstream in the few lines `stage` prints. Before the compile, the plug-in's shared
-# cache addresses are replaced with this guest's (hooks/<product>-<build>.json) and two OneiOS files are appended for
-# backboardd (drivers/brightness/BacklightMode.inc; DisplayWide.inc: half floats with oneios-display-wide=1); `finish` then marks the bundle with
+# cache addresses are replaced with this guest's (hooks/<product>-<build>.json) and OneiOS files are appended: for
+# backboardd drivers/brightness/BacklightMode.inc and DisplayWide.inc (half floats with oneios-display-wide=1); for every
+# client DisplayLinks.inc (UIKit's animation links at the panel's rate), KeepRoom.inc (the pools' room kept ahead) and
+# CompileDeadline.inc (a longer compile deadline, not in backboardd); for SpringBoard SnapshotFormat.inc (app snapshots
+# JPEG or PNG, not ATX); `finish` then marks the bundle with
 # `oneios-target`, which is what lets the root tweaks (`oneios-tool image tweaks`) place it.
 #
 # Needs: scripts/setup/ios-toolchain.sh says "ok"; scripts/setup/get-references.sh (NativeMetal, NativeAdreno,
@@ -51,6 +57,10 @@ case "$RUNTIME" in
   rt) DEFAULT_WORK=$ROOT/out/metal-rt DEFAULT_OUT=$ROOT/out/userland-rt ;;
   *) echo "metal: METAL_RUNTIME=$RUNTIME: 624bab3 or rt" >&2; exit 2 ;;
 esac
+# Another target than the default (the image's device and build, hooks/<device>-<build>.json): its own output folder,
+# out/userland-<build> (out/userland-rt-<build>), so that the default's bundle stays; the work folder is shared (stage
+# stages the sources again, only the plug-in is built again).
+[ "$TARGET_ID" = "iPhone18,2 24A446" ] || DEFAULT_OUT=$DEFAULT_OUT-${TARGET_ID#* }
 W=${METAL_WORK:-$DEFAULT_WORK}
 R=$W/root
 EXT=$ROOT/external
@@ -80,13 +90,16 @@ stage() {
   mkdir -p "$R/drivers" "$R/kits" "$R/.cache/gpu-reference" "$R/.cache/mesa-venv/bin" "$R/.cache/mesa-tools/bin" "$R/build"
   rsync -a --delete "$BASE/scripts/" "$R/scripts/"
   rsync -a --delete "$BASE/patches/" "$R/patches/"
-  # Adreno-generic shader fixes rebased on the pinned metal2vulkan. Patches 0101 and 0102 are appended to the bridge's
-  # patch list and built into the plug-in; 0103 stays staged but unapplied because its allocator tuning has no safe
-  # per-process policy wired in yet.
+  # This project's extra metal2vulkan patches (userland/metal/patches/metal2vulkan: the Adreno-generic shader
+  # translation fixes of hakios-arm64e-dada, rebased on the pin): copied as 9xxx. The base's build-adreno-metal-bridge.py
+  # applies a fixed list of names, not *.patch: since 2026-11-25 `ios metal-stage-edit` appends 90101, 90102 and
+  # 90110 (the switch: both fixes on unless the boot argument oneios-m2v-shader-fix=0; ShaderFix.inc below sets
+  # METAL2VULKAN_SHADER_FIX=1 otherwise; docs/switches.md). 90103 stays in no list (it does not apply on the bridge's stack).
+  # `.github/workflows/gpu-patch-check.yml` checks that they apply to the pin.
   if ls "$HERE"/patches/metal2vulkan/*.patch >/dev/null 2>&1; then
     mkdir -p "$R/patches/metal2vulkan"
     for p in "$HERE"/patches/metal2vulkan/*.patch; do cp "$p" "$R/patches/metal2vulkan/9$(basename "$p")"; done
-    say "copied $(ls "$HERE"/patches/metal2vulkan/*.patch | wc -l) OneiOS metal2vulkan patches (0101/0102 applied; 0103 staged only)"
+    say "copied $(ls "$HERE"/patches/metal2vulkan/*.patch | wc -l) metal2vulkan patches of OneiOS (9xxx: 90101, 90102, 90110 in the bridge's list, on unless oneios-m2v-shader-fix=0; 90103 in none)"
   fi
   # Lasting debug tooling, off by default (each patch only logs when its environment variable is set:
   # ONEIOS_VK_INIT, ONEIOS_SURFACE_TRACE): the trace patches staged beside the base's own, applied by the
@@ -94,6 +107,7 @@ stage() {
   # clone below (a fresh METAL_WORK has no mesa-work yet: applied before the clone, stage stopped with git's status 128).
   cp "$HERE/trace-turnip-init.patch" "$R/patches/mesa/"
   cp "$HERE/turnip-idle-bo-cache.patch" "$R/patches/mesa/"
+  cp "$HERE/turnip-submit-split.patch" "$R/patches/mesa/"
   cp "$HERE/trace-metal-vulkan-init.patch" "$R/patches/metal2vulkan/"
   cp "$HERE/trace-metal-surfaces.patch" "$R/patches/"
   # Not a trace: spare command pools follow their recent use (docs/gpu.md, "Who keeps a blob"), applied after the trace
@@ -102,6 +116,8 @@ stage() {
   # Not a trace either: the idle trim frees the spare dedicated image blocks past their 10 s, and the memory census of
   # the GPU memory row (docs/gpu.md, "Who keeps a blob"; switch oneios-idle-spares=0), applied after the pool patch.
   cp "$HERE/m2v-idle-memory.patch" "$R/patches/metal2vulkan/"
+  # The compile deadline per process (METAL2VULKAN_COMPILE_DEADLINE_S; the plug-in's CompileDeadline.inc sets it), after the idle one.
+  cp "$HERE/m2v-compile-deadline.patch" "$R/patches/metal2vulkan/"
   rsync -a --delete --exclude .git "$EXT/NativeMetal/" "$R/drivers/AdrenoMetal/"
   rsync -a --delete --exclude .git "$EXT/NativeAdreno/" "$R/drivers/Adreno740/"
   rsync -a --delete --exclude .git "$EXT/NativeMobileDisplay/" "$R/drivers/GopFramebuffer/"
@@ -130,6 +146,11 @@ stage() {
   if ! git -C "$R/.cache/mesa-work" apply --reverse --check "$HERE/turnip-idle-bo-cache.patch" 2>/dev/null; then
     git -C "$R/.cache/mesa-work" apply "$HERE/turnip-idle-bo-cache.patch"
   fi
+  # A kernel submission ends only where a command buffer begins (Droid-VM/UniXNU fb9fb47: the GPU hang at 5-10% of
+  # backboardd's starts), after the idle one, applied once as well.
+  if ! git -C "$R/.cache/mesa-work" apply --reverse --check "$HERE/turnip-submit-split.patch" 2>/dev/null; then
+    git -C "$R/.cache/mesa-work" apply "$HERE/turnip-submit-split.patch"
+  fi
   [ -d "$R/.cache/gpu-reference/metal2vulkan/.git" ] || git clone -q "$EXT/metal2vulkan" "$R/.cache/gpu-reference/metal2vulkan"
   # The staged scripts and sources: what differs from upstream, each said.
   # clang 23's -Wunused-but-set-global: Xcode 27.2's clang 21 does not know it (and -Werror makes an unknown
@@ -138,9 +159,23 @@ stage() {
   echo 'int x;' | "$IOS_DIR/ios-clang" -Werror -Wno-error=unused-but-set-global -x c -c - -o /dev/null 2>/dev/null && knows=1
   local rt=()
   [ "$RUNTIME" = rt ] && rt=(--rt)
-  # ${rt[@]+...}: macOS's bash 3.2 reports an empty array as unbound under set -u, and the default runtime
-  # has no flag to give.
-  "$ONEIOS_TOOL" ios metal-stage-edit "$R" "$HOOKS" "$JOBS" "$knows" ${rt[@]+"${rt[@]}"}
+  "$ONEIOS_TOOL" ios metal-stage-edit "$R" "$HOOKS" "$JOBS" "$knows" "${rt[@]}"
+  # The bridge script takes the translator's source only as the pin plus a prefix of its patch list ("Translator source
+  # differs from the pinned revision plus its recorded patches"). A list whose order or a patch that changed since the
+  # last stage leaves a tree that is no prefix (2026-11-25: main's 90101, 90102, 90110 came before this branch's
+  # m2v-compile-deadline.patch, which an older stage had applied right after m2v-idle-memory.patch). So the list and the
+  # patches are remembered (a checksum in build/m2v-patches.stamp); when they changed, or when no stage recorded them and
+  # the tree has changes, the source goes back to the pin and the script applies the whole list again (the bridge is
+  # then built again, as it would be for any patch change).
+  local m2v=$R/.cache/gpu-reference/metal2vulkan stamp=$R/build/m2v-patches.stamp want
+  want=$(cat "$R/scripts/build-adreno-metal-bridge.py" "$R"/drivers/AdrenoMetal/bridge/patches/*.patch \
+    "$R"/patches/metal2vulkan/*.patch 2>/dev/null | cksum)
+  if { [ -f "$stamp" ] && [ "$(cat "$stamp")" != "$want" ]; } \
+    || { [ ! -f "$stamp" ] && [ -n "$(git -C "$m2v" status --porcelain)" ]; }; then
+    git -C "$m2v" checkout -q -- . && git -C "$m2v" clean -qfd
+    say "the translator's patch list or a patch changed since the last stage: $m2v is back at the pin (the bridge script applies the list again)"
+  fi
+  printf '%s\n' "$want" > "$stamp"
   # drivers/brightness/BacklightMode.inc (owner: brightness): backboardd's CoreBrightness gets BLControl, not the
   # VMBLControl that vmm-present selects, and no frame-synchronous brightness (no handler for it here), so the slider
   # reaches the backlight service as brightness-nits. The plug-in is the OneiOS code
@@ -151,10 +186,26 @@ stage() {
   # display-format=rgba16f) backboardd's framebuffer is half floats ('RGhA'), which the display path then keeps whole.
   cat "$HERE/DisplayWide.inc" >> "$R/drivers/AdrenoMetal/NativeAdrenoMetalPlugin.mm"
   say "staged NativeAdrenoMetalPlugin.mm: userland/metal/DisplayWide.inc appended (backboardd: CA_FORCE_FP16_FRAMEBUFFER with oneios-display-wide=1)"
+  # userland/metal/DisplayLinks.inc (owner: display): UIKit's in-process animations at the panel's rate (oneios-dl-full=0: off).
+  cat "$HERE/DisplayLinks.inc" >> "$R/drivers/AdrenoMetal/NativeAdrenoMetalPlugin.mm"
+  say "staged NativeAdrenoMetalPlugin.mm: userland/metal/DisplayLinks.inc appended (UIKit's in-process animation links at the panel's rate; oneios-dl-full=0: off)"
+  # userland/metal/KeepRoom.inc (owner: gpu memory): the room metal2vulkan keeps ahead in a pool, 8 MiB (oneios-keep-room=MIB; 0: half a block).
+  cat "$HERE/KeepRoom.inc" >> "$R/drivers/AdrenoMetal/NativeAdrenoMetalPlugin.mm"
+  say "staged NativeAdrenoMetalPlugin.mm: userland/metal/KeepRoom.inc appended (METAL2VULKAN_KEEP_ROOM_MIB from oneios-keep-room, 8 without it)"
+  # userland/metal/CompileDeadline.inc (owner: camera): a 120 s compile deadline for every client but backboardd (oneios-compile-s=S; 0: 20 s).
+  cat "$HERE/CompileDeadline.inc" >> "$R/drivers/AdrenoMetal/NativeAdrenoMetalPlugin.mm"
+  say "staged NativeAdrenoMetalPlugin.mm: userland/metal/CompileDeadline.inc appended (METAL2VULKAN_COMPILE_DEADLINE_S from oneios-compile-s, 120 without it, not in backboardd)"
+  # userland/metal/SnapshotFormat.inc (owner: display): SpringBoard's app snapshots JPEG or PNG, never ATX, now that the device answers ASTC (oneios-snapshot-astc=1: iOS's choice).
+  cat "$HERE/SnapshotFormat.inc" >> "$R/drivers/AdrenoMetal/NativeAdrenoMetalPlugin.mm"
+  say "staged NativeAdrenoMetalPlugin.mm: userland/metal/SnapshotFormat.inc appended (SpringBoard: app snapshots JPEG or PNG, not ATX)"
   # userland/metal/CommandPoolRow.inc: each client's command pools on its kernel text line every 60 s while they move
   # (oneios-gpu-text: ... CP pools/command buffers cut ... idle ... tuc ...); metal-stage-edit added its calls.
   cat "$HERE/CommandPoolRow.inc" >> "$R/drivers/AdrenoMetal/NativeAdrenoMetalPlugin.mm"
   say "staged NativeAdrenoMetalPlugin.mm: userland/metal/CommandPoolRow.inc appended (the command pool row)"
+  # userland/metal/ShaderFix.inc (owner: gpu): sets METAL2VULKAN_SHADER_FIX=1, the switch of the shader fixes 0101 and
+  # 0102 (90110-shader-fix-switch.patch), unless the boot argument oneios-m2v-shader-fix=0 (on by default since 2026-11-25).
+  cat "$HERE/ShaderFix.inc" >> "$R/drivers/AdrenoMetal/NativeAdrenoMetalPlugin.mm"
+  say "staged NativeAdrenoMetalPlugin.mm: userland/metal/ShaderFix.inc appended (METAL2VULKAN_SHADER_FIX=1 unless oneios-m2v-shader-fix=0)"
   # userland/metal/rt/RtSwitches.inc (METAL_RUNTIME=rt): the boot words oneios-dont-care=0 and oneios-queue-priority=0
   # turn rt patches 0005 and 0006 off (docs/switches.md).
   if [ "$RUNTIME" = rt ]; then
@@ -201,11 +252,7 @@ finish() {
   cp -r "$built" "$bundle"
   # The file the root tweaks look for: this bundle's addresses are this guest's.
   echo "$TARGET_ID" > "$bundle/oneios-target"
-  # The guest's own stubs when the shared cache was turned into them; on a runner that has only Xcode and the
-  # SDK, the SDK's stubs (--sdk) are the ones the linker used, so they are the ones to check against too.
-  local stubs=()
-  [ -f "$IOS_TBD/usr/lib/libSystem.B.tbd" ] || stubs=(--sdk)
-  "$ONEIOS_TOOL" ios macho-check ${stubs[@]+"${stubs[@]}"} --local "$bundle/libvulkan_freedreno.dylib" "$bundle/NativeAdrenoMetal" "$bundle/libvulkan_freedreno.dylib" | tee "$OUT/NativeAdrenoMetal.check.txt"
+  "$ONEIOS_TOOL" ios macho-check --local "$bundle/libvulkan_freedreno.dylib" "$bundle/NativeAdrenoMetal" "$bundle/libvulkan_freedreno.dylib" | tee "$OUT/NativeAdrenoMetal.check.txt"
   "$ONEIOS_TOOL" ios metal-record "$ROOT" "$bundle" "$OUT/NativeAdrenoMetal.build.json" "$HOOKS" "$TARGET_ID"
   # Which bridge runtime the bundle carries, beside the record (the record names the base's pins either way).
   echo "$RUNTIME" > "$OUT/NativeAdrenoMetal.runtime"

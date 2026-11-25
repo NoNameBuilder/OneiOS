@@ -28,6 +28,11 @@ The transport (`DroidVMVirtioGpu.cpp`) and the 3D half are in the GPU's archive 
 
 ## The class for this kernelcache (`oneios-tool kernel port-legacy-display`)
 
+iOS 27.2.1 (24B156) has its own record, `legacy-display-24B156-v54.json`: this one carried over by `oneios-tool prelink
+port` (kernel/prelink/README.md "Another build"; the class is 8 bytes larger there, 0x1de0, and every field we use
+is at the same offset). `kernel gen display` takes the record of the kernel's build and refuses one that disagrees
+with `classes-<build>-v54.json`.
+
 Droid-VM's reviewed fixture (`legacy-display-24A446.json`) is for the iPad17,3 kernelcache of the same build.
 `oneios-tool prelink classes` already reads the class from the iPhone18,2 one (`classes-24A446-v54.json`: 0x1dd8
 bytes, 379 slots, as on the iPad). `oneios-tool kernel port-legacy-display` shows the family's code is the same code at another
@@ -107,11 +112,15 @@ so those archives keep their own names.
   60 Hz the backend also reports the rate the way a ProMotion panel does: `getRefreshAttributes` answers a
   minimum refresh interval of 1/120 s and keeps the family's maximum of 1/24 s (a range of 24 to 120 Hz for
   the render server), and `setDisplayRefreshProperties` publishes that as `IOMFBDisplayRefresh` before any
-  client can find the display. `sheng-vsync-fixed=1` reports one fixed rate instead; xnuhost passes it above
-  60 Hz, because the panel has one rate and CoreAnimation picks 30 Hz for an animation inside a range that
-  offers one (`docs/gpu.md`, "The refresh range"); `sheng-vsync-fixed=0` in the command line keeps the range.
-  With no boot argument at all (a kernel started without xnuhost's) the tick is 60 Hz and the family's 1/60 s
-  stays. The tick with a client, and what backboardd makes of the properties, have not run.
+  client can find the display. Since 2026-11-25 (fix/s24-fps-heat-camera) the longest interval is 1/60 s: a 60..120 Hz range
+  (`sheng-vsync-min=HZ`, default 60 in `OneiOSDisplay.cpp`; 24 or 0 gives the family's 1/24 s back), staged into
+  `NativeLegacyDisplay.cpp` by `oneios-tool kernel build-oneios-display` (`staged/display.rs` LEGACY): with 24 Hz on
+  offer Core Animation ran light animations at 24-40 Hz (UniXNU-zizhan's reading of its frames). The kernel says
+  `oneios-display: refresh range 60..120 Hz` once. `sheng-vsync-fixed=1` reports one fixed rate instead, and wins over the
+  range; xnuhost passes it above 60 Hz, because the panel has one rate and CoreAnimation picks 30 Hz for an animation
+  inside a range that offers one (`docs/gpu.md`, "The refresh range"); `sheng-vsync-fixed=0` in the command line keeps
+  the range. With no boot argument at all (a kernel started without xnuhost's) the tick is 60 Hz and the family's
+  1/60 s stays. The tick with a client, and what backboardd makes of the properties, have not run.
 - **Swaps.** A swap is accepted when it is one full-panel, untransformed surface in B,G,R,A (or Apple's `&BGA`
   spelling, or half-float `RGhA`), or a blank frame. An accepted B,G,R,A frame is offered to the virtio scanout,
   which presents the surface's own pages (no copy in the guest) and completes the swap; a half-float frame, or one
@@ -360,7 +369,9 @@ and by reading the family's code in the 24A446 v54 kernelcache:
 The fix, in `OneiOSDisplay.cpp` (`oneios_display_power_on`, at the end of the late probe): the power manager gets
 2 seconds; if it has not called, `setPowerState(1, display)` is called on the display, the same virtual with the
 same arguments. Log: `oneios-display: power: ...; the family's power word was 0 and is 1`.
-`oneios-display-power=0` leaves it out. The offset 7180 is this kernelcache's.
+`oneios-display-power=0` leaves it out. The offset 7180 is this kernelcache's, and 24B156's: the display record keeps it as
+`display.power`, so that `prelink port` reads it again from another build's code (24B156: the same, 5 sure votes;
+OneiOSDisplay.cpp still has the number written in).
 
 Run on the phone (S24 Ultra, `a472a41`): `power: the power manager did not call setPowerState in 2 s: called here; the family's power word was 0 and is 1`, then swap submits (selector 5) for the first time and the Apple boot logo on the panel (screen capture and the glass). Not run on the PC. Not known: whether anything
 else in the family asks the power manager for the state (IOService's own `getPowerState()` still says 0).
