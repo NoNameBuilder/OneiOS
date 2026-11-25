@@ -709,6 +709,45 @@ for each of its four tiles. This lowers repeated mapping-table traversal and mak
 it still scans every guest row and does not remove the CPU copy. The next phone measurement is the existing
 `oneios-display: 10 s` read timing alongside xnuhost's `frame:` stages; no new timing-only instrumentation was added.
 
+### 2.5b The refresh range: one fixed rate on a panel that has one (2026-11-25)
+
+The panel refreshes at one rate (120 on the S24 Ultra and the S25). The guest's display driver, though, reports the
+rate the way a ProMotion panel does: `getRefreshAttributes` answers a minimum interval of 1/120 s and keeps the
+family's original maximum of 1/24 s, and `registerService` publishes that range as `IOMFBDisplayRefresh` before any
+client can find the display (`kernel/patches/oneios-hosted/display/README.md`, "Vsync and the refresh rate"). The
+render server reads it, and CoreAnimation, offered a 24..120 Hz range, is free to pick 30 Hz for an animation: the
+animation then runs at 30 fps on a panel that could show 120. That is the frame rate the owner sees in app-open and
+app-close animations.
+
+The research note of 2026-11-25 (hand-off, work item 2) records the same fault from the other side: zizhan's S24
+Ultra went from 57 to 95 fps by making UIKit's animations ask for the panel's rate instead of 20..120 with 30
+preferred, and names the display's 24..120 Hz range as the second half of the fix. The panel has no variable
+refresh, so a range is a lie about it.
+
+**The change.** xnuhost now adds `sheng-vsync-fixed=1` to the kernel's command line when the panel's rate is above
+60 Hz, unless the command line already names it (`config::display_boot_args`, beside `sheng-vsync=HZ`). The display
+driver's `getRefreshAttributes` then answers the maximum interval equal to the minimum: one fixed rate of 1/120 s.
+CoreAnimation has no slower rate to pick, so an animation asks for the panel's. The switch is the driver's own and
+predates this change; the release kernel (`42e6c07e…`) carries its string, so no kernel rebuild is involved. Below
+60 Hz nothing is added: the driver only publishes the properties above 60 Hz, and the range there is the family's
+1/60 s.
+
+**The A/B.** `boot-args-add=sheng-vsync-fixed=0` in the image's `overlay/userland/xnuhost.conf` keeps the 24..120 Hz
+range (the behaviour before this build); xnuhost leaves a value the command line already has alone. A session that
+sets `sheng-vsync=60` is below the line and gets no fixed rate either.
+
+**Host tests.** `config::tests::boot_argument_helpers`: the fixed rate is added once above 60 Hz, not added at 60 Hz,
+a given `sheng-vsync-fixed=0` stays and nothing is appended, and no room in the buffer is an error like the other
+display arguments.
+
+**What it does not prove.** The fps gain is the research lead's, measured by zizhan with a guest-side animation fix;
+whether the render server's range report alone lifts the animation rate is not seen yet. The phone lines to read: the
+render server's `gpu: 10 s level: ... frame interval` (13.7-23.4 ms with animation work, 95-99 ms still, section
+2.5), xnuhost's `frame:` interval and the `display: 10 s:` frames, in an app-open and an app-close. The cost, if the
+fix works, is that animations now run at 120 rather than 30: more GPU work and more power while one runs, none at a
+still screen (the tick still stops when no client asks for vsync). If a boot shows the animations no faster, this
+paragraph is the thing to correct, and `sheng-vsync-fixed=0` is the way back. Not booted.
+
 ## 3. Tests on the PC
 
 `cd runtime && cargo test -p xnuhost -p drm2kgsl-sys` (also part of `runtime/host-tests.sh` and `runtime/build.sh

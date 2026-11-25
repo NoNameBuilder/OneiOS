@@ -701,7 +701,8 @@ pub fn main() -> i32 {
     }
     let Ok(fb) = display::init(&config) else { return EXIT_SETUP };
     s.fb = fb;
-    // The display driver's scale and refresh rate go on the kernel's command line (a value given there stays).
+    // The display driver's scale, refresh rate and fixed-rate flag go on the kernel's command line (a value given
+    // there stays).
     if config::display_boot_args(
         &mut config.boot_args,
         config::BOOT_ARGS_SIZE,

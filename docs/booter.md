@@ -1804,7 +1804,7 @@ The `blk.rs` flush counts and times count every `fdatasync`, whichever side (vCP
   | `/chosen display-scale` (and `display-rotation` 0) | MobileGestalt's `main-screen-scale`; the display driver checks it |
   | `/product artwork-scale-factor` | the artwork scale (the identity tree's 3 is replaced) |
   | `/chosen/xnuhost display-width`, `display-height`, `display-scale`, `display-hz` | the mode as xnuhost has it, for the hosted kernel |
-  | boot arguments `offline-legacy-unit-scale=N`, `sheng-vsync=HZ` | the display driver: its scale policy; the vsync tick and the refresh properties. Added unless the command line has them |
+  | boot arguments `offline-legacy-unit-scale=N`, `sheng-vsync=HZ`, `sheng-vsync-fixed=1` (above 60 Hz) | the display driver: its scale policy; the vsync tick and the refresh properties; and above 60 Hz one fixed rate instead of the family's 24..120 Hz range, so CoreAnimation asks for the panel's rate rather than choosing 30 inside the range (`docs/gpu.md`, "The refresh range"). Added unless the command line has them (`sheng-vsync-fixed=0` keeps the range) |
   | `/chosen text-fixups` | for 3 only, and only for build 24A446: two fixups of QuartzCore's `-[CADisplayMode preferredScale]`, which answers 2 on its own (`kernel/patches/oneios-hosted/display/README.md` "Scale"). `--set scale-fixup=0` leaves them out; `--text-fixup FILE,OFFSET,ORIGINAL,REPLACEMENT` (repeatable) adds others |
 
   `/product artwork-device-subtype` stays the identity's (2868), or the panel's without one (2340 on a 1080x2340

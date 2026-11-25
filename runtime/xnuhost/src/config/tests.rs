@@ -929,24 +929,32 @@ fn boot_argument_helpers() {
                                                                                         // the display driver's switches on the kernel's command line: added once, a given value stays
     let mut a = "-v debug=0x8".to_owned();
     assert!(display_boot_args(&mut a, 128, 3, 120, DisplayFormat::Bgrx8).is_ok());
-    assert_eq!(a, "-v debug=0x8 offline-legacy-unit-scale=3 sheng-vsync=120");
+    assert_eq!(a, "-v debug=0x8 offline-legacy-unit-scale=3 sheng-vsync=120 sheng-vsync-fixed=1");
     assert!(display_boot_args(&mut a, 128, 2, 60, DisplayFormat::Bgrx8).is_ok());
-    assert_eq!(a, "-v debug=0x8 offline-legacy-unit-scale=3 sheng-vsync=120");
+    assert_eq!(a, "-v debug=0x8 offline-legacy-unit-scale=3 sheng-vsync=120 sheng-vsync-fixed=1");
     let mut a = "sheng-vsync=90 not-sheng-vsync=1".to_owned();
     assert!(display_boot_args(&mut a, 128, 2, 120, DisplayFormat::Bgrx8).is_ok());
-    assert_eq!(a, "sheng-vsync=90 not-sheng-vsync=1 offline-legacy-unit-scale=2");
+    assert_eq!(a, "sheng-vsync=90 not-sheng-vsync=1 offline-legacy-unit-scale=2 sheng-vsync-fixed=1");
     let mut a = String::new();
     assert!(display_boot_args(&mut a, 128, 2, 120, DisplayFormat::Bgrx8).is_ok());
-    assert_eq!(a, "offline-legacy-unit-scale=2 sheng-vsync=120");
+    assert_eq!(a, "offline-legacy-unit-scale=2 sheng-vsync=120 sheng-vsync-fixed=1");
+    // a 60 Hz panel keeps its own range: the fixed rate is only what the range cannot say above 60 Hz
+    let mut a = String::new();
+    assert!(display_boot_args(&mut a, 128, 2, 60, DisplayFormat::Bgrx8).is_ok());
+    assert_eq!(a, "offline-legacy-unit-scale=2 sheng-vsync=60");
+    // the owner's choice stays: 0 is the 24..120 Hz range the guest's display reports by itself
+    let mut a = "sheng-vsync-fixed=0".to_owned();
+    assert!(display_boot_args(&mut a, 128, 2, 120, DisplayFormat::Bgrx8).is_ok());
+    assert_eq!(a, "sheng-vsync-fixed=0 offline-legacy-unit-scale=2 sheng-vsync=120");
     assert!(display_boot_args(&mut a, 44, 2, 120, DisplayFormat::Bgrx8).is_ok());
     assert_eq!(display_boot_args(&mut String::new(), 40, 2, 120, DisplayFormat::Bgrx8), Err(NoRoom)); // no room
                                                                                                       // a half-float frame: the guest is told to hand its half-float surfaces over as they are; a given value stays
     let mut a = String::new();
     assert!(display_boot_args(&mut a, 128, 3, 120, DisplayFormat::Rgba16f).is_ok());
-    assert_eq!(a, "oneios-display-wide=1 offline-legacy-unit-scale=3 sheng-vsync=120");
+    assert_eq!(a, "oneios-display-wide=1 offline-legacy-unit-scale=3 sheng-vsync=120 sheng-vsync-fixed=1");
     let mut a = "oneios-display-wide=0".to_owned();
     assert!(display_boot_args(&mut a, 128, 3, 120, DisplayFormat::Rgba16f).is_ok());
-    assert_eq!(a, "oneios-display-wide=0 offline-legacy-unit-scale=3 sheng-vsync=120");
+    assert_eq!(a, "oneios-display-wide=0 offline-legacy-unit-scale=3 sheng-vsync=120 sheng-vsync-fixed=1");
 }
 
 #[test]
