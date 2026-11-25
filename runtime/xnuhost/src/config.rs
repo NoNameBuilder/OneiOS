@@ -497,6 +497,7 @@ const GIVEN_KEYS: &[&str] = &[
     "task-trim",
     "task-trim-idle",
     "timer-coalesce",
+    "thermal-cap",
     "ram-tasks-awake",
     "ram-task-idle-cost",
 ];
@@ -731,6 +732,10 @@ pub struct Config {
     pub task_trim_idle: u32,
     /// timer-coalesce (on): a later deadline or a cancel leaves the vCPU's host timer armed (cpu::TIMER_COALESCE)
     pub timer_coalesce: bool,
+    /// thermal-cap= (off): at the cell's critical temperature, narrow the vCPUs to fewer host cores (the step
+    /// before 2026-11-25). Off keeps every core: the level still goes to iOS, which slows itself. See
+    /// docs/booter.md 2.5a.
+    pub thermal_cap: bool,
     pub selftest: bool,
     /// runtime/bridges devices (network, sound, haptics, Bluetooth, CPU placement); by mode unless given
     pub bridges: bool,
@@ -971,6 +976,7 @@ impl Config {
             task_trim: true,
             task_trim_idle: TASK_TRIM_IDLE,
             timer_coalesce: true,
+            thermal_cap: false,
             selftest: false,
             bridges: true,
             clusters: String::new(),
@@ -1194,6 +1200,7 @@ impl Config {
             "task-trim" => self.task_trim = flag(value)?,
             "task-trim-idle" => self.task_trim_idle = number(value, 1, 86400)?,
             "timer-coalesce" => self.timer_coalesce = flag(value)?,
+            "thermal-cap" => self.thermal_cap = flag(value)?,
             "ram-tasks-awake" => self.ram_tasks_awake = number(value, 0, 4096)?,
             "ram-task-idle-cost" => self.ram_task_idle_cost = size_below_tib(value)?,
             // hw-backend, hw-backend-<bridge>, hw-backend-fallback (onebridges::hw)
@@ -1435,6 +1442,7 @@ impl Config {
         take!(self, image, "task-trim", task_trim);
         take!(self, image, "task-trim-idle", task_trim_idle);
         take!(self, image, "timer-coalesce", timer_coalesce);
+        take!(self, image, "thermal-cap", thermal_cap);
         take!(self, image, "cpu-pin", cpu_pin);
         self.hw.merge(&image.hw); // each hw-backend setting: the command line's, else the image set's,
         self.hw.merge(&device.hw); // else the host phone's
@@ -2393,6 +2401,7 @@ impl Config {
             // The rt Metal add-on's (userland/metal/rt/RtSwitches.inc); the 624bab3 add-on reads neither.
             ("oneios-dont-care", arg("oneios-dont-care", "1"), "1"),
             ("oneios-queue-priority", arg("oneios-queue-priority", "1"), "1"),
+            ("thermal-cap", on(self.thermal_cap).to_string(), "0"),
         ];
         let changed: Vec<&str> = all.iter().filter(|(_, v, d)| v != d).map(|(k, _, _)| *k).collect();
         let words: Vec<String> = all.iter().map(|(k, v, _)| format!("{k}={v}")).collect();

@@ -1550,6 +1550,20 @@ fn session_mode() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+/// thermal-cap= (off since 2026-11-25): the critical cell step is the old affinity narrowing; off keeps every core.
+#[test]
+fn thermal_cap() {
+    let mut c = Config::default();
+    assert!(!c.thermal_cap, "off by default");
+    assert!(c.switches_line().contains(" thermal-cap=0 "), "{}", c.switches_line());
+    assert!(c.set("thermal-cap", "1").is_ok());
+    assert!(c.thermal_cap);
+    assert!(c.switches_line().contains(" thermal-cap=1 "), "{}", c.switches_line());
+    assert!(c.set("thermal-cap", "sometimes").is_err());
+    assert!(c.set("thermal-cap", "0").is_ok());
+    assert!(!c.thermal_cap);
+}
+
 /// The switches of docs/switches.md: each key's values, the image's xnuhost.conf (the command line wins), the line.
 #[test]
 fn the_switches() {
@@ -1612,7 +1626,7 @@ fn the_switches() {
         line.contains(
             " oneios-wifi-rssi=0 oneios-telemetry-jobs=1 oneios-pool-cut=0 oneios-pressure-big=0 oneios-disable-allowed=0 \
              oneios-nested-exact=0 oneios-upgrade-flush=1 oneios-fill-fast-fault=0 oneios-idle-spares=0 \
-             oneios-bo-cache-idle=0 oneios-dont-care=0 oneios-queue-priority=0 (docs/switches.md)"
+             oneios-bo-cache-idle=0 oneios-dont-care=0 oneios-queue-priority=0 thermal-cap=0 (docs/switches.md)"
         ),
         "{line}"
     );

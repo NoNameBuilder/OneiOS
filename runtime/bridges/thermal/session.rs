@@ -35,6 +35,9 @@ pub struct Options {
     pub binder: Option<String>,
     /// The environment's limits and ONEIOS_THERMAL_CAP are read (C: options NULL)
     pub environment: bool,
+    /// The critical cell step is off whatever the environment says (xnuhost's `thermal-cap=0`, the default): the
+    /// level still goes to iOS, the CPU keeps every core. See [`cap_for`].
+    pub cap_off: bool,
 }
 
 impl Options {
@@ -283,7 +286,7 @@ impl Thermal {
                 l
             }
         };
-        let cap_off = o.environment && std::env::var("ONEIOS_THERMAL_CAP").is_ok_and(|v| v == "0");
+        let cap_off = o.cap_off || (o.environment && std::env::var("ONEIOS_THERMAL_CAP").is_ok_and(|v| v == "0"));
         let poll_ms = if o.poll_ms != 0 { o.poll_ms } else { POLL_MS };
         let load_ms = if o.load_ms != 0 { o.load_ms } else { LOAD_MS };
         let load = HostLoad::read(&sensors.root);
@@ -319,7 +322,7 @@ impl Thermal {
         let s = &t.shared;
         let level = level_name(lock(&s.run).now.level);
         let zone = if raw.soc_zone.is_empty() { "-" } else { &raw.soc_zone };
-        let cap_note = if cap_off { "; ONEIOS_THERMAL_CAP=0: xnuhost does not hold itself back" } else { "" };
+        let cap_note = if cap_off { "; thermal-cap=0 (ONEIOS_THERMAL_CAP=0): xnuhost does not hold itself back" } else { "" };
         let (skin, soc, battery) = (deci_text(raw.skin), deci_text(raw.soc), deci_text(raw.battery));
         match &s.source {
             Source::Hal(h) => br_info!(

@@ -594,7 +594,9 @@ impl Bridges {
             crate::input::set_power_key(Some(power_key_pressed)); // the touch IC is woken at each press
         }
         self.battery = Battery::open(&battery::Options::from_env()).map(Arc::new);
-        self.thermal = Thermal::open(&thermal::Options::from_env()).map(Arc::new);
+        let mut thermal_options = thermal::Options::from_env();
+        thermal_options.cap_off = !config.thermal_cap; // thermal-cap=0 (the default): no CPU step, the level alone
+        self.thermal = Thermal::open(&thermal_options).map(Arc::new);
         if let Some(t) = &self.thermal {
             t.on_cap(Some(Arc::new(thermal_step)));
         }
