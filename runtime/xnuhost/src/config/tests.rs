@@ -1253,8 +1253,13 @@ fn host_device() {
     assert!(c.host == find("galaxy-s25") && c.panel_fallback == Some(PanelMode { width: 1080, height: 2340, hz: 120 }));
     assert!(c.host_line.contains(
         "; defaults: panel-fallback=1080x2340@120, corner-radius=34, boot-args-add=oneios-hid-buttons-builtin=1 \
-         oneios-button-haptics=1, ONEIOS_THERMAL_SOC_TRIPS=1, ONEIOS_THERMAL_SOC_SAMPLES=3"
+         oneios-button-haptics=1, hw-backend-thermal=treble, hw-backend-fallback=1, ONEIOS_THERMAL_SOC_TRIPS=1, \
+         ONEIOS_THERMAL_SOC_SAMPLES=3"
     ));
+    // The case from the stock thermal HAL's SKIN, not lrp (2026-11-25), and the files behind it when the HAL is not
+    // there: the phone's words, overridable by the image set and the command line.
+    assert!(c.hw.one[onebridges::hw::Bridge::Thermal as usize] == onebridges::hw::Backend::Treble);
+    assert_eq!(c.hw.fallback, Some(true));
     assert!(
         c.boot_args.contains(" oneios-hid-buttons-builtin=1 ") && c.boot_args.ends_with(" oneios-button-haptics=1"),
         "{}",
@@ -1279,6 +1284,7 @@ fn host_device() {
     c.boot_args_add.clear();
     c.boot_args = DEFAULT_BOOT_ARGS.to_owned();
     c.panel_fallback = None;
+    c.hw = HwSettings::default();
     assert_eq!(c, off);
     // The S26 Ultra: its brightness cap is an environment default (the session sets it); the config is today's.
     let props = host_props(&dir, "s26u", "SM-S948B", "SM8850");
