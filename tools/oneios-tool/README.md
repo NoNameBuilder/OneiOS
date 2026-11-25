@@ -3836,6 +3836,9 @@ no camera): `scripts/image/build.sh --no-pack --python-hook` against `scripts/im
 | `overlay/userland/report.txt` | `7d0d621c9210f5be7477f1634858bb1cb9c6b1e2c77079d67f0266a5264dcb4a` | the same |
 | `overlay/userland/tweaks.manifest.json` | `a62d5d802a47acb36b260354680086fbcf4132bd38470999c2c699237bab5a90` | the same |
 | `overlay/userland/xnuhost.conf` | `f916ca688219e3240fdf9aee0ab4140b32aa628665a43a3bd30ac90dd99c3200` | the same |
+
+Since 2026-11-25 the generated `xnuhost.conf` also carries `pen=auto` (the S Pen, `docs/hardware.md` 7f), so its hash
+differs from that row; the comparison above is the 2026-11-21 record.
 | `manifest.json` | `b60fa9f8...` | `bdb1cca6...`: differs only in the hook's record, by design: `tweaks.hook` (`oneios-tool image tweaks`), `hook_sha256` (the tool's binary), `dirty`, `info.tool` |
 
 The images, the trust files and `kernel.kc` are the inputs, the same on both sides. 142 jobs disabled, the plug-in

@@ -1926,7 +1926,9 @@ The `blk.rs` flush counts and times count every `fdatasync`, whichever side (vCP
   panel's; auto: 0 when the digitizer and the panel are both portrait, else 90, a guess for such a device; the S24 Ultra's IC is portrait, so 0: Samsung's driver reports the IC's frame unturned, `docs/hardware.md` 7f); `pen-mirror=1` (then mirrored
   left to right). These three settings come from the command line, else from the image set's `xnuhost.conf` or its
   `overlay/userland/xnuhost.conf`; until 2026-11-22 the image set's were read and then dropped (the C `xh_config_finish` did
-  not copy them), so the phone's `pen=auto` never turned the pen on and no session had a `pen:` line. With `pen=auto`,
+  not copy them), so the phone's `pen=auto` never turned the pen on and no session had a `pen:` line. The root tweak
+  writes `pen=auto` into the image's `overlay/userland/xnuhost.conf` (every build but the A56's 16.5; `apply.rs`), so a
+  rebuilt image keeps the pen on. With `pen=auto`,
   xnuhost (with `input` on) calls `pen::lookup`: the default, `pen::lookup_evdev`,
   opens each `/dev/input/event0..63` read only and takes the best device with `BTN_TOOL_PEN`, `ABS_X/Y` and
   `ABS_PRESSURE` (more for `ABS_TILT_X`, `BTN_STYLUS`, `ABS_DISTANCE` and a name with "pen" in it, such as Samsung's
