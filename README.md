@@ -28,7 +28,8 @@ one setting turns one back: [docs/switches.md](docs/switches.md) has the table a
 
 ## What works
 
-| Area | Phone (S25, S24 Ultra) | PC (qemu-aarch64) | Notes ||---|---|---|---|
+| Area | Phone (S25, S24 Ultra) | PC (qemu-aarch64) | Notes |
+|---|---|---|---|
 | Boot to Home Screen | Yes — lock screen, swipe unlock, apps shown (hosted 0035–0037) | Yes — launchd, SpringBoard, backboardd | [docs/booting](docs/building.md) §6 |
 | GPU compositing | Yes, via virtio-gpu: 40–58 fps on the idle lock screen (2026-11-11); 20–32 fps in launches and Control Center (2026-11-22, cause found: see "Known issues") | Yes, frames captured | [docs/gpu.md](docs/gpu.md) |
 | Touch + buttons | Yes | Scripts (`--input-script`) | HID via kernel event driver |
