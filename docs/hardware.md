@@ -26,7 +26,7 @@ for Android, and the kernel-side drivers compile and link-check against the kern
 |---|---|---|---|
 | CPU | `droidvm-amp.patch` + `DroidVMCpufreq.c` (UniXNU-droidvm, unchanged) | `runtime/bridges/cpu`: topology, vCPU plan, thread placement, the cpufreq device | host built and tested; kernel side waits for release-kernel (series, archive) and booter (device tree, placement calls) |
 | GPU | UniXNU-droidvm's virtio-gpu 3D + NativeAdreno user client (unchanged) | booter's `runtime/xnuhost/src/virtio_gpu.rs` + drm2kgsl | booter's; not owned here (section 2) |
-| Wi-Fi / network | `kernel/patches/oneios-hosted/net`: `IO80211Controller`/`IO80211Interface` under the collection's `IOEthernetController`/`IOEthernetInterface`, a station that asks the host, UniXNU-droidvm's virtio-net transport (section 3) | `runtime/bridges/wifi`: wlan0 is iOS's for the session: frames by AF_PACKET, scans by nl80211, joins by the vendor's supplicant (AIDL over `/dev/binder`: V2 on the S24 Ultra and the A56, V3 on the base S25, whose codes for the calls used are V2's); `wifictl`; the old tap/NAT route only with `wifi=tap` | both built; host tested (132 + 37 checks, the binder client on a real binder driver); on the phone beside One UI: the supplicant's service and an nl80211 scan (53 networks) answer our client; **not yet run in a session** (wifid, a join, DHCP) |
+| Wi-Fi / network | `kernel/patches/oneios-hosted/net`: `IO80211Controller`/`IO80211Interface` under the collection's `IOEthernetController`/`IOEthernetInterface`, a station that asks the host, UniXNU-droidvm's virtio-net transport (section 3) | `runtime/bridges/wifi`: wlan0 is iOS's for the session: frames by AF_PACKET, scans by nl80211, joins by the vendor's supplicant (AIDL over `/dev/binder`: V2 on the S24 Ultra and the A56, V3 on the base S25, whose codes for the calls used are V2's); `wifictl`; the old tap/NAT route with `wifi=tap`, and `wifi=cell` (that route under a made-up joined network: data over the phone's uplink, mobile data included, section 3.4b) | both built; host tested (132 + 37 checks, the binder client on a real binder driver); on the phone beside One UI: the supplicant's service and an nl80211 scan (53 networks) answer our client; **not yet run in a session** (wifid, a join, DHCP) |
 | Bluetooth | `drivers/bluetooth` (port of iOSPlus10's transport) on `drivers/bridge` | `runtime/bridges/bt`: the phone's HAL over `/dev/hwbinder` (HIDL, S24 Ultra) or `/dev/binder` (stable AIDL, S25/S25 Ultra and the Galaxy A56, 2026-11-24; host-tested against a fake AIDL HAL, not run on an A56) | both built; on by default in a session since 2026-11-11; the HAL (HIDL 1.1 on the S24 Ultra) is found in every session, but until 2026-11-23 bluetoothd never powered on (in a VM it powers on only with transport 10). Fixed 2026-11-23 (section 4, "Bluetooth powers on"): the nub's transport-encoding 10 and `BT_HCI_TRANSPORT=H4:POSIX` in bluetoothd's environment (hosted 0087); host-tested and built, not yet booted. The S25's AIDL client is written and host-tested against a fake AIDL HAL, not run on a phone |
 | AirDrop | none: the guest's Wi-Fi driver refuses wifip2pd's `VIRTUAL_IF_*` and `AWDL_*` requests, so iOS has no `awdl0` | `wifictl p2p` (read only): every radio's peer-to-peer paths and Google's Wonder radio (its subcommands, who holds it); `wifictl wonder`: a session on Wonder's raw path beside wlan0, AWDL's frames counted, everything closed after it and wlan0's link checked (`oneios-tool phone wifi p2p\|wonder`) | does not work: iOS has no `awdl0`; Bluetooth (sharingd needs it: the toggle could not switch) was off in every session until the fix of 2026-11-23 (section 4, not yet booted). The radio path exists: One UI's driver has Google's open Wonder raw 802.11 path (PASSTHRU vdev, nl80211 vendor commands under `00:1a:11`, source in Samsung's `S928BXXU5DZDP` release); Google's AWDL engine is closed, so ours must be OWL or our own. The Wonder tools are built and host-tested, not run on the phone (section 4a) |
 | Haptics | `drivers/haptics` (port of iOSPlus10's LaurelVibrator and haptic node) and, since 2026-11-12, the Actuator IOAudio2Device of the audio archive (UI and keyboard taps) | `runtime/bridges/haptics`: evdev force feedback | both built; host tested with a fake actuator; the `vibrator` path ran in sessions (alerts), the Actuator path: Core Haptics' server gave up at its start for want of a preset, fixed by hosted 0078; then the Actuator ran I/O in silence for want of its DSP chain, hosted 0086, not yet on the phone (section 5) |
@@ -39,6 +39,7 @@ for Android, and the kernel-side drivers compile and link-check against the kern
 | Host device (2026-11-21) | - | `runtime/bridges/hw/host_device.rs`: which known phone xnuhost runs on (properties, soc0, the device tree) and its defaults from one table; `host-device=auto\|none\|NAME` (section 7h) | host-tested; not run on a phone |
 | Touch screen and buttons | `kernel/patches/oneios-hosted/hid`: UniXNU's NativeHidInput (digitizer, buttons) under the collection's `IOHIDDevice`, UniXNU-droidvm's virtio-input transport with the side keys | xnuhost's `input.rs` (evdev, no grab) and `virtio_input.rs`; `input_script.rs` for a host with no panel | built; in a PC boot backboardd opens both services and scripted touches and keys are queued for it as HID events; never run on the phone (section 7b) |
 | S Pen (off by default: xnuhost `pen=auto`, guest `oneios-pen=1`) | the HID archive's third NativeHidInput, Digitizer / Stylus (`staged/hid_pen.rs`): backboardd's pencil digitizer; the transport's pen code (UniXNU-droidvm, unchanged) | xnuhost's `pen.rs`: one replaceable lookup by bits (`pen::lookup`), evdev read only, no grab, a second virtio-input device `/arm-io/input-1` | built; host-tested; PC boot with the demo script's pen: backboardd "*** acquired pencil digitizer", its touchstats count the strokes as pencil touches (section 7f); first phone session 2026-11-22: device found, the pen service published and opened by backboardd, no pen event yet (the pen IC asleep [I]: the brightness bridge now wakes it, `phone pen wake` by hand; section 7f) |
+| Cellular | none: the guest's tree leaves `/baseband` out (`adt.absent`), and iOS's side is Apple's own baseband over PCIe/SPMI (`AppleBasebandPCI`, `AppleBasebandM20`/`N71`, `AppleBasebandSPMIHEB`), not a generic modem | none: the phone's modem is Qualcomm's (SM8750), driven on the Android side by Samsung's RIL and QMI (`secril_config_svc`, `rild`), a different bus and protocol from the guest's | **not provided** as cellular: no calls, SMS or a cellular interface; CommCenter runs its non-cellular job and idles. **Data over the phone's active network** (mobile data included) is provided by `wifi=cell` (section 3.4b): a made-up joined network over the old TAP route and `oneios-net.sh`'s NAT; needs `/dev/tun` and root; host-tested and host-booted nowhere yet. Section 7i |
 
 Common pieces:
 
@@ -209,7 +210,8 @@ cbf97ea or b704922 back. The defaults are those changes.
 
 Design of 2026-11-12 (owner): **no NAT**. Wi-Fi works the way a Treble GSI gets it: in a session iOS is the only OS
 that uses the radio, and it drives the vendor's own Wi-Fi stack. The tap, the private subnet and `oneios-net.sh` are
-the old route; xnuhost runs them only with `wifi=tap`.
+the old route; xnuhost runs them only with `wifi=tap` (a raw link) or `wifi=cell` (that link under a made-up joined
+network, 3.4b).
 
 ### The phone [F, read on the owner's phone 2026-11-12 unless marked]
 
@@ -445,13 +447,15 @@ networks on 24A446, so its join details are the ones used) and iOSPlus10's 20H39
 | `wlan.rs` | the back end on the phone: the AF_PACKET socket (a 4 MiB receive buffer, a 1 MiB send buffer; both doubled by the kernel), nl80211 (low-priority scans while joined), wlan0's settings kept and given back. Three threads: frames, nl80211 events, control. The guest's vCPU only sends a frame or queues a message; netlink, binder and the join's timeouts are the control thread's |
 | `chip.rs` | the Wi-Fi chip's HAL (`android.hardware.wifi.IWifi/default`, AIDL v1): when One UI's Wi-Fi was off at the switch there is no wlan0, so the session starts the chip itself (`isStarted`, `start`, the wait for wlan0, `createStaIface` when the chip has none) and stops it again at the return when it started it |
 | `sim.rs` | a made-up radio (`wifi=sim`) |
+| `cell.rs` | the phone's uplink as a made-up, already-joined open network (`wifi=cell`): the station's messages only, everything else goes to the tap of 3.4b; no 802.11 |
 | `p2p.rs`, `wonder.rs` | what the radio offers for a peer-to-peer link (interface types and combinations, action frames, NAN, vendor commands, every interface), for `wifictl p2p` (section 4a) |
 | `supplicant.rs` | the supplicant's client: the lookup, the interface, the callback object, the join's plan and its outcome |
 | `runtime/bridges/hal/aidl.rs`, `binder.rs` | stable AIDL over `/dev/binder` with no Android library (xnuhost is static): the interface token (strict mode word, work source, `SYST`), `String` as UTF-16, `byte[]`, binder objects with the stability word (VINTF 0x3f), the status header of a reply; the kernel's binder protocol, one looper thread for the calls into our callback, death notifications |
 | `runtime/bridges/tools/wifictl.rs` | the bridge without xnuhost: `status`, `scan`, `join`, `restore`, `p2p`, `wonder` (`runtime/bridges/README.md`) |
 
 xnuhost: `wifi=auto` (the default; `xnuhost.conf` or `--set wifi=...`) takes wlan0 when the bridges are on, `wifi=off`
-makes no network device, `wifi=tap` is the old route, `wifi=sim` is `sim.rs`: a made-up radio with two networks
+makes no network device, `wifi=tap` is the old route, `wifi=cell` is that route with a made-up station on it (3.4b:
+data over the phone's uplink, mobile data included), `wifi=sim` is `sim.rs`: a made-up radio with two networks
 ("OneiOS open", and "OneiOS WPA2" with the passphrase `password`) for a boot on a PC, where the guest's side can be
 run and read in the log; no frame goes anywhere (unit-tested; not yet run in a boot). Log lines: `wifi: wlan0 is iOS's for the session: ...`, `wifi:
 on: wlan0 (..) is the guest's en0`, `wifi: the vendor's supplicant is the bridge's`, `wifi: the guest's driver is up`,
@@ -459,10 +463,51 @@ on: wlan0 (..) is the guest's en0`, `wifi: the vendor's supplicant is the bridge
 or `join failed (status S, code C)`, `wifi: link down (reason R)`, `wifi: 60 s: to iOS ...` (the traffic line, section "After
 the join" below), `wifi: scans while joined: flags 0x...`, `wifi: wlan0's AF_PACKET socket: receive buffer N KiB, send buffer N KiB (...)`, `wifi: closed (...)`, `wifi: wlan0 given back`.
 
-Old (only with `wifi=tap`): `runtime/bridges/net/net.rs` (tap `oneios0`, DHCP answered in the bridge: 192.168.77.2/24)
-and `runtime/bridges/net/oneios-net.sh` (NAT). The script's `ip rule del priority 16000` would delete netd's own rule
-of that priority (netd's `fwmark 0x10063/0x1ffff iif lo lookup local_network` is at 16000 on this phone) when ours is
-absent: a reason not to run it on the phone as it is.
+Old (only with `wifi=tap` or `wifi=cell`): `runtime/bridges/net/net.rs` (tap `oneios0`, DHCP answered in the bridge:
+192.168.77.2/24) and `runtime/bridges/net/oneios-net.sh` (NAT). The script's rule deletes name their own selector
+(`ip rule del from all iif oneios0 lookup 1005 priority 16010`, `ip rule del to 192.168.77.0/24 lookup main priority
+16020`) and our way back is at 16020, not 16000: netd's rule at 16000 (`fwmark 0x10063/0x1ffff iif lo lookup
+local_network`) is never touched. Until 2026-11-25 the script deleted by priority alone, which would have taken netd's
+rule with it; `runtime/bridges/net/test-oneios-net.sh` now holds that down against fake `ip`/`iptables`.
+
+### 3.4b Cellular data over the tap (`wifi=cell`, 2026-11-25)
+
+The owner asked for cellular. iOS cannot have the phone's cellular radio (section 7i: the guest's side is Apple's
+baseband on Apple's PCIe/SPMI, the phone's is Qualcomm's over QMI), but it can have **data over whatever uplink the
+phone has**, mobile data included. That is what `wifi=cell` does: a made-up, already-joined Wi-Fi network whose
+frames go to the tap of the old route and are NATed by `oneios-net.sh`'s `ip route get 1.1.1.1` uplink.
+
+- **Why a station at all.** The hosted kernel's `/arm-io/net` is the Wi-Fi station of 3.0 (`OneiOSWifi.cpp`): it tells
+  iOS a link is up only when the host says a network is joined, and passes frames only then. With the raw `wifi=tap`
+  route nothing answers `OW_HELLO`/`OW_JOIN`, so en0 never came up on the current kernel. `cell.rs` reuses the same
+  station the phone's radio uses (`station.rs`) with a radio of its own: one open network, `OneiOS uplink`, whose
+  `OW_STATE` says the link is up from the guest's first message (`Station::assume_joined`), scans return that one
+  network, and a join of any other name is "no network". No 802.11 frame exists: it is a name and a link for iOS,
+  not a radio. [F] `runtime/bridges/wifi/cell.rs`, host tests.
+- **The data path.** Every frame that is not a station message goes to `runtime/bridges/net/net.rs`'s tap, which
+  answers DHCP itself (one lease: 192.168.77.2/24, router 192.168.77.1, the configured DNS) and hands the rest to
+  `oneios-net.sh`'s NAT over the uplink. Frames from the tap go straight to the guest's receive queue. So configd
+  leases an address, ARP and TCP work, and iOS sees a joined Wi-Fi network — the status bar shows Wi-Fi, not
+  cellular, and Settings shows `OneiOS uplink` joined. That naming is deliberate: iOS's cellular path is not what
+  this is, and nothing pretends the baseband exists.
+- **The switch.** `wifi=cell` in `xnuhost.conf` (or `--set wifi=cell`) instead of `wifi=auto`; it needs the bridges on,
+  `/dev/tun`, and root for the script (its address, forwarding, policy rules and NAT). `wifi=tap` keeps the raw route
+  (a guest built with the plain Ethernet driver). The DNS the bridge hands out is 8.8.8.8/1.1.1.1 unless configured;
+  the uplink's own carrier DNS is not read (Android's resolver state is netd's, and the query itself is NATed).
+- **Safety, and what changed in the script.** `oneios-net.sh` used to delete its policy rules by priority alone, which
+  would have removed netd's rule at priority 16000 (`fwmark 0x10063/0x1ffff iif lo lookup local_network`) — a way to
+  break One UI's own mobile data. Every delete now names its selector, and our way-back rule is at 16020
+  (`PRIO_BACK`); the script's two root paths can be pointed at stand-ins (`ONEIOS_NET_SYS`, `ONEIOS_NET_PROC`) and
+  `runtime/bridges/net/test-oneios-net.sh` checks the calls against fake `ip`/`iptables` (it is a part of
+  `runtime/host-tests.sh`). No other chain or rule of One UI's is edited; `down` removes only ours, and xnuhost runs
+  it at the session's stop when it started the tap.
+- **Logs.** `wifi: cell: an open network over the phone's uplink (the tap), already joined; no 802.11`, then the
+  station's own `wifi: the guest's driver is up` and the bridge's `net: on: tap oneios0`, `oneios-net: up: oneios0
+  192.168.77.1/24 -> rmnet0 (table 1005)` (or `wlan0`, whichever is the default network). [U] **Not booted**: what is
+  proven is the station protocol and the data path on the host (a socketpair in place of the tap, two tests in
+  `cell.rs`), the script against fake tools, and the config parse. The phone test needs root and a boot; the lines to
+  read are the two above plus iOS's own DHCP/lease in `phone pull-log`, then a page in Safari with One UI's Wi-Fi off
+  and mobile data on.
 
 ### Tested
 
@@ -4398,6 +4443,60 @@ every entry forced); the stand-in phone (`tools/oneios-tool/tests/phone/hw-backe
 panel, 1..2300 of 12750 detected, 1..12750 with `none` or the S24's properties, a set `ONEIOS_BRIGHT_MAX` kept; `run.sh`:
 `phone status`'s host line for each phone). 2026-11-23, on the build laptop: every S24 Ultra model number above (SM-S928B, U, U1, W, N, 0; the W with its US vendor model and bootloader) in `test_hw_backend.c` (the C, on main), `host.rs`, `test-verify-host.sh` and `run.sh`; the same day in the Rust (`cargo test -p onebridges host_device`, `test_hw_backend.rs`): those models, the stock SM-S928W, and the S26 Ultra by its codename `m3q` and by its platform `canoe` alone; `cpu::test_cpu::cpu` has the S26 Ultra's SM8850 topology (the C's `test_bridges.c` `test_cpu`). **Not run on a phone**: the first phone start shows the line above; on the
 S24 Ultra it must say `galaxy-s24-ultra ... defaults: none (today's)`.
+
+## 7i. Cellular: what iOS asks for, and why an Android modem cannot answer (2026-11-25)
+
+The owner asked for cellular. This section records what the guest wants, what the phone has, and why the two are
+not a bridge like the others. **iOS has no calls, SMS or cellular interface**, and the image is built without a
+baseband on purpose; **data over the phone's uplink is provided separately by `wifi=cell`** (3.4b), which is not a
+baseband either.
+
+**The guest's side is Apple's own modem, on Apple's own buses.** It is not a generic modem that AT commands or QMI
+can reach. In the owner's iPhone18,2 device tree (the IPSW's `DeviceTree`, read locally and never committed) the
+node is `/baseband`, compatible `baseband,n41`, and the tree around it names `baseband-pcie`, `baseband-idc`,
+`baseband-heb`, `baseband-chipset` and `baseband-vol`. The kernelcache of the same build has the classes that drive
+it: `AppleBaseband`, `AppleBasebandPCI`, `AppleBasebandPCIBHIDevice`, `AppleBasebandSPMIHEB`, and the per-modem
+`AppleBasebandM20` / `AppleBasebandN71`; its strings describe an SPMI/OCP "billboard" protocol, a PCIe BHIDevice,
+"baseband-woke-AP" power messages and `Stewie` transmit messages. [F] read in the tree and the kernelcache.
+
+**The phone's side is a Qualcomm modem on Qualcomm's buses.** The SM8750's modem is driven by Samsung's RIL and
+QMI (the vendor image has `secril_config_svc` and the QMI userspace; the kernel side is the `rmnet`/`mhi`/`qmi`
+stack and the modem's own signed firmware). It speaks QMI and vendor AT-over-QMI to Android's telephony, which
+system_server stops in a session anyway; plan.md leaves the modem daemons running so One UI's state survives, which
+is not a path into iOS. [F] the vendor image; [I] the session boundary.
+
+**What happens in the guest today.** `/baseband` is in the image's `adt.absent`, so launchd refuses Apple's
+`com.apple.CommCenter.plist` (its `_LimitLoadToDeviceTree baseband` says "cannot be loaded on this hardware") and
+loads `com.apple.CommCenter-noncellular.plist` under the same label. CommCenter then runs and idles: it neither
+crash-loops nor holds the boot (5 minutes of a PC boot, no exit; `docs/userland.md` section 4). The status bar has
+no carrier; Settings has no working Cellular pane; no modem kext is started, because there is no PCIe/SPMI device
+for it to match. [F] a PC boot's launchd log.
+
+**Why a translation layer is not the answer.** The guest would need an emulated Apple baseband: a PCIe function with
+Apple's BHIDevice protocol, an SPMI/HEB endpoint, the OCP billboard handshake, Apple's baseband firmware ABI (the
+"M20"/"N71" split says the firmware and protocol vary per modem generation), then QMI↔Apple translation for SIM,
+registration, SMS and IMS. That is a baseband emulator plus a cellular stack, not a host bridge: there is no prior
+art in any iOS-on-Android port (the SM8750 ports in `docs/pa1q.md` list the modem as "not started"), and the
+entitlements for calls and SMS are Apple's and the carrier's. It is not planned, and the absence is deliberate: a
+half-started baseband stack would crash-loop CommCenter and could make the boot worse, which the non-cellular job
+avoids.
+
+**What is possible, and now built (`wifi=cell`, 2026-11-25; section 3.4b).** Data over the phone's own uplink: a
+made-up, already-joined open network (`OneiOS uplink`) in the guest's station, whose frames go to the old TAP route
+and are NATed by `runtime/bridges/net/oneios-net.sh` to the phone's *active default network* (it reads the uplink from
+`ip route get 1.1.1.1`, so mobile data works when Wi-Fi is off). It needs `/dev/tun` and root for the script and the
+bridges on; it is host-tested (the station's protocol, the DHCP and the data path over a socketpair) and has not been
+booted on a phone. iOS sees a Wi-Fi network, not a cellular interface: the status bar shows Wi-Fi, Settings shows the
+made-up network, and nothing pretends the baseband exists. The normal Wi-Fi bridge (`wifi=auto`) still does not fall
+back to mobile data, because iOS's Wi-Fi driver needs an 802.11 link and the bridge sends its frames over `wlan0`;
+`wifi=cell` is the switch for a phone with no Wi-Fi network. The script's rule deletes now name their selector, so
+netd's rule at priority 16000 is never touched (3.4b). [F] the code and host tests; [U] a phone boot with mobile data
+only.
+
+**For the owner, plainly:** cellular calls and SMS cannot be done on this phone without an Apple baseband; that is
+not a matter of more work in the bridge layer. **Cellular data can** — as `wifi=cell`, which shows up to iOS as a
+joined Wi-Fi network over the phone's uplink, with the trade-offs above. It needs a rooted session and a phone boot to
+prove.
 
 ## 8. Sources
 

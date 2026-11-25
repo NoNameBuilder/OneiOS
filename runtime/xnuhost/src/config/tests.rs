@@ -228,6 +228,7 @@ fn command_line_and_image_set() {
     assert!(!c.bridges && c.encoder == Encoder::Auto);
     assert_eq!(run(&["--image", &image, "--set", "wifi=off"]).unwrap().wifi, Wifi::Off);
     assert_eq!(run(&["--image", &image, "--set", "wifi=sim"]).unwrap().wifi, Wifi::Sim);
+    assert_eq!(run(&["--image", &image, "--set", "wifi=cell"]).unwrap().wifi, Wifi::Cell);
     // refused
     assert!(args(&mut Config::new(), &["--image", &image, "--set", "wifi=nat"]).is_err());
     assert!(args(&mut Config::new(), &["--image", &image, "--bluetooth", "usb"]).is_err());

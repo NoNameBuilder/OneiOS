@@ -619,7 +619,9 @@ sched_preemption_disable_debug_mode=0 wdt=-1 sheng-smp=1 oneios-data-wait=3000" 
   `wifi=sim` boots there (2026-11-13: en0 named, enabled by configd, wifid's attach; [hardware.md](hardware.md) 3, "en0
   late"). On that 4-CPU PC under other agents' load configd reached the naming 13-26 minutes into the boot, so give
   such a boot `timeout` 4000 s or more; iOS's own log can be read from the running boot's `data.img`
-  (`oneios-tool ioslog show ... --proc configd`), not always after a `timeout` kill.
+  (`oneios-tool ioslog show ... --proc configd`), not always after a `timeout` kill. `wifi=cell` is not for the PC:
+  it is the phone's own uplink as a joined network over a tap, so it needs the phone, `/dev/tun` and root
+  ([hardware.md](hardware.md) 3.4b).
 - Bluetooth on the PC: add `--set bluetooth=sim`: a stand-in controller (`runtime/bridges/bt/hci_sim.rs`) behind the
   bridge channel, with the bridges off; `/bluetooth` gets transport-encoding 1 as with the phone's HAL. xnuhost logs
   `bluetooth: on: a stand-in controller (bluetooth=sim)`, then `bluetooth: sim: the stand-in controller is on` when

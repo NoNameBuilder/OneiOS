@@ -1653,11 +1653,14 @@ en0 (`wlan::prepare` of `runtime/bridges/wifi/wlan.rs`, [hardware.md](hardware.m
 address in its configuration, its frames go to and from wlan0 by AF_PACKET, and the guest driver's station messages
 (frames of type 0x88b5) go to nl80211 and the vendor's supplicant. It keeps what it changes on wlan0 (GRO,
 `disable_ipv6`) in `/data/session/wifi.state`. No wlan0: one line (`wifi: off: no wlan0 ...`) and no `net` window.
-`off` makes no network device; `tap` is the old route (a tap and `bin/oneios-net.sh`'s NAT), for a bench; `sim` is a
-made-up radio for a boot with no phone (it also works with the bridges off): two networks, "OneiOS open" and "OneiOS
-WPA2" (passphrase `password`), that the guest can scan and join, and no frames (`runtime/bridges/wifi/sim.rs`).
+`off` makes no network device; `tap` is the old route (a tap and `bin/oneios-net.sh`'s NAT), for a bench; `cell` is
+that route under a made-up, already-joined network (`runtime/bridges/wifi/cell.rs`), so iOS's data runs over the
+phone's uplink — mobile data included — with no Wi-Fi network (it needs `/dev/tun` and root; [hardware.md](hardware.md)
+3.4b); `sim` is a made-up radio for a boot with no phone (it also works with the bridges off): two networks, "OneiOS
+open" and "OneiOS WPA2" (passphrase `password`), that the guest can scan and join, and no frames
+(`runtime/bridges/wifi/sim.rs`).
 A bridge whose Linux side is missing logs one line and is left out. At a stop the motor is stopped, the Wi-Fi
-bridge leaves its network and gives wlan0's settings back (`wlan::close`), and with `wifi=tap`
+bridge leaves its network and gives wlan0's settings back (`wlan::close`), and with `wifi=tap` or `wifi=cell`
 `bin/oneios-net.sh down` removes the tap's rules. Every virtio node carries its SPI as `interrupts` and as
 `droidvm,intid` (the name UniXNU-droidvm's transports read).
 
@@ -1956,8 +1959,8 @@ and any change that would break one goes on the board first:
 Two things outlive a killed session and are not xnuhost's files: `vm.max_map_count` stays raised until
 the phone reboots, and wlan0 keeps GRO off and `disable_ipv6` 1 if xnuhost is killed before `wlan::close`
 (neither breaks One UI's Wi-Fi: [hardware.md](hardware.md) section 3, "Return"; `bin/wifictl restore
-SESSION/wifi.state` puts them back). With `wifi=tap`, the tap's routing rules and iptables chains stay until
-`oneios-net.sh down` (the tap itself goes with the process).
+SESSION/wifi.state` puts them back). With `wifi=tap` or `wifi=cell`, the tap's routing rules and iptables chains
+stay until `oneios-net.sh down` (the tap itself goes with the process).
 
 ### 2.9d The Android takeover: `session-mode=takeover` (port-opt-in-takeover-session, 2026-11-23)
 

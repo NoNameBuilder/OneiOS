@@ -13,6 +13,7 @@
 //!   sim         a made-up radio for a boot with no phone (wifi=sim)
 //! C: wifi/wifi.h and the files of the same names.
 
+pub mod cell; // the phone's uplink as a made-up station (wifi=cell; no C original)
 pub mod chip; // wifi/chip.c
 pub mod frames; // wifi/frames.c
 pub mod nl; // the netlink attribute loops of frames.c, p2p.c, wonder.c, wlan.c

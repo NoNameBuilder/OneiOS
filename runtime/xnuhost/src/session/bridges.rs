@@ -661,6 +661,15 @@ impl Bridges {
                     self.net_up = net_script(&config.runtime, "up"); // address, forwarding and NAT; undone at stop
                 }
             }
+            Wifi::Cell => {
+                // The phone's uplink as a made-up, already-joined network with no 802.11 (wifi::cell): iOS's
+                // configd leases an address from the bridge and its frames go to the tap and oneios-net.sh's NAT,
+                // so data works over mobile data when there is no Wi-Fi.
+                let open = onebridges::wifi::cell::prepare(net.guest_mac);
+                if net_device(slots, &net, open) {
+                    self.net_up = net_script(&config.runtime, "up");
+                }
+            }
             Wifi::Auto => {
                 let session = Some(config.session.as_str()).filter(|s| !s.is_empty());
                 if let Some((open, mac)) = onebridges::wifi::wlan::prepare("wlan0", session) {

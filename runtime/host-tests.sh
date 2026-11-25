@@ -22,6 +22,8 @@
 #             an x86_64 PC, as it is on an arm64 host (the container on a Mac: check only, with the Mac's binaries)
 #   port      scripts/port/test-verify-host.sh: the read-only phone preflight against stand-in phones (S24 Ultra, S25
 #             Ultra, S25, S26 Ultra, A56, and refusals)
+#   net-script runtime/bridges/net/test-oneios-net.sh: the tap's script against a stand-in phone (a fake ip and
+#             iptables): up builds the address, rules and NAT; every rule delete names our selector, never netd's 16000
 #   metal-amd only with METAL_AMD=1: the Galaxy A56's guest GPU stack. On Linux, userland/metal-amd/host-test.sh (the
 #             guest Mesa: its patches apply to Mesa cecc0e9, Mesa builds for Linux with radeonsi and the amdgpu virtio
 #             context, and the Darwin vdrm backend against a fake of the kernel's user client); then
@@ -107,6 +109,7 @@ suite() {
     part boot env -u QEMU runtime/xnuhost/check-arm64.sh smoke check
   else results+=("boot: skipped (no NDK here: the static xnuhost and the test kernel need it)"); fi
   part port sh scripts/port/test-verify-host.sh
+  part net-script sh runtime/bridges/net/test-oneios-net.sh
   # METAL_AMD=1: the A56's guest Mesa and its Metal layer (Mesa builds of several minutes each and about 1.7 GB in
   # out/metal-amd, so not by default; they need external/mesa-droidvm). The guest Mesa test is Linux only.
   if [ "${METAL_AMD:-0}" != 1 ]; then

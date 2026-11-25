@@ -221,8 +221,10 @@ named!(
 );
 named!(
     /// wifi=: auto (the phone's wlan0 for iOS's en0 when the bridges are on), off (no network device), tap (the old
-    /// route: a tap and bin/oneios-net.sh's NAT), sim (a made-up radio with two networks; works with the bridges off).
-    Wifi { Auto = "auto", Off = "off", Tap = "tap", Sim = "sim" }
+    /// route: a tap and bin/oneios-net.sh's NAT), cell (a made-up joined network over that same tap, so iOS's data
+    /// runs on the phone's uplink — mobile data included — with no Wi-Fi; /dev/tun and root), sim (a made-up radio
+    /// with two networks; works with the bridges off).
+    Wifi { Auto = "auto", Off = "off", Tap = "tap", Cell = "cell", Sim = "sim" }
 );
 named!(
     /// pen=: off (the default until a phone session proves it) | auto: the host's pen digitizer (pen.rs's lookup) or
