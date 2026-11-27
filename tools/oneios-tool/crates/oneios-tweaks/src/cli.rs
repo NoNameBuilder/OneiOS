@@ -109,6 +109,10 @@ pub struct ApplyArgs {
     /// rw: leave RecoverOnCrash in the jetsam properties
     #[arg(long = "keep-recover-on-crash")]
     pub keep_recover_on_crash: bool,
+    /// a 20F66 image publishes the Metal accelerator (`oneios-gpu-metal=1`): Metal then loads the boot addon's
+    /// plug-in, as iOS 27's does. Only with a plug-in built for iPhone10,3 20F66
+    #[arg(long = "gpu-metal")]
+    pub gpu_metal: bool,
 }
 
 impl ApplyArgs {
@@ -140,6 +144,7 @@ impl ApplyArgs {
                 no_prefs: PREF_GROUPS.iter().zip(flags).filter(|(_, on)| *on).map(|(g, _)| g.to_string()).collect(),
                 lighter_visuals: self.lighter_visuals,
                 plain_keybag: self.plain_keybag,
+                gpu_metal: self.gpu_metal,
             },
         }
     }

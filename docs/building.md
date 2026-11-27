@@ -125,6 +125,30 @@ iOS image runs the same build with the runtime's `lib/profiles/ios-16.5-a56.toml
 24A446 kernel (the app fetches Apple's 24A446 kernelcache first, as Update the kernel does). **Not booted**: there is
 no A56 here.
 
+**A 16.5 image with the Metal accelerator published (2026-11-27, not booted).** The A56's image writes
+`oneios-gpu-metal=0` because 16.5's fallback path opens the accelerator as an IOGPU device (type 1), which
+NativeAdreno refuses, and the plug-in then available was built for 24A446 (arm64e, iOS 27), which 16.5 cannot load.
+A plug-in built for this guest changes that: 20F66's Metal discovers an `IOAcceleratorES` with `MetalPluginName` and
+loads `/System/Library/Extensions/<name>.bundle`, as iOS 27's does ([a56-gpu.md](a56-gpu.md) 5.3). With the CI-built
+arm64 bundle (`NativeAdrenoMetal.bundle`, `oneios-target` `iPhone10,3 20F66`, stubs of the 20F66 cache):
+
+```sh
+$T image build "$P" --indir inputs/20F66 --out out/image/20F66-gpu --work out/image/.work-20F66-gpu --no-fetch \
+  --kernel-kc out/kernel/24A446-s25-ios16/kernel.kc \
+  --metal-plugin out/ci-metal-20F66/NativeAdrenoMetal.bundle \
+  --tweak-arg --metal-plugin-unchecked --tweak-arg --gpu-metal --repo .
+```
+
+`--gpu-metal` writes `oneios-gpu-metal=1` in `xnuhost.conf` (the `--gpu-metal` of `oneios-tweaks apply`); the
+plug-in goes to `/private/var/oneios/addons/Extensions` and its CDHashes into `owner-trust.json`, and 0031 shows that
+folder over `/System/Library/Extensions`. `--metal-plugin-unchecked` is needed when the boot tree's device is another
+phone's (`iPhone18,2` on the 24A446 collection): the check would otherwise refuse a bundle whose `oneios-target` names
+the 16.5 guest it was built for. Result: 22 files, 9,015,493,262 bytes, `manifest.json` `85ad762e...`, the same
+`os.img` and `kernel.kc` as above, and the plug-in's two CDHashes in `owner-trust.json` (`6b47241f...` NativeAdrenoMetal,
+`054a0396...` libvulkan_freedreno). Do not add `--repo .`: its defaults also take `out/userland/camera`, the iOS 27
+arm64e capture plug-in, which has no place in a 16.5 (arm64) guest. If the plug-in does not load, 16.5 is left with
+the type-1 refusal and may not draw at all: keep the `=0` set as the fallback.
+
 ## 2. The kernel
 
 Linux or macOS, the same command (the script picks the toolchain by `uname -s`):

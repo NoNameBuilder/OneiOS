@@ -92,7 +92,7 @@ pub fn apply(a: &Apply) -> Result<Applied> {
         tweak(&mut cx)?;
     }
 
-    let lines: Vec<String> = cx
+    let mut lines: Vec<String> = cx
         .results
         .iter()
         .map(|r| {
@@ -100,6 +100,12 @@ pub fn apply(a: &Apply) -> Result<Applied> {
             format!("{:<9} {}: {}", s("state"), s("item"), s("note"))
         })
         .collect();
+    if cx.o.gpu_metal {
+        lines.push(format!(
+            "{:<9} {}: {}",
+            "applied", "gpu metal", "oneios-gpu-metal=1 in xnuhost.conf: the accelerator is published, and 16.5's Metal loads the boot addon's plug-in as iOS 27's does"
+        ));
+    }
     let report = std::iter::once(format!("roottweak schema {SCHEMA}, layout {layout}, build {}", cx.build)).chain(lines).collect::<Vec<_>>().join("\n") + "\n";
     cx.data.tweak = "report".into();
     cx.data.write(&mut cx.m, &format!("{ONEIOS}/roottweak-report.txt"), report.as_bytes(), ROOT, 0o644, None)?;
@@ -151,9 +157,13 @@ pub fn apply(a: &Apply) -> Result<Applied> {
         // 2026-11-24 (port/a56-full): kernel 0103-0105's switches from the other A56 fork (touch, configd's IONetworkStack
         // entitlement, LaunchServices' keep) and its idle jobs off (0053); xnuhost adds the same words to an older 20F66
         // image's boot-args (runtime/xnuhost/src/config.rs IOS16_BOOT_ARGS: keep the two lists the same).
-        conf.push_str(
-            "boot-args=debug=0x14e serial=3 -v kt_fixed_zones=120 -no_slto_panic ml-timeout-lock-panic-scale=40 tlto_us=0 sheng-smp=1 armcpu-self-ipi=1 armcpu-spi-ipi=1 use_contiguous_hint=0 interrupt-masked-debug-mode=0 sched_preemption_disable_debug_mode=0 wdt=-1 native-source-storage=1 vgpu-3d=1 oneios-gpu-metal=0 ool_port_array_enforced=0 oneios-legacy-bootstrap-replies=1 oneios-legacy-registered-ports=1 oneios-mac-exec-skip=mediaserverd,TVRemoteConnectionService oneios-hid16=1 oneios-grant=configd:com.apple.networking.ionetworkstack.user-client oneios-ls-keep=3 oneios-disable-jobs=com.apple.accessibility.axassetsd,com.apple.aonsensed,com.apple.prngseedd,com.apple.suggestd,com.apple.spotlightknowledged,com.apple.corespotlightservice,com.apple.siriknowledged,com.apple.tipsd,com.apple.gamed,com.apple.followupd,com.apple.tailspind\n",
-        );
+        // oneios-gpu-metal: 0 for the A56's CPU composition. With a plug-in built for this guest (arm64, 20F66) the
+        // accelerator may be published as on iOS 27: Metal's discovery reads MetalPluginName and loads
+        // /System/Library/Extensions/<name>.bundle, which the boot addon (0031) mounts. --gpu-metal makes that image.
+        let gpu_metal = if cx.o.gpu_metal { 1 } else { 0 };
+        conf.push_str(&format!(
+            "boot-args=debug=0x14e serial=3 -v kt_fixed_zones=120 -no_slto_panic ml-timeout-lock-panic-scale=40 tlto_us=0 sheng-smp=1 armcpu-self-ipi=1 armcpu-spi-ipi=1 use_contiguous_hint=0 interrupt-masked-debug-mode=0 sched_preemption_disable_debug_mode=0 wdt=-1 native-source-storage=1 vgpu-3d=1 oneios-gpu-metal={gpu_metal} ool_port_array_enforced=0 oneios-legacy-bootstrap-replies=1 oneios-legacy-registered-ports=1 oneios-mac-exec-skip=mediaserverd,TVRemoteConnectionService oneios-hid16=1 oneios-grant=configd:com.apple.networking.ionetworkstack.user-client oneios-ls-keep=3 oneios-disable-jobs=com.apple.accessibility.axassetsd,com.apple.aonsensed,com.apple.prngseedd,com.apple.suggestd,com.apple.spotlightknowledged,com.apple.corespotlightservice,com.apple.siriknowledged,com.apple.tipsd,com.apple.gamed,com.apple.followupd,com.apple.tailspind\n",
+        ));
         let keybagd = "usr/libexec/keybagd";
         // Scope the software keystore path to keybagd: the 20F66 binary only.
         if cx.root.isfile(keybagd)? && format!("{:x}", Sha256::digest(cx.root.read(keybagd)?)) == "3fab018f83b3c4a89d1e0e726caf16a4dcf27adeb662dbe7b09a500abf841b64" {

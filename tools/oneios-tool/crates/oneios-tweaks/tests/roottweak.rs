@@ -870,6 +870,27 @@ fn sealed_20f66_gets_the_16_userland_boot_args() {
     assert!(!conf.contains("pen=auto"), "{conf}");
 }
 
+#[test]
+fn sealed_20f66_gpu_metal_publishes_the_accelerator() {
+    // --gpu-metal: the same 16.5 image, with oneios-gpu-metal=1 so 20F66's Metal loads the boot addon's plug-in
+    // (the CPU-only default is =0, the test above)
+    let mut c = Case::new("20f66-gpu");
+    fs::write(c.root.join("System/Library/CoreServices/SystemVersion.plist"), version_plist("20F66", "16.5")).unwrap();
+    fs::write(c.root.join("usr/libexec/keybagd"), b"not the real one").unwrap();
+    c.apply(&["--gpu-metal"]);
+    let report = fs::read_to_string(c.out.join("report.txt")).unwrap();
+    assert!(report.contains("applied   gpu metal: oneios-gpu-metal=1"), "{report}");
+    let conf = fs::read_to_string(c.out.join("xnuhost.conf")).unwrap();
+    assert!(conf.contains("oneios-gpu-metal=1"), "{conf}");
+    assert!(!conf.contains("oneios-gpu-metal=0"), "{conf}");
+    // a build that is not 20F66 keeps its own boot arguments: the switch is the 16.5 image's
+    let mut other = Case::new("27-gpu");
+    fs::write(other.root.join("System/Library/CoreServices/SystemVersion.plist"), version_plist("24A446", "27.0.1")).unwrap();
+    other.apply(&["--gpu-metal", "--any-version"]);
+    let conf = fs::read_to_string(other.out.join("xnuhost.conf")).unwrap();
+    assert!(!conf.contains("oneios-gpu-metal"), "{conf}");
+}
+
 // ---------------------------------------------------------------- Hook
 
 fn env_of<'a>(map: &'a HashMap<&str, String>) -> impl Fn(&str) -> Option<String> + 'a {

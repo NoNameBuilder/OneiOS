@@ -47,6 +47,10 @@ pub struct Options {
     pub no_prefs: Vec<String>,
     pub lighter_visuals: bool,
     pub plain_keybag: bool,
+    /// publish the Metal accelerator in a 20F66 image (`oneios-gpu-metal=1` instead of the CPU-only `=0`): a 16.5
+    /// session then lets Metal load the plug-in the boot addon mounts, as iOS 27's does. Off by default: with no
+    /// plug-in that 16.5's Metal can load, its type-1 open is refused and the panel stays black.
+    pub gpu_metal: bool,
 }
 
 pub struct Context {
