@@ -177,7 +177,10 @@ jobs:
           set -euo pipefail
           userland/metal/build.sh all 2>&1 | tee metal-build.log
       - name: Build the capture plug-in for the same guest runtime
-        if: inputs.target != 'iPhone10,3 20F66'
+        # The 20F66 target builds it with the iOS 16.5 environment the target step exported (IOS_TBD=out/ios16-tbd,
+        # IOS_TARGET=arm64-apple-ios16.5). Its CMCapture ABI is not yet proven on 16.5: a failure there must not hold
+        # back the Metal bundle the job was started for, so it is reported, not fatal.
+        continue-on-error: ${{ inputs.target == 'iPhone10,3 20F66' }}
         timeout-minutes: 10
         run: userland/camera/build.sh out/userland/camera
       - name: Verify the target-tagged bundle and GPU addon

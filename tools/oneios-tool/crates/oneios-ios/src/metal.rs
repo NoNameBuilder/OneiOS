@@ -537,6 +537,25 @@ fn frontend_camera_edits() -> Vec<(&'static str, String, &'static str)> {
             .into(),
             "a compute pipeline rebuilt with its unset constants zero keeps its function until the reflection is read (NativeMetal 3c46b5e: cameracaptured's crash)",
         ),
+        (
+            concat!(
+                "#if defined(__arm64e__)\n",
+                " if(!base){NBLOG(@\"native-metal: no _MTLDevice\");return nil;}\n",
+                "#else\n",
+                " if(!base || class_getInstanceSize(base)!=536){NBLOG(@\"native-metal: unexpected _MTLDevice ABI\");return nil;}\n",
+                "#endif\n"
+            ),
+            concat!(
+                " // OneiOS (oneios-tool ios metal-stage-edit): the dynamic subclass adds no instance variables and reads none of\n",
+                " // the base's, so the guest's own _MTLDevice is the one to allocate with. 536 is iPadOS 17.7.11's; iOS 16.5\n",
+                " // 20F66's is 528 (its cache's __OBJC_CLASS_RO_$__MTLDevice: instanceStart 8, instanceSize 528), and the != 536\n",
+                " // test refused every 20F66 device silently (nmb_last_error empty, \"PUB no device: \"), after which 16.5's Metal\n",
+                " // discovery fell back to IOGPU's type 1 and failed. As on arm64e (iOS 27), only a missing class is refused.\n",
+                " if(!base){NBLOG(@\"native-metal: no _MTLDevice\");return nil;}\n"
+            )
+            .into(),
+            "the guest's own _MTLDevice size is accepted (as on arm64e): 20F66's is 528, and != 536 refused every device",
+        ),
     ]
 }
 
@@ -1127,6 +1146,20 @@ mod tests {
         std::fs::write(dir.join("d/F.mm"), "nothing").unwrap();
         assert!(edit(&dir, "d/F.mm", &edits).is_err());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Every frontend edit against the pinned NativeMetal (when external/ has it): each anchor is exactly once in the file
+    /// the build stages, so a pin bump that moves one fails here instead of in the plug-in build.
+    #[test]
+    fn the_frontend_edits_fit_the_pinned_frontend() {
+        let upstream = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../../external/NativeMetal/NativeBridgeMetalFrontend.mm");
+        let Ok(text) = std::fs::read_to_string(&upstream) else {
+            eprintln!("skipped: no {} (scripts/setup/get-references.sh NativeMetal)", upstream.display());
+            return;
+        };
+        for (old, _, why) in frontend_camera_edits() {
+            assert_eq!(text.matches(old).count(), 1, "{why}: {old:?}");
+        }
     }
 
     #[test]
